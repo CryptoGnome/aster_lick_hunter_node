@@ -1,8 +1,8 @@
 services:
   bot:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: ../..
+      dockerfile: deploy/linux-macos/Dockerfile
     container_name: aster-bot
     restart: unless-stopped
     ports:

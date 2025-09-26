@@ -37,8 +37,14 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
 fi
 
 # Stop and remove containers
+echo -e "${YELLOW}Stopping containers...${NC}"
+
+# Stop containers by name (more reliable)
+docker stop aster-bot aster-nginx 2>/dev/null || true
+docker rm aster-bot aster-nginx 2>/dev/null || true
+
+# Also try docker compose if available
 if [ -n "$DOCKER_COMPOSE" ]; then
-    echo -e "${YELLOW}Stopping containers...${NC}"
     $DOCKER_COMPOSE --profile nginx down --volumes --remove-orphans 2>/dev/null || true
     $DOCKER_COMPOSE down --volumes --remove-orphans 2>/dev/null || true
 fi
