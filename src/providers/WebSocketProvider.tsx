@@ -25,13 +25,38 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       .then(data => {
         const port = data.config?.global?.server?.websocketPort || 8080;
         setWsPort(port);
-        const url = `ws://localhost:${port}`;
+
+        // Determine WebSocket URL based on environment
+        const isDocker = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+
+        let url: string;
+        if (isDocker) {
+          // In Docker with Nginx, use the same host but with WebSocket path
+          url = `${protocol}//${host}/ws`;
+        } else {
+          // Local development
+          url = `ws://localhost:${port}`;
+        }
+
         websocketService.setUrl(url);
       })
       .catch(err => {
         console.error('Failed to load WebSocket config:', err);
-        // Use default port
-        websocketService.setUrl('ws://localhost:8080');
+        // Use default based on environment
+        const isDocker = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.hostname;
+
+        let url: string;
+        if (isDocker) {
+          url = `${protocol}//${host}/ws`;
+        } else {
+          url = 'ws://localhost:8080';
+        }
+
+        websocketService.setUrl(url);
       });
   }, []);
 
