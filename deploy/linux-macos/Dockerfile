@@ -8,10 +8,12 @@ WORKDIR /app
 
 # Copy and install dependencies
 COPY package*.json ./
-RUN npm ci
 
 # Copy source code
 COPY . .
+
+# Clean and reinstall to fix any corruption
+RUN rm -rf node_modules && npm install
 
 # Setup will be handled via web interface
 
