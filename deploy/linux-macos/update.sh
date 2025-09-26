@@ -14,7 +14,7 @@ echo -e "${BLUE}🔄 Aster DEX Bot - Update${NC}"
 echo "=========================="
 
 # Check if we're in the right directory
-if [ ! -f "../package.json" ] || [ ! -f "deploy.sh" ]; then
+if [ ! -f "../../package.json" ] || [ ! -f "deploy.sh" ]; then
     echo -e "${RED}❌ Run this script from the deploy/ directory${NC}"
     exit 1
 fi
@@ -98,7 +98,7 @@ git pull origin main
 echo -e "${GREEN}✅ Code updated${NC}"
 
 # Go back to deploy directory
-cd deploy
+cd deploy/linux-macos/
 
 # Rebuild and restart
 echo ""
