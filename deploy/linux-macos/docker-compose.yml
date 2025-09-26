@@ -1,0 +1,30 @@
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: aster-bot
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=development
+
+  nginx:
+    image: nginx:alpine
+    container_name: aster-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME:-_}
+    depends_on:
+      - bot
+    profiles:
+      - nginx
