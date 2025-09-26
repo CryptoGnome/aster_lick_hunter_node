@@ -51,7 +51,7 @@ else
 fi
 
 # Go to project root
-cd ..
+cd ../..
 
 # Check git status
 echo ""
