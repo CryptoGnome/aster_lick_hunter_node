@@ -569,8 +569,7 @@ function LiquidationItem({
           ? `rgb(34 197 94 / ${bgOpacity}%)`
           : `rgb(239 68 68 / ${bgOpacity}%)`,
         borderLeftWidth: intensity.borderWidth,
-        borderLeftColor: isLongLiquidation ? 'rgb(34 197 94)' : 'rgb(239 68 68)',
-        transformPerspective: '1000px'
+        borderLeftColor: isLongLiquidation ? 'rgb(34 197 94)' : 'rgb(239 68 68)'
       }}
     >
       <div className="flex items-center gap-1.5 flex-1">

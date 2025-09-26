@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { DashboardLayout } from '@/components/dashboard-layout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+// import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -116,7 +116,7 @@ export default function DashboardPage() {
   }, []); // No dependencies - only run once on mount
 
   // Refresh data manually if needed
-  const refreshData = async () => {
+  const _refreshData = async () => {
     try {
       const [balanceData, positionsData] = await Promise.all([
         dataStore.fetchBalance(true), // Force refresh
@@ -331,7 +331,7 @@ export default function DashboardPage() {
                     <>
                       <span className="text-lg font-semibold">{Object.keys(config.symbols).length}</span>
                       <div className="flex gap-1 max-w-[200px] overflow-hidden">
-                        {Object.keys(config.symbols).slice(0, 3).map((symbol, index) => (
+                        {Object.keys(config.symbols).slice(0, 3).map((symbol, _index) => (
                           <Badge key={symbol} variant="outline" className="h-4 text-[10px] px-1">
                             {symbol.replace('USDT', '')}
                           </Badge>
@@ -357,8 +357,6 @@ export default function DashboardPage() {
           {/* Positions Table */}
           <PositionTable
             onClosePosition={handleClosePosition}
-            onUpdateSL={handleUpdateSL}
-            onUpdateTP={handleUpdateTP}
           />
 
           {/* Recent Orders Table */}

@@ -40,11 +40,18 @@ export const apiCredentialsSchema = z.object({
   secretKey: z.string(),
 });
 
+export const serverConfigSchema = z.object({
+  dashboardPassword: z.string().optional(),
+  dashboardPort: z.number().optional(),
+  websocketPort: z.number().optional(),
+}).optional();
+
 export const globalConfigSchema = z.object({
   riskPercent: z.number().min(0).max(100),
   paperMode: z.boolean(),
   positionMode: z.enum(['ONE_WAY', 'HEDGE']).optional(),
   maxOpenPositions: z.number().min(1).optional(),
+  server: serverConfigSchema,
 });
 
 export const configSchema = z.object({

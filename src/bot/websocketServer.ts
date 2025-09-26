@@ -220,6 +220,21 @@ export class StatusBroadcaster extends EventEmitter {
     });
   }
 
+  // Broadcast when a trade is blocked (e.g., by VWAP protection)
+  broadcastTradeBlocked(data: {
+    symbol: string;
+    side: string;
+    reason: string;
+    vwap?: number;
+    currentPrice?: number;
+    blockType?: string;
+  }): void {
+    this._broadcast('trade_blocked', {
+      ...data,
+      timestamp: new Date(),
+    });
+  }
+
   // Broadcast when a position is actually opened
   broadcastPositionUpdate(data: {
     symbol: string;

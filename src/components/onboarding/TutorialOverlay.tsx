@@ -93,7 +93,7 @@ export function TutorialOverlay() {
     const tooltipHeight = 150;
     const offset = 20;
 
-    let style: React.CSSProperties = {
+    const style: React.CSSProperties = {
       position: 'fixed',
       zIndex: 9999,
       width: tooltipWidth,
@@ -119,10 +119,10 @@ export function TutorialOverlay() {
     }
 
     // Ensure tooltip stays within viewport
-    if (style.left && style.left < 10) style.left = 10;
-    if (style.right && style.right < 10) style.right = 10;
-    if (style.top && style.top < 10) style.top = 10;
-    if (style.bottom && style.bottom < 10) style.bottom = 10;
+    if (style.left && typeof style.left === 'number' && style.left < 10) style.left = 10;
+    if (style.right && typeof style.right === 'number' && style.right < 10) style.right = 10;
+    if (style.top && typeof style.top === 'number' && style.top < 10) style.top = 10;
+    if (style.bottom && typeof style.bottom === 'number' && style.bottom < 10) style.bottom = 10;
 
     return style;
   };

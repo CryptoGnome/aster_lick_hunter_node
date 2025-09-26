@@ -472,34 +472,45 @@ export class PositionManager extends EventEmitter implements PositionTracker {
     }
   }
 
-  // Cancel protective orders for a position
+  // Cancel protective orders for a position with retry logic
   private async cancelProtectiveOrders(positionKey: string, orders: PositionOrders): Promise<void> {
     const [symbol] = positionKey.split('_');
 
     if (orders.slOrderId) {
-      try {
-        await this.cancelOrderById(symbol, orders.slOrderId);
-        console.log(`PositionManager: Cancelled SL order ${orders.slOrderId}`);
-      } catch (error: any) {
-        // Error -2011 means order doesn't exist (already filled or cancelled)
-        if (error?.response?.data?.code === -2011) {
-          console.log(`PositionManager: SL order ${orders.slOrderId} already filled or cancelled`);
-        } else {
-          console.error(`PositionManager: Failed to cancel SL order ${orders.slOrderId}:`, error?.response?.data || error?.message);
-        }
-      }
+      await this.cancelOrderWithRetry(symbol, orders.slOrderId, 'SL');
     }
 
     if (orders.tpOrderId) {
+      await this.cancelOrderWithRetry(symbol, orders.tpOrderId, 'TP');
+    }
+  }
+
+  // Cancel order with retry and backoff
+  private async cancelOrderWithRetry(symbol: string, orderId: number, orderType: string): Promise<void> {
+    const maxRetries = 3;
+    const baseDelay = 1000; // 1 second
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        await this.cancelOrderById(symbol, orders.tpOrderId);
-        console.log(`PositionManager: Cancelled TP order ${orders.tpOrderId}`);
+        await this.cancelOrderById(symbol, orderId);
+        console.log(`PositionManager: Cancelled ${orderType} order ${orderId} (attempt ${attempt})`);
+        return; // Success, exit retry loop
       } catch (error: any) {
         // Error -2011 means order doesn't exist (already filled or cancelled)
         if (error?.response?.data?.code === -2011) {
-          console.log(`PositionManager: TP order ${orders.tpOrderId} already filled or cancelled`);
+          console.log(`PositionManager: ${orderType} order ${orderId} already filled or cancelled`);
+          return; // Not an error to retry
+        }
+
+        console.error(`PositionManager: Failed to cancel ${orderType} order ${orderId} (attempt ${attempt}/${maxRetries}):`, error?.response?.data?.message || error?.message);
+
+        if (attempt < maxRetries) {
+          // Exponential backoff: 1s, 2s, 4s
+          const delay = baseDelay * Math.pow(2, attempt - 1);
+          console.log(`PositionManager: Retrying ${orderType} order cancellation in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
         } else {
-          console.error(`PositionManager: Failed to cancel TP order ${orders.tpOrderId}:`, error?.response?.data || error?.message);
+          console.error(`PositionManager: Max retries reached for cancelling ${orderType} order ${orderId}`);
         }
       }
     }
@@ -540,6 +551,9 @@ export class PositionManager extends EventEmitter implements PositionTracker {
     if (event.a && event.a.P) {
       const positions = event.a.P;
 
+      // Track previous positions to detect closures
+      const previousPositions = new Map(this.currentPositions);
+
       // Clear and rebuild position map - exchange data is the truth
       this.currentPositions.clear();
 
@@ -548,7 +562,56 @@ export class PositionManager extends EventEmitter implements PositionTracker {
         const symbol = pos.s;
         const positionSide = pos.ps || 'BOTH';
 
-        // Store the full position data from exchange
+        // Check if position is closed (positionAmt = 0)
+        if (Math.abs(positionAmt) === 0) {
+          // Find the previous position key for this symbol/side
+          let previousKey: string | undefined;
+          let previousPosition: ExchangePosition | undefined;
+
+          for (const [key, prevPos] of previousPositions.entries()) {
+            if (prevPos.symbol === symbol && prevPos.positionSide === positionSide) {
+              previousKey = key;
+              previousPosition = prevPos;
+              break;
+            }
+          }
+
+          if (previousKey && previousPosition) {
+            const previousAmt = parseFloat(previousPosition.positionAmt);
+            console.log(`PositionManager: Position ${previousKey} fully closed`);
+
+            // Broadcast position closed event
+            if (this.statusBroadcaster) {
+              this.statusBroadcaster.broadcastPositionClosed({
+                symbol: symbol,
+                side: previousAmt > 0 ? 'LONG' : 'SHORT',
+                quantity: Math.abs(previousAmt),
+                pnl: 0, // Will be updated by ORDER_TRADE_UPDATE
+                reason: 'Position Closed',
+              });
+
+              // Also broadcast position_update with type closed for compatibility
+              this.statusBroadcaster.broadcastPositionUpdate({
+                symbol: symbol,
+                side: previousAmt > 0 ? 'LONG' : 'SHORT',
+                quantity: 0,
+                price: 0,
+                type: 'closed',
+                pnl: 0,
+              });
+            }
+
+            // Clean up tracking
+            this.positionOrders.delete(previousKey);
+            this.previousPositionSizes.delete(previousKey);
+
+            // Trigger immediate balance refresh
+            this.refreshBalance();
+          }
+          return; // Skip adding closed positions to map
+        }
+
+        // Store the full position data from exchange (only for open positions)
         if (Math.abs(positionAmt) > 0) {
           const key = this.getPositionKey(symbol, positionSide, positionAmt);
 
@@ -806,61 +869,74 @@ export class PositionManager extends EventEmitter implements PositionTracker {
   private async adjustProtectiveOrders(position: ExchangePosition, currentSlOrder?: ExchangeOrder, currentTpOrder?: ExchangeOrder): Promise<void> {
     const symbol = position.symbol;
     const posAmt = parseFloat(position.positionAmt);
-    const positionQty = Math.abs(posAmt);
     const key = this.getPositionKey(symbol, position.positionSide, posAmt);
 
-    console.log(`PositionManager: Adjusting protective orders for ${symbol} - Position size: ${positionQty}`);
+    // Check if adjustment is already in progress for this position
+    if (this.orderPlacementLocks.has(key)) {
+      console.log(`PositionManager: Order adjustment already in progress for ${key}, skipping`);
+      return;
+    }
 
-    // Cancel existing orders with wrong quantities
-    const orders = this.positionOrders.get(key) || {};
-    const cancelPromises: Promise<void>[] = [];
+    // Set lock to prevent concurrent adjustments
+    this.orderPlacementLocks.add(key);
 
-    let needNewSL = false;
-    let needNewTP = false;
+    try {
+      console.log(`PositionManager: Adjusting protective orders for ${symbol} - Position size: ${Math.abs(posAmt)}`);
 
-    // Check and cancel SL if quantity doesn't match
-    if (currentSlOrder) {
-      const slOrderQty = parseFloat(currentSlOrder.origQty);
-      if (Math.abs(slOrderQty - positionQty) > 0.00000001) {
-        console.log(`PositionManager: Cancelling SL order ${currentSlOrder.orderId} (qty: ${slOrderQty}) to replace with correct size`);
-        cancelPromises.push(this.cancelOrderById(symbol, currentSlOrder.orderId));
+      // Cancel existing orders with wrong quantities using retry logic
+      const orders = this.positionOrders.get(key) || {};
+      const cancelPromises: Promise<void>[] = [];
+
+      let needNewSL = false;
+      let needNewTP = false;
+
+      // Check and cancel SL if quantity doesn't match
+      if (currentSlOrder) {
+        const slOrderQty = parseFloat(currentSlOrder.origQty);
+        if (Math.abs(slOrderQty - Math.abs(posAmt)) > 0.00000001) {
+          console.log(`PositionManager: Cancelling SL order ${currentSlOrder.orderId} (qty: ${slOrderQty}) to replace with correct size`);
+          cancelPromises.push(this.cancelOrderWithRetry(symbol, currentSlOrder.orderId, 'SL'));
+          needNewSL = true;
+          delete orders.slOrderId;
+        }
+      } else {
         needNewSL = true;
-        delete orders.slOrderId;
       }
-    } else {
-      needNewSL = true;
-    }
 
-    // Check and cancel TP if quantity doesn't match
-    if (currentTpOrder) {
-      const tpOrderQty = parseFloat(currentTpOrder.origQty);
-      if (Math.abs(tpOrderQty - positionQty) > 0.00000001) {
-        console.log(`PositionManager: Cancelling TP order ${currentTpOrder.orderId} (qty: ${tpOrderQty}) to replace with correct size`);
-        cancelPromises.push(this.cancelOrderById(symbol, currentTpOrder.orderId));
+      // Check and cancel TP if quantity doesn't match
+      if (currentTpOrder) {
+        const tpOrderQty = parseFloat(currentTpOrder.origQty);
+        if (Math.abs(tpOrderQty - Math.abs(posAmt)) > 0.00000001) {
+          console.log(`PositionManager: Cancelling TP order ${currentTpOrder.orderId} (qty: ${tpOrderQty}) to replace with correct size`);
+          cancelPromises.push(this.cancelOrderWithRetry(symbol, currentTpOrder.orderId, 'TP'));
+          needNewTP = true;
+          delete orders.tpOrderId;
+        }
+      } else {
         needNewTP = true;
-        delete orders.tpOrderId;
       }
-    } else {
-      needNewTP = true;
-    }
 
-    // Wait for cancellations to complete
-    if (cancelPromises.length > 0) {
-      try {
-        await Promise.all(cancelPromises);
-        console.log(`PositionManager: Cancelled ${cancelPromises.length} order(s) for adjustment`);
-      } catch (error: any) {
-        console.error('PositionManager: Error cancelling orders for adjustment:', error?.response?.data || error?.message);
-        // Continue to try placing new orders even if cancellation failed
+      // Wait for cancellations to complete
+      if (cancelPromises.length > 0) {
+        try {
+          await Promise.all(cancelPromises);
+          console.log(`PositionManager: Cancelled ${cancelPromises.length} order(s) for adjustment`);
+        } catch (error: any) {
+          console.error('PositionManager: Error cancelling orders for adjustment:', error?.response?.data || error?.message);
+          // Continue to try placing new orders even if cancellation failed
+        }
       }
-    }
 
-    // Update our tracking
-    this.positionOrders.set(key, orders);
+      // Update our tracking
+      this.positionOrders.set(key, orders);
 
-    // Place new orders with correct quantities
-    if (needNewSL || needNewTP) {
-      await this.placeProtectiveOrdersWithLock(key, position, needNewSL, needNewTP);
+      // Place new orders with correct quantities
+      if (needNewSL || needNewTP) {
+        await this.placeProtectiveOrders(position, needNewSL, needNewTP);
+      }
+    } finally {
+      // Always release the lock
+      this.orderPlacementLocks.delete(key);
     }
   }
 
@@ -1014,6 +1090,7 @@ export class PositionManager extends EventEmitter implements PositionTracker {
           quantity: formattedQuantity,
           stopPrice: slPrice,
           positionSide: orderPositionSide as 'BOTH' | 'LONG' | 'SHORT',
+          newClientOrderId: `al_sl_${symbol}_${Date.now()}`,
         };
 
         // Only add reduceOnly in One-way mode (positionSide == BOTH)
@@ -1065,6 +1142,7 @@ export class PositionManager extends EventEmitter implements PositionTracker {
           quantity: formattedQuantity,
           stopPrice: tpPrice, // Use stopPrice for TAKE_PROFIT_MARKET
           positionSide: orderPositionSide as 'BOTH' | 'LONG' | 'SHORT',
+          newClientOrderId: `al_tp_${symbol}_${Date.now()}`,
         };
 
         // Only add reduceOnly in One-way mode (positionSide == BOTH)
@@ -1131,9 +1209,52 @@ export class PositionManager extends EventEmitter implements PositionTracker {
       const activeSymbols = new Set(Array.from(activePositions.values()).map(p => p.symbol));
 
       // Find orphaned orders (reduce-only orders for symbols without positions)
-      const orphanedOrders = openOrders.filter(order =>
-        order.reduceOnly && !activeSymbols.has(order.symbol)
-      );
+      // This includes bot-created orders since they're also orphaned if no position exists
+      const orphanedOrders = openOrders.filter(order => {
+        const isOrphaned = order.reduceOnly && !activeSymbols.has(order.symbol);
+
+        // Log evaluation for debugging
+        if (order.reduceOnly) {
+          const isBotOrder = order.clientOrderId &&
+            (order.clientOrderId.startsWith('al_sl_') || order.clientOrderId.startsWith('al_tp_'));
+
+          if (isOrphaned) {
+            console.log(`PositionManager: Found orphaned ${order.type} order for ${order.symbol} - OrderId: ${order.orderId}, ClientOrderId: ${order.clientOrderId || 'none'}, Bot order: ${isBotOrder ? 'yes' : 'no'}`);
+          }
+        }
+
+        return isOrphaned;
+      });
+
+      // Find stuck entry orders (non reduce-only orders that have been open for too long without creating positions)
+      // These are LIMIT orders that haven't filled and don't have corresponding positions
+      const stuckEntryOrders = openOrders.filter(order => {
+        // Only check non reduce-only LIMIT orders
+        if (order.reduceOnly || order.type !== 'LIMIT') {
+          return false;
+        }
+
+        // Check if this symbol has an active position
+        const hasPosition = Array.from(activePositions.values()).some(p => p.symbol === order.symbol);
+
+        // Calculate order age
+        const orderAge = Date.now() - order.time;
+
+        // For non reduce-only LIMIT orders, ensure they're at least 30 seconds old
+        // This prevents cancelling orders that were just placed
+        if (orderAge < 30 * 1000) { // 30 seconds
+          return false;
+        }
+
+        // If no position exists and order is older than 5 minutes, consider it stuck
+        const isStuck = !hasPosition && orderAge > 5 * 60 * 1000; // 5 minutes
+
+        if (isStuck) {
+          console.log(`PositionManager: Found stuck entry order for ${order.symbol} - OrderId: ${order.orderId}, Type: ${order.type}, Age: ${Math.round(orderAge / 1000)}s`);
+        }
+
+        return isStuck;
+      });
 
       // Find duplicate orders for each active position
       const duplicateOrders: ExchangeOrder[] = [];
@@ -1207,8 +1328,27 @@ export class PositionManager extends EventEmitter implements PositionTracker {
         }
       }
 
-      if (orphanedOrders.length === 0 && duplicateOrders.length === 0) {
-        console.log('PositionManager: No orphaned or duplicate orders found');
+      // Cancel stuck entry orders
+      if (stuckEntryOrders.length > 0) {
+        console.log(`PositionManager: Found ${stuckEntryOrders.length} stuck entry orders to cleanup`);
+
+        for (const order of stuckEntryOrders) {
+          try {
+            await this.cancelOrderById(order.symbol, order.orderId);
+            console.log(`PositionManager: Cancelled stuck entry order ${order.symbol} #${order.orderId} (${order.type})`);
+          } catch (error: any) {
+            // Ignore "order not found" errors (already filled/cancelled)
+            if (error?.response?.data?.code === -2011) {
+              console.log(`PositionManager: Stuck entry order ${order.symbol} #${order.orderId} already filled/cancelled`);
+            } else {
+              console.error(`PositionManager: Failed to cancel stuck entry order ${order.symbol} #${order.orderId}:`, error?.response?.data || error?.message);
+            }
+          }
+        }
+      }
+
+      if (orphanedOrders.length === 0 && duplicateOrders.length === 0 && stuckEntryOrders.length === 0) {
+        console.log('PositionManager: No orphaned, duplicate, or stuck orders found');
       }
     } catch (error: any) {
       console.error('PositionManager: Error during orphaned order cleanup:', error?.response?.data || error?.message);
