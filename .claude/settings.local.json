@@ -21,7 +21,9 @@
       "Bash(dir:*)",
       "Bash(curl:*)",
       "Bash(node:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "WebSearch",
+      "WebFetch(domain:sonner.emilkowal.ski)"
     ],
     "deny": [],
     "ask": []

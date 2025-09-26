@@ -49,6 +49,7 @@ interface DailyPnL {
   fundingFee: number;
   netPnl: number;
   tradeCount: number;
+  cumulativePnl?: number; // Optional field added when chartType is 'cumulative'
 }
 
 interface PerformanceMetrics {
@@ -603,8 +604,8 @@ export default function PnLChart() {
               <Area
                 type="monotone"
                 dataKey="cumulativePnl"
-                stroke={chartData.length > 0 && chartData[chartData.length - 1].cumulativePnl >= 0 ? "#10b981" : "#ef4444"}
-                fill={chartData.length > 0 && chartData[chartData.length - 1].cumulativePnl >= 0 ? "#10b98140" : "#ef444440"}
+                stroke={chartData.length > 0 && (chartData[chartData.length - 1].cumulativePnl ?? 0) >= 0 ? "#10b981" : "#ef4444"}
+                fill={chartData.length > 0 && (chartData[chartData.length - 1].cumulativePnl ?? 0) >= 0 ? "#10b98140" : "#ef444440"}
                 strokeWidth={2}
               />
             </AreaChart>

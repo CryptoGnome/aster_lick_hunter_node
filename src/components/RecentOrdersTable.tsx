@@ -236,7 +236,7 @@ export default function RecentOrdersTable({ maxRows = 50 }: RecentOrdersTablePro
 
   // Get order type badge
   const getTypeBadge = (type: OrderType) => {
-    const colors = {
+    const colors: Record<string, string> = {
       [OrderType.MARKET]: 'bg-purple-600/10 text-purple-600 border-purple-600/20',
       [OrderType.LIMIT]: 'bg-blue-600/10 text-blue-600 border-blue-600/20',
       [OrderType.STOP_MARKET]: 'bg-orange-600/10 text-orange-600 border-orange-600/20',
@@ -252,6 +252,54 @@ export default function RecentOrdersTable({ maxRows = 50 }: RecentOrdersTablePro
     );
   };
 
+  // Determine position action type
+  const getPositionAction = (order: Order): string => {
+    // Check if this is a reduce-only order (closing/reducing position)
+    if (order.reduceOnly) {
+      // Check if it's a stop-loss or take-profit
+      if (order.type === OrderType.STOP_MARKET || order.type === 'STOP') {
+        return 'STOP LOSS';
+      }
+      if (order.type === OrderType.TAKE_PROFIT_MARKET || order.type === 'TAKE_PROFIT') {
+        return 'TAKE PROFIT';
+      }
+      // Check if it fully closed the position (would need position tracking for accuracy)
+      // For now, we'll label all other reduce-only as REDUCE
+      return 'REDUCE';
+    }
+
+    // Check if this is a close-all position order
+    if (order.closePosition) {
+      return 'CLOSE ALL';
+    }
+
+    // For non-reduce orders, it's either OPEN or ADD
+    // Without position history, we'll label as OPEN for now
+    // In a full implementation, you'd track if a position existed before this order
+    return 'OPEN';
+  };
+
+  // Get position action badge
+  const getPositionActionBadge = (order: Order) => {
+    const action = getPositionAction(order);
+
+    const colors: Record<string, string> = {
+      'OPEN': 'bg-blue-600/10 text-blue-600 border-blue-600/20',
+      'ADD': 'bg-cyan-600/10 text-cyan-600 border-cyan-600/20',
+      'REDUCE': 'bg-yellow-600/10 text-yellow-600 border-yellow-600/20',
+      'CLOSE': 'bg-gray-600/10 text-gray-600 border-gray-600/20',
+      'CLOSE ALL': 'bg-gray-600/10 text-gray-600 border-gray-600/20',
+      'STOP LOSS': 'bg-red-600/10 text-red-600 border-red-600/20',
+      'TAKE PROFIT': 'bg-green-600/10 text-green-600 border-green-600/20',
+    };
+
+    return (
+      <Badge className={colors[action] || 'bg-gray-600/10 text-gray-600 border-gray-600/20'} variant="outline">
+        {action}
+      </Badge>
+    );
+  };
+
   // Get statistics
   const statistics = useMemo(() => {
     // Calculate statistics only for configured symbols
@@ -260,14 +308,46 @@ export default function RecentOrdersTable({ maxRows = 50 }: RecentOrdersTablePro
       : orders;
 
     const filled = configuredOrders.filter(o => o.status === OrderStatus.FILLED);
-    const profit = filled.reduce((sum, o) => {
+
+    // Only count orders that actually closed positions (have PnL data)
+    // These are typically reduce-only orders, SL/TP orders, or close orders
+    const closingOrders = filled.filter(o => {
+      // Check if order has realized profit/loss (not undefined, not null, not empty string)
+      const hasRealizedPnL = o.realizedProfit !== undefined &&
+                             o.realizedProfit !== null &&
+                             o.realizedProfit !== '' &&
+                             o.realizedProfit !== '0';
+
+      // Also check if it's a reduce-only order or SL/TP type
+      const isClosingOrder = o.reduceOnly ||
+                             o.type === OrderType.STOP_MARKET ||
+                             o.type === OrderType.TAKE_PROFIT_MARKET ||
+                             o.type === 'STOP' ||
+                             o.type === 'TAKE_PROFIT';
+
+      return hasRealizedPnL || isClosingOrder;
+    });
+
+    const profit = closingOrders.reduce((sum, o) => {
       const pnl = parseFloat(o.realizedProfit || '0');
       return sum + (pnl > 0 ? pnl : 0);
     }, 0);
-    const loss = filled.reduce((sum, o) => {
+
+    const loss = closingOrders.reduce((sum, o) => {
       const pnl = parseFloat(o.realizedProfit || '0');
       return sum + (pnl < 0 ? Math.abs(pnl) : 0);
     }, 0);
+
+    // Count wins and losses only from closing orders with PnL
+    const ordersWithPnL = closingOrders.filter(o =>
+      o.realizedProfit !== undefined &&
+      o.realizedProfit !== null &&
+      o.realizedProfit !== '' &&
+      o.realizedProfit !== '0'
+    );
+
+    const wins = ordersWithPnL.filter(o => parseFloat(o.realizedProfit || '0') > 0).length;
+    const losses = ordersWithPnL.filter(o => parseFloat(o.realizedProfit || '0') < 0).length;
 
     return {
       total: configuredOrders.length,
@@ -280,9 +360,12 @@ export default function RecentOrdersTable({ maxRows = 50 }: RecentOrdersTablePro
       totalProfit: profit,
       totalLoss: loss,
       netPnL: profit - loss,
-      winRate: filled.length > 0
-        ? (filled.filter(o => parseFloat(o.realizedProfit || '0') > 0).length / filled.length) * 100
+      winRate: ordersWithPnL.length > 0
+        ? (wins / ordersWithPnL.length) * 100
         : 0,
+      wins,
+      losses,
+      closedTrades: ordersWithPnL.length,
     };
   }, [orders, availableSymbols]);
 
@@ -344,17 +427,21 @@ export default function RecentOrdersTable({ maxRows = 50 }: RecentOrdersTablePro
         <div className="flex items-center gap-4 mt-4 text-sm">
           <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Win Rate:</span>
-            <span className="font-medium">{statistics.winRate.toFixed(1)}%</span>
+            <span className="font-medium">
+              {statistics.closedTrades > 0
+                ? `${statistics.winRate.toFixed(1)}% (${statistics.wins}W/${statistics.losses}L)`
+                : 'N/A'}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Net PnL:</span>
             <span className={`font-medium ${statistics.netPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              ${Math.abs(statistics.netPnL).toFixed(2)}
+              {statistics.netPnL >= 0 ? '+' : '-'}${Math.abs(statistics.netPnL).toFixed(2)}
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Filled:</span>
-            <span className="font-medium">{statistics.filled}</span>
+            <span className="text-muted-foreground">Closed:</span>
+            <span className="font-medium">{statistics.closedTrades}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Open:</span>
@@ -388,6 +475,7 @@ export default function RecentOrdersTable({ maxRows = 50 }: RecentOrdersTablePro
                   <TableRow>
                     <TableHead className="w-[100px]">Time</TableHead>
                     <TableHead className="w-[100px]">Symbol</TableHead>
+                    <TableHead>Action</TableHead>
                     <TableHead>Type</TableHead>
                     <TableHead>Side</TableHead>
                     <TableHead className="text-right">Price</TableHead>
@@ -415,6 +503,9 @@ export default function RecentOrdersTable({ maxRows = 50 }: RecentOrdersTablePro
                         </TableCell>
                         <TableCell className="font-medium">
                           {order.symbol.replace('USDT', '')}
+                        </TableCell>
+                        <TableCell>
+                          {getPositionActionBadge(order)}
                         </TableCell>
                         <TableCell>
                           {getTypeBadge(order.type)}

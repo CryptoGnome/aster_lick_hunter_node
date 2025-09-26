@@ -243,17 +243,34 @@ class DataStore extends EventEmitter {
       console.log('[DataStore] Received balance update from WebSocket:', message.data);
       this.updateBalance(message.data, 'websocket');
     } else if (message.type === 'position_update') {
-      console.log('[DataStore] Position update received, clearing cache and fetching latest positions');
+      console.log('[DataStore] Position update received:', message.data?.type);
       // Clear positions cache immediately to prevent serving stale data
       this.state.positions.timestamp = 0;
-      // Add a 1 second delay to allow protective orders to be placed
-      // This ensures SL/TP badges appear correctly in the dashboard
-      setTimeout(() => {
-        // Force fetch to get latest positions with protective orders
+
+      // Check if this is a position closure
+      if (message.data?.type === 'closed') {
+        console.log('[DataStore] Position closed, fetching positions immediately');
+        // Fetch immediately for position closures
         this.fetchPositions(true).catch(error => {
-          console.error('[DataStore] Failed to fetch positions after update:', error);
+          console.error('[DataStore] Failed to fetch positions after closure:', error);
         });
-      }, 1000);
+      } else {
+        // Add a 1 second delay to allow protective orders to be placed
+        // This ensures SL/TP badges appear correctly in the dashboard
+        setTimeout(() => {
+          // Force fetch to get latest positions with protective orders
+          this.fetchPositions(true).catch(error => {
+            console.error('[DataStore] Failed to fetch positions after update:', error);
+          });
+        }, 1000);
+      }
+    } else if (message.type === 'position_closed') {
+      console.log('[DataStore] Position closed event received, fetching positions immediately');
+      // Clear positions cache and fetch immediately
+      this.state.positions.timestamp = 0;
+      this.fetchPositions(true).catch(error => {
+        console.error('[DataStore] Failed to fetch positions after closure:', error);
+      });
     } else if (message.type === 'sl_placed' || message.type === 'tp_placed') {
       // When SL/TP orders are placed, refresh positions to update protection badges
       console.log(`[DataStore] ${message.type === 'sl_placed' ? 'Stop Loss' : 'Take Profit'} placed, refreshing positions`);

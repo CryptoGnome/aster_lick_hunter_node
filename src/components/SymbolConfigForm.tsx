@@ -76,7 +76,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       tpPercent: 3,
       priceOffsetBps: 5,      // 5 basis points offset for limit orders
       maxSlippageBps: 50,     // 50 basis points max slippage
-      orderType: 'LIMIT' as 'LIMIT',
+      orderType: 'LIMIT' as const,
       vwapProtection: false,  // VWAP protection disabled by default
       vwapTimeframe: '1m',    // Default to 1 minute timeframe
       vwapLookback: 100,      // Default to 100 candles

@@ -271,6 +271,12 @@ class AsterBot {
         this.statusBroadcaster.logActivity(`Opportunity: ${data.symbol} ${data.side} - ${data.reason}`);
       });
 
+      this.hunter.on('tradeBlocked', (data: any) => {
+        console.log(`🚫 Trade blocked: ${data.symbol} ${data.side} - ${data.reason}`);
+        this.statusBroadcaster.broadcastTradeBlocked(data);
+        this.statusBroadcaster.logActivity(`Blocked: ${data.symbol} ${data.side} - ${data.blockType}`);
+      });
+
       this.hunter.on('positionOpened', (data: any) => {
         console.log(`📈 Position opened: ${data.symbol} ${data.side} qty=${data.quantity}`);
         this.positionManager?.onNewPosition(data);

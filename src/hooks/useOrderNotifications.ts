@@ -179,6 +179,27 @@ export function useOrderNotifications(wsUrl: string = 'ws://localhost:8080') {
               break;
             }
 
+            case 'trade_blocked': {
+              const { symbol, side, reason, vwap, currentPrice, blockType } = message.data;
+              const description = blockType === 'VWAP_FILTER'
+                ? reason
+                : `${side} trade blocked - ${reason}`;
+
+              toast.warning(
+                `🚫 VWAP Protection Active`,
+                {
+                  description: description,
+                  duration: 4000,
+                  style: {
+                    background: 'rgb(251 146 60)', // orange-400
+                    color: 'white',
+                    border: '1px solid rgb(254 215 170)' // orange-200
+                  }
+                }
+              );
+              break;
+            }
+
             default:
               break;
           }

@@ -50,6 +50,7 @@ export interface Config {
   api: ApiCredentials;
   symbols: Record<string, SymbolConfig>; // key: symbol like "BTCUSDT"
   global: GlobalConfig;
+  version?: string; // Optional version field for config schema versioning
 }
 
 // API response types

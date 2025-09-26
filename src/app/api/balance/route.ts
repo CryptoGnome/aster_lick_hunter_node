@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
     const balanceService = getBalanceService();
 
     if (balanceService) {
-      const status = balanceService.getConnectionStatus();
+      const _status = balanceService.getConnectionStatus();
 
       if (balanceService.isInitialized()) {
         const balanceData = balanceService.getCurrentBalance();
@@ -120,7 +120,7 @@ export async function GET(request: NextRequest) {
           responseTime: Date.now() - startTime,
         });
       }
-    } catch (accountError) {
+    } catch (_accountError) {
     }
 
     // Final fallback to balance API

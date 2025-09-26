@@ -1,6 +1,8 @@
 # 🚀 Aster DEX Liquidation Hunter Bot
+<img width="1918" height="954" alt="image" src="https://github.com/user-attachments/assets/cfa2d243-ca66-4230-b834-1e558cb5ce0b" />
 
-> ⚠️ **OPEN BETA WARNING** - Please trade with caution! This software is in open beta. Only use what you are willing to lose.
+
+> ⚠️ **OPEN BETA WARNING** - Please trade with caution! This software is in open beta.
 
 A smart trading bot that monitors and trades liquidation events on Aster DEX. Features automated trading, risk management, and a beautiful web dashboard.
 
