@@ -1,0 +1,15 @@
+services:
+  bot:
+    build:
+      context: ../..
+      dockerfile: deploy/windows/Dockerfile
+    container_name: aster-bot
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=development
