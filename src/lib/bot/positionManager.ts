@@ -349,10 +349,14 @@ export class PositionManager extends EventEmitter implements PositionTracker {
       this.positionOrders.clear();
 
       // Process each position
+      console.log(`PositionManager: Processing ${positions.length} positions from exchange...`);
       for (const position of positions) {
         const posAmt = parseFloat(position.positionAmt);
+        console.log(`PositionManager: Examining position ${position.symbol}: amount=${posAmt}, positionSide=${position.positionSide}`);
+
         if (Math.abs(posAmt) > 0) {
           const key = this.getPositionKey(position.symbol, position.positionSide, posAmt);
+          console.log(`PositionManager: Generated key for ${position.symbol}: ${key}`);
           this.currentPositions.set(key, position);
 
           // Only manage positions for symbols in our config
@@ -1893,7 +1897,17 @@ export class PositionManager extends EventEmitter implements PositionTracker {
 
   // Check and adjust all orders periodically
   private async checkAndAdjustOrders(): Promise<void> {
+    // IMPORTANT: Force a sync every time to ensure we have all positions
+    // This fixes the bug where HYPE/ASTER positions weren't being tracked
+    console.log('PositionManager: Forcing position sync to ensure all positions are tracked...');
+    try {
+      await this.syncWithExchange();
+    } catch (error) {
+      console.error('PositionManager: Failed to sync during periodic check:', error);
+    }
+
     if (this.currentPositions.size === 0) {
+      console.log('PositionManager: No positions found after sync');
       return; // No positions to check
     }
 
