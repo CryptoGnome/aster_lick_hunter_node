@@ -203,6 +203,16 @@ export class StatusBroadcaster extends EventEmitter {
       orderTradeTime: liquidationEvent.orderTradeTime,
       eventTime: liquidationEvent.eventTime,
       timestamp: new Date(),
+      // Include threshold status for real-time UI updates
+      thresholdStatus: (liquidationEvent as any).thresholdStatus,
+    });
+  }
+
+  // Broadcast threshold updates to connected clients
+  broadcastThresholdUpdate(thresholdUpdate: any): void {
+    this._broadcast('threshold_update', {
+      ...thresholdUpdate,
+      timestamp: new Date(),
     });
   }
 

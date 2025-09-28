@@ -16,6 +16,7 @@ import pnlService from '../lib/services/pnlService';
 import { getRateLimitManager } from '../lib/api/rateLimitManager';
 import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
+import { thresholdMonitor } from '../lib/services/thresholdMonitor';
 
 // Helper function to kill all child processes (synchronous for exit handler)
 function killAllProcesses() {
@@ -61,6 +62,10 @@ class AsterBot {
       // Initialize config manager and load configuration
       this.config = await configManager.initialize();
       console.log('✅ Configuration loaded');
+
+      // Initialize threshold monitor with actual config
+      thresholdMonitor.updateConfig(this.config);
+      console.log(`✅ Threshold monitor initialized with ${Object.keys(this.config.symbols).length} symbols`);
 
       // Initialize Rate Limit Manager with config
       const rateLimitConfig = this.config.global.rateLimit || {};
@@ -349,6 +354,11 @@ class AsterBot {
         this.statusBroadcaster.logActivity(`Blocked: ${data.symbol} ${data.side} - ${data.blockType}`);
       });
 
+      // Listen for threshold updates and broadcast to UI
+      thresholdMonitor.on('thresholdUpdate', (thresholdUpdate: any) => {
+        this.statusBroadcaster.broadcastThresholdUpdate(thresholdUpdate);
+      });
+
       this.hunter.on('positionOpened', (data: any) => {
         console.log(`📈 Position opened: ${data.symbol} ${data.side} qty=${data.quantity}`);
         this.positionManager?.onNewPosition(data);
@@ -468,6 +478,10 @@ class AsterBot {
         this.hunter.updateConfig(newConfig);
         console.log('✅ Hunter config updated');
       }
+
+      // Update threshold monitor with new config
+      thresholdMonitor.updateConfig(newConfig);
+      console.log('✅ Threshold monitor config updated');
 
       // Update PositionManager with new config
       if (this.positionManager) {

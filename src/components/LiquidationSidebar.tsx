@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef, useLayoutEffect } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Activity, Flame, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
+import { Activity, Flame, TrendingUp, TrendingDown, AlertTriangle, Target, Zap } from 'lucide-react';
 import websocketService from '@/lib/services/websocketService';
 import { gsap } from 'gsap';
 
@@ -21,6 +21,19 @@ interface LiquidationEvent {
   // Computed fields
   volume: number;
   isHighVolume: boolean;
+
+  // Threshold data
+  thresholdStatus?: {
+    symbol: string;
+    longThreshold: number;
+    shortThreshold: number;
+    recentLongVolume: number;
+    recentShortVolume: number;
+    longProgress: number;
+    shortProgress: number;
+    timeWindow: number;
+    lastUpdate: number;
+  };
 }
 
 interface LiquidationSidebarProps {
@@ -33,10 +46,11 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [newEventIds, setNewEventIds] = useState<Set<string>>(new Set());
+  const [thresholdStatuses, setThresholdStatuses] = useState<Record<string, any>>({});
   const _containerRef = useRef<HTMLDivElement>(null);
   const prevEventsRef = useRef<LiquidationEvent[]>([]);
 
-  // Load historical liquidations on mount
+  // Load historical liquidations and threshold statuses on mount
   useEffect(() => {
     const loadHistoricalLiquidations = async () => {
       try {
@@ -72,7 +86,27 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
       }
     };
 
+    const loadThresholdStatuses = async () => {
+      try {
+        const response = await fetch('/api/thresholds');
+        if (response.ok) {
+          const result = await response.json();
+          if (result.success && result.data) {
+            const statusMap: Record<string, any> = {};
+            result.data.forEach((status: any) => {
+              statusMap[status.symbol] = status;
+            });
+            setThresholdStatuses(statusMap);
+            console.log(`Loaded threshold statuses for ${result.data.length} symbols`);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load threshold statuses:', error);
+      }
+    };
+
     loadHistoricalLiquidations();
+    loadThresholdStatuses();
   }, []); // Only run once on mount
 
   // Handle WebSocket messages for real-time updates
@@ -92,6 +126,14 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
           isHighVolume,
         };
 
+        // Update threshold status if included
+        if (liquidationData.thresholdStatus) {
+          setThresholdStatuses(prev => ({
+            ...prev,
+            [liquidationData.symbol]: liquidationData.thresholdStatus
+          }));
+        }
+
         // Mark this event as new for animation
         const eventId = `${liquidationData.symbol}-${liquidationData.eventTime}`;
         setNewEventIds(prev => new Set([...prev, eventId]));
@@ -110,6 +152,37 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
             return updated;
           });
         }, 2000);
+      } else if (message.type === 'threshold_update') {
+        // Handle direct threshold updates from cleanup timer
+        const thresholdData = message.data;
+        setThresholdStatuses(prev => {
+          const currentStatus = prev[thresholdData.symbol] || {};
+
+          // Update the specific side that changed
+          if (thresholdData.side === 'long') {
+            return {
+              ...prev,
+              [thresholdData.symbol]: {
+                ...currentStatus,
+                recentLongVolume: thresholdData.currentVolume,
+                longProgress: thresholdData.progress,
+                longThreshold: thresholdData.threshold,
+                lastUpdate: Date.now(),
+              }
+            };
+          } else {
+            return {
+              ...prev,
+              [thresholdData.symbol]: {
+                ...currentStatus,
+                recentShortVolume: thresholdData.currentVolume,
+                shortProgress: thresholdData.progress,
+                shortThreshold: thresholdData.threshold,
+                lastUpdate: Date.now(),
+              }
+            };
+          }
+        });
       }
     };
 
@@ -148,6 +221,26 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
     return `$${volume.toFixed(0)}`;
   };
 
+  const formatThresholdProgress = (current: number, threshold: number): string => {
+    return `${formatVolume(current)} / ${formatVolume(threshold)}`;
+  };
+
+  const getProgressColor = (progress: number): string => {
+    if (progress >= 90) return 'text-red-400 font-bold';
+    if (progress >= 75) return 'text-orange-400 font-semibold';
+    if (progress >= 50) return 'text-yellow-400 font-medium';
+    if (progress >= 25) return 'text-blue-400';
+    return 'text-muted-foreground/70';
+  };
+
+  const getProgressBarColor = (progress: number): string => {
+    if (progress >= 90) return 'bg-red-500';
+    if (progress >= 75) return 'bg-orange-500';
+    if (progress >= 50) return 'bg-yellow-500';
+    if (progress >= 25) return 'bg-blue-500';
+    return 'bg-muted-foreground/30';
+  };
+
 
   const getVolumeColor = (volume: number): string => {
     if (volume >= 5000000) return 'bg-yellow-500/30 text-yellow-300 border border-yellow-400/60 shadow-lg shadow-yellow-500/20'; // $5M+
@@ -181,6 +274,152 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
               {isConnected ? 'Live' : 'Offline'}
             </Badge>
           </div>
+        </div>
+
+        {/* Threshold Progress Section */}
+        <div className="border-b p-2 flex-shrink-0 bg-card/30 backdrop-blur-sm">
+          <div className="flex items-center gap-1.5 mb-2">
+            <Target className="h-3 w-3 text-muted-foreground" />
+            <span className="text-xs font-medium text-muted-foreground">Thresholds (60s)</span>
+          </div>
+
+          {Object.keys(thresholdStatuses).length > 0 ? (
+            <div className="space-y-1.5 max-h-40 overflow-y-auto scrollbar-hide transition-all duration-300">
+              {Object.entries(thresholdStatuses)
+                .filter(([_, status]: [string, any]) => status.longThreshold > 0 || status.shortThreshold > 0)
+                .sort(([_, statusA]: [string, any], [__, statusB]: [string, any]) => {
+                  // Enhanced sorting: highest progress first, then by activity, then alphabetical
+                  const maxProgressA = Math.max(statusA.longProgress || 0, statusA.shortProgress || 0);
+                  const maxProgressB = Math.max(statusB.longProgress || 0, statusB.shortProgress || 0);
+
+                  // If one has significantly higher progress, prioritize it
+                  if (Math.abs(maxProgressA - maxProgressB) > 5) {
+                    return maxProgressB - maxProgressA;
+                  }
+
+                  // If progress is similar, prioritize recent activity (higher recent volume)
+                  const totalVolumeA = (statusA.recentLongVolume || 0) + (statusA.recentShortVolume || 0);
+                  const totalVolumeB = (statusB.recentLongVolume || 0) + (statusB.recentShortVolume || 0);
+
+                  if (totalVolumeA !== totalVolumeB) {
+                    return totalVolumeB - totalVolumeA;
+                  }
+
+                  // Finally, sort by progress again, then alphabetical
+                  if (maxProgressA !== maxProgressB) {
+                    return maxProgressB - maxProgressA;
+                  }
+
+                  return statusA.symbol.localeCompare(statusB.symbol);
+                })
+                // Show all symbols, not just top 5
+                .map(([symbol, status]: [string, any]) => {
+                  const maxProgress = Math.max(status.longProgress || 0, status.shortProgress || 0);
+                  const isHot = maxProgress >= 50; // Hot when >= 50% progress
+                  const isVeryHot = maxProgress >= 80; // Very hot when >= 80% progress
+                  const hasRecentActivity = (status.recentLongVolume || 0) + (status.recentShortVolume || 0) > 0;
+
+                  return (
+                    <div
+                      key={symbol}
+                      className={`space-y-1 transition-all duration-300 rounded-md p-1.5 ${
+                        isVeryHot
+                          ? 'bg-red-500/10 border border-red-500/20 shadow-sm'
+                          : isHot
+                            ? 'bg-orange-500/8 border border-orange-500/15'
+                            : hasRecentActivity
+                              ? 'bg-blue-500/5 border border-blue-500/10'
+                              : 'hover:bg-muted/20'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs font-medium text-foreground/80">
+                            {symbol.replace('USDT', '')}
+                          </span>
+                          {isVeryHot && (
+                            <Flame className="h-2.5 w-2.5 text-red-400 animate-pulse" />
+                          )}
+                          {isHot && !isVeryHot && (
+                            <Zap className="h-2.5 w-2.5 text-orange-400" />
+                          )}
+                          {hasRecentActivity && !isHot && (
+                            <Activity className="h-2 w-2 text-blue-400" />
+                          )}
+                        </div>
+                        <span className={`text-[10px] font-medium ${
+                          isVeryHot ? 'text-red-400' : isHot ? 'text-orange-400' : 'text-muted-foreground/70'
+                        }`}>
+                          {maxProgress.toFixed(0)}%
+                        </span>
+                      </div>
+
+                      {/* Long Progress */}
+                      {status.longThreshold > 0 && (
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1">
+                              <TrendingUp className="h-2.5 w-2.5 text-green-400" />
+                              <span className="text-[10px] text-green-400 font-medium">LONG</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className={`text-[10px] ${getProgressColor(status.longProgress || 0)}`}>
+                                {(status.longProgress || 0).toFixed(0)}%
+                              </span>
+                              {status.longProgress >= 80 && (
+                                <Zap className="h-2.5 w-2.5 text-yellow-400 animate-pulse" />
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 text-[9px] text-muted-foreground/70">
+                            <span>{formatThresholdProgress(status.recentLongVolume || 0, status.longThreshold)}</span>
+                          </div>
+                          <div className="w-full bg-muted/30 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-300 ${getProgressBarColor(status.longProgress || 0)}`}
+                              style={{ width: `${Math.min(100, status.longProgress || 0)}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Short Progress */}
+                      {status.shortThreshold > 0 && (
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1">
+                              <TrendingDown className="h-2.5 w-2.5 text-red-400" />
+                              <span className="text-[10px] text-red-400 font-medium">SHORT</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className={`text-[10px] ${getProgressColor(status.shortProgress || 0)}`}>
+                                {(status.shortProgress || 0).toFixed(0)}%
+                              </span>
+                              {status.shortProgress >= 80 && (
+                                <Zap className="h-2.5 w-2.5 text-yellow-400 animate-pulse" />
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 text-[9px] text-muted-foreground/70">
+                            <span>{formatThresholdProgress(status.recentShortVolume || 0, status.shortThreshold)}</span>
+                          </div>
+                          <div className="w-full bg-muted/30 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-300 ${getProgressBarColor(status.shortProgress || 0)}`}
+                              style={{ width: `${Math.min(100, status.shortProgress || 0)}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          ) : (
+            <div className="text-center py-2 text-muted-foreground text-[10px]">
+              No symbols configured
+            </div>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-hide">
           {isLoading ? (
