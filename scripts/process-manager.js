@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-/* eslint-disable @typescript-eslint/no-require-imports */
-/* eslint-disable @typescript-eslint/no-unused-vars */
+ 
+ 
 
 const { spawn } = require('child_process');
 const os = require('os');

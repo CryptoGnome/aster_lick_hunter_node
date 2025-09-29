@@ -138,5 +138,5 @@ export function useErrorToasts(customWsUrl?: string) {
         ws.close();
       }
     };
-  }, [wsUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wsUrl]);  
 }

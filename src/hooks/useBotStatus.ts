@@ -174,7 +174,7 @@ export function useBotStatus(customUrl?: string): UseBotStatusReturn {
         ws.close();
       }
     };
-  }, [url]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url]);  
 
   return {
     status,

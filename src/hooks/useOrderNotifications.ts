@@ -266,5 +266,5 @@ export function useOrderNotifications(customWsUrl?: string) {
         ws.close();
       }
     };
-  }, [wsUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wsUrl]);  
 }

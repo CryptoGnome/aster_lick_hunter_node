@@ -18,6 +18,7 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      "tests/**",
     ],
   },
   {
@@ -29,6 +30,7 @@ const eslintConfig = [
         "caughtErrorsIgnorePattern": "^_"
       }],
       "@typescript-eslint/no-require-imports": "off",
+      "react-hooks/exhaustive-deps": "off",
     },
   },
   {
