@@ -12,7 +12,7 @@ global.fetch = jest.fn();
 
 // Mock ConfigProvider
 jest.mock('@/components/ConfigProvider', () => {
-  const React = require('react');
+  const _React = require('react');
   return {
     __esModule: true,
     default: ({ children }: any) => children,

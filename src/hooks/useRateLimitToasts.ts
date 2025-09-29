@@ -19,27 +19,44 @@ interface ToastMessage {
 }
 
 export function useRateLimitToasts() {
-  const displayedToasts = useRef<Set<string>>(new Set());
+  const processedToasts = useRef<Map<string, number>>(new Map());
+  const cleanupTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    // Clean up old processed toasts periodically
+    const startCleanupTimer = () => {
+      cleanupTimerRef.current = setInterval(() => {
+        const now = Date.now();
+        const expiredKeys: string[] = [];
+        processedToasts.current.forEach((timestamp, key) => {
+          // Remove toasts older than 5 seconds
+          if (now - timestamp > 5000) {
+            expiredKeys.push(key);
+          }
+        });
+        expiredKeys.forEach(key => processedToasts.current.delete(key));
+      }, 10000); // Clean up every 10 seconds
+    };
+
+    startCleanupTimer();
+
     const handleMessage = (message: ToastMessage) => {
       if (message.type === 'toast' && message.data) {
         const toastData = message.data;
 
         // Create a unique key for this toast to avoid duplicates
-        const toastKey = `${toastData.type}-${toastData.title}-${Date.now()}`;
+        const toastKey = `${toastData.type}-${toastData.title}-${toastData.message}`;
 
-        // Skip if we've recently shown this exact toast
-        if (displayedToasts.current.has(toastKey)) {
-          return;
+        // Check if we've recently processed this toast
+        if (processedToasts.current.has(toastKey)) {
+          const lastProcessed = processedToasts.current.get(toastKey) || 0;
+          if (Date.now() - lastProcessed < 2000) { // Skip if processed within last 2 seconds
+            return;
+          }
         }
 
-        displayedToasts.current.add(toastKey);
-
-        // Remove from set after a delay to allow future similar toasts
-        setTimeout(() => {
-          displayedToasts.current.delete(toastKey);
-        }, 2000);
+        // Mark as processed
+        processedToasts.current.set(toastKey, Date.now());
 
         // Display the toast based on type
         switch (toastData.type) {
@@ -78,7 +95,20 @@ export function useRateLimitToasts() {
     // Add WebSocket message handler
     const cleanup = websocketService.addMessageHandler(handleMessage);
 
-    return cleanup;
+    return () => {
+      // Clean up message handler
+      cleanup();
+
+      // Clear cleanup timer
+      if (cleanupTimerRef.current) {
+        clearInterval(cleanupTimerRef.current);
+        cleanupTimerRef.current = null;
+      }
+
+      // Clear processed toasts
+      const toasts = processedToasts.current;
+      toasts.clear();
+    };
   }, []);
 
   return null;

@@ -1,5 +1,5 @@
 import { Config } from '../../src/lib/bot/config';
-import { LiquidationEvent, OrderBook, Position, MarkPriceData } from '../../src/lib/types';
+import { LiquidationEvent, OrderBook, Position } from '../../src/lib/types';
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 

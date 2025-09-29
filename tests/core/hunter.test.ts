@@ -29,7 +29,7 @@ async function testHunterInitialization() {
   await summary.run('Paper mode configuration', async () => {
     const config = createMockConfig();
     config.global.paperMode = true;
-    const hunter = new Hunter(config.symbols, config.api, true);
+    const _hunter = new Hunter(config.symbols, config.api, true);
     assert(hunter !== null, 'Hunter should work in paper mode');
   });
 
@@ -42,7 +42,7 @@ async function testLiquidationProcessing() {
 
   await summary.run('Process valid liquidation event', async () => {
     const config = createMockConfig();
-    const hunter = new Hunter(config.symbols, config.api, true);
+    const _hunter = new Hunter(config.symbols, config.api, true);
 
     const liquidation = createMockLiquidation({
       symbol: 'BTCUSDT',
@@ -60,7 +60,7 @@ async function testLiquidationProcessing() {
   await summary.run('Filter low volume liquidations', async () => {
     const config = createMockConfig();
     config.symbols.BTCUSDT.volumeThresholdUSDT = 100000;
-    const hunter = new Hunter(config.symbols, config.api, true);
+    const _hunter = new Hunter(config.symbols, config.api, true);
 
     const liquidation = createMockLiquidation({
       symbol: 'BTCUSDT',
@@ -110,7 +110,7 @@ async function testOrderPlacement() {
   });
 
   await summary.run('Validate order parameters', async () => {
-    const symbol = 'BTCUSDT';
+    const _symbol = 'BTCUSDT';
     const price = 50000;
     const quantity = 0.001;
     const notional = price * quantity;
@@ -196,10 +196,10 @@ async function testWebSocketConnection() {
         o: createMockLiquidation()
       };
 
-      let messageReceived = false;
+      const _messageReceived = false;
       mockServer.on('connection', (ws) => {
         ws.on('message', () => {
-          messageReceived = true;
+          // messageReceived = true;
         });
       });
 
@@ -225,7 +225,7 @@ async function testPaperModeSimulation() {
     const config = createMockConfig();
     config.global.paperMode = true;
 
-    const hunter = new Hunter(config.symbols, config.api, true);
+    const _hunter = new Hunter(config.symbols, config.api, true);
 
     const mockLiquidation = createMockLiquidation({
       symbol: 'BTCUSDT',

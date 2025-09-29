@@ -14,6 +14,11 @@ export default function ErrorNotificationButton() {
       try {
         const response = await fetch('/api/errors');
         if (response.ok) {
+          const contentType = response.headers.get('content-type');
+          if (!contentType || !contentType.includes('application/json')) {
+            console.warn('Errors API returned non-JSON response');
+            return;
+          }
           const data = await response.json();
           const currentErrorCount = data.errors?.length || 0;
 
@@ -51,10 +56,10 @@ export default function ErrorNotificationButton() {
     >
       <div className="relative">
         <div className="absolute inset-0 bg-red-500 rounded-full animate-ping opacity-75"></div>
-        <div className="relative flex items-center justify-center w-14 h-14 bg-red-500 rounded-full shadow-lg hover:bg-red-600 transition-colors">
-          <Bug className="w-6 h-6 text-white" />
+        <div className="relative flex items-center justify-center w-8 h-8 bg-red-500 rounded-full shadow-lg hover:bg-red-600 transition-colors">
+          <Bug className="w-3 h-3 text-white" />
         </div>
-        <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-600 rounded-full animate-pulse"></div>
+        <div className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-600 rounded-full animate-pulse"></div>
       </div>
     </button>
   );

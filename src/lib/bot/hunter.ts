@@ -4,7 +4,7 @@ import { Config, LiquidationEvent, SymbolConfig } from '../types';
 import { getMarkPrice, getExchangeInfo } from '../api/market';
 import { placeOrder, setLeverage } from '../api/orders';
 import { calculateOptimalPrice, validateOrderParams, analyzeOrderBookDepth, getSymbolFilters } from '../api/pricing';
-import { getPositionSide } from '../api/positionMode';
+import { getPositionSide, getPositionMode } from '../api/positionMode';
 import { PositionTracker } from './positionManager';
 import { liquidationStorage } from '../services/liquidationStorage';
 import { vwapService } from '../services/vwapService';
@@ -33,6 +33,8 @@ export class Hunter extends EventEmitter {
   private pendingOrders: Map<string, { symbol: string, side: 'BUY' | 'SELL', timestamp: number }> = new Map(); // Track orders placed but not yet filled
   private lastTradeTimestamps: Map<string, { long: number; short: number }> = new Map(); // Track last trade per symbol/side
   private cleanupInterval: NodeJS.Timeout | null = null; // Periodic cleanup timer
+  private syncInterval: NodeJS.Timeout | null = null; // Position mode sync timer
+  private lastModeSync: number = Date.now(); // Track last mode sync time
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -213,12 +215,43 @@ export class Hunter extends EventEmitter {
     }
   }
 
+  // Synchronize position mode with the exchange
+  public async syncPositionMode(): Promise<void> {
+    if (!this.config.api.apiKey || !this.config.api.secretKey) {
+      console.log('Hunter: Skipping position mode sync - no API keys configured');
+      return;
+    }
+
+    try {
+      const actualMode = await getPositionMode(this.config.api);
+      if (actualMode !== this.isHedgeMode) {
+        console.log(`Hunter: Position mode mismatch detected. Local: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}, Exchange: ${actualMode ? 'HEDGE' : 'ONE-WAY'}`);
+        this.isHedgeMode = actualMode;
+        console.log(`Hunter: Position mode synchronized to: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'} mode`);
+      }
+      this.lastModeSync = Date.now(); // Update sync time
+    } catch (error) {
+      console.error('Hunter: Failed to sync position mode with exchange:', error);
+      // Keep current mode on error
+    }
+  }
+
   async start(): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
 
+    // Sync position mode on startup
+    await this.syncPositionMode();
+
     // Start periodic cleanup of stale pending orders (every 30 seconds)
     this.startPeriodicCleanup();
+
+    // Start periodic position mode sync (every 2 minutes instead of 5)
+    this.syncInterval = setInterval(() => {
+      this.syncPositionMode().catch(err =>
+        console.error('Hunter: Failed to sync position mode during periodic check:', err)
+      );
+    }, 2 * 60 * 1000);
 
     // Initialize symbol precision manager with exchange info
     try {
@@ -255,6 +288,13 @@ export class Hunter extends EventEmitter {
 
     // Stop periodic cleanup
     this.stopPeriodicCleanup();
+
+    // Stop periodic sync
+    if (this.syncInterval) {
+      clearInterval(this.syncInterval);
+      this.syncInterval = null;
+      console.log('Hunter: Stopped periodic position mode sync');
+    }
 
     if (this.ws) {
       this.ws.close();
@@ -768,9 +808,16 @@ export class Hunter extends EventEmitter {
 
       console.log(`Hunter: Calculated quantity for ${symbol}: margin=${tradeSizeUSDT} USDT (${side === 'BUY' ? 'long' : 'short'}), leverage=${symbolConfig.leverage}x, price=${currentPrice}, notional=${notionalUSDT} USDT, quantity=${quantity}`);
 
+      // Quick sanity check - ensure our mode is still in sync (if last sync was over 1 minute ago)
+      if (Date.now() - this.lastModeSync > 60000) {
+        console.log('Hunter: Position mode sync check needed (over 1 minute since last sync)');
+        await this.syncPositionMode();
+      }
+
       // Prepare order parameters
       const positionSide = getPositionSide(this.isHedgeMode, side);
       console.log(`Hunter: Using position mode: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}, side: ${side}, positionSide: ${positionSide}`);
+      console.log(`Hunter: Order params - Symbol: ${symbol}, Side: ${side}, PositionSide: ${positionSide}, Mode: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}`);
 
       const orderParams: any = {
         symbol,
@@ -807,45 +854,74 @@ export class Hunter extends EventEmitter {
       } catch (orderError: any) {
         // Check if this is a position mode error (-4061)
         if (orderError?.response?.data?.code === -4061) {
-          console.log(`Hunter: Position mode mismatch detected for ${symbol}, retrying with opposite mode...`);
+          console.log(`Hunter: Position mode error for ${symbol}. Checking exchange mode...`);
 
           // Remove temp tracking before retry
           this.removePendingOrder(tempTrackingId);
 
-          // Flip the position mode assumption and retry once
-          const originalMode = this.isHedgeMode;
-          this.isHedgeMode = !this.isHedgeMode;
-
-          // Recalculate position side with the new mode
-          const retryPositionSide = getPositionSide(this.isHedgeMode, side);
-          console.log(`Hunter: Retrying with position mode: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}, side: ${side}, positionSide: ${retryPositionSide}`);
-
-          // Update order params with new position side
-          orderParams.positionSide = retryPositionSide;
-
-          // Generate a new temp tracking ID for retry
-          const retryTrackingId = `retry_${Date.now()}_${symbol}_${side}`;
-          this.addPendingOrder(retryTrackingId, symbol, side);
-
           try {
-            // Retry the order with the new position mode
-            order = await placeOrder(orderParams, this.config.api);
+            // Query the actual position mode from exchange
+            const actualMode = await getPositionMode(this.config.api);
+            console.log(`Hunter: Exchange mode: ${actualMode ? 'HEDGE' : 'ONE-WAY'}, Local mode: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}`);
 
-            const displayPrice = orderType === 'LIMIT' ? ` at ${orderPrice}` : '';
-            console.log(`Hunter: Successfully placed ${orderType} ${side} order for ${symbol}${displayPrice} after position mode adjustment, orderId: ${order.orderId}`);
-            console.log(`Hunter: ✅ Position mode corrected to: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'} mode`);
+            // Only retry if modes actually differ
+            if (actualMode !== this.isHedgeMode) {
+              console.log(`Hunter: Mode mismatch detected! Updating local mode and retrying...`);
 
-            // Replace temp tracking with real order ID
-            this.removePendingOrder(retryTrackingId);
-            if (order.orderId) {
-              this.addPendingOrder(order.orderId.toString(), symbol, side);
+              // Update our mode to match exchange
+              this.isHedgeMode = actualMode;
+
+              // Recalculate position side with correct mode
+              const retryPositionSide = getPositionSide(this.isHedgeMode, side);
+              console.log(`Hunter: Retrying with corrected mode: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}, positionSide: ${retryPositionSide}`);
+
+              // Update order params
+              orderParams.positionSide = retryPositionSide;
+
+              // Create retry tracking
+              const retryTrackingId = `retry_${Date.now()}_${symbol}_${side}`;
+              this.addPendingOrder(retryTrackingId, symbol, side);
+
+              try {
+                // Retry the order
+                order = await placeOrder(orderParams, this.config.api);
+
+                const displayPrice = orderType === 'LIMIT' ? ` at ${orderPrice}` : '';
+                console.log(`Hunter: ✅ Order placed after mode correction for ${symbol}${displayPrice}, orderId: ${order.orderId}`);
+
+                // Replace tracking with real order ID
+                this.removePendingOrder(retryTrackingId);
+                if (order.orderId) {
+                  this.addPendingOrder(order.orderId.toString(), symbol, side);
+                }
+              } catch (retryError) {
+                console.error(`Hunter: Retry failed even with corrected mode. Error:`, retryError);
+                this.removePendingOrder(retryTrackingId);
+                throw retryError;
+              }
+            } else {
+              // Modes match - this is likely a position conflict or limit issue in HEDGE mode
+              console.warn(`Hunter: Position mode is correct (${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}), -4061 likely due to position limits or conflicts`);
+              console.warn(`Hunter: Symbol: ${symbol}, Side: ${side}, PositionSide: ${positionSide}`);
+              console.warn(`Hunter: This is often due to position limits, existing positions, or symbol-specific restrictions`);
+
+              // Remove temp tracking since order won't be placed
+              this.removePendingOrder(tempTrackingId);
+
+              // Don't re-throw - just return to prevent error DB logging
+              // This prevents the error from being logged to the error database
+              return;
             }
-          } catch (retryError) {
-            // Retry failed, restore original mode and clean up
-            console.error(`Hunter: Retry failed for ${symbol}, restoring original position mode`);
-            this.isHedgeMode = originalMode;
-            this.removePendingOrder(retryTrackingId);
-            throw retryError; // Re-throw for outer error handling
+          } catch (queryError) {
+            console.error('Hunter: Failed to query position mode from exchange:', queryError);
+            console.warn('Hunter: Cannot determine correct mode. Since we cannot verify, treating as non-critical.');
+
+            // Remove temp tracking since order won't be placed
+            this.removePendingOrder(tempTrackingId);
+
+            // Return instead of throwing to prevent error DB logging
+            // We can't determine the actual issue, so don't pollute error logs
+            return;
           }
         } else {
           // Not a position mode error, just clean up and re-throw
@@ -854,28 +930,31 @@ export class Hunter extends EventEmitter {
         }
       }
 
-      // Broadcast order placed event
-      if (this.statusBroadcaster) {
-        this.statusBroadcaster.broadcastOrderPlaced({
+      // Only broadcast and emit if order was successfully placed
+      if (order && order.orderId) {
+        // Broadcast order placed event
+        if (this.statusBroadcaster) {
+          this.statusBroadcaster.broadcastOrderPlaced({
+            symbol,
+            side,
+            orderType,
+            quantity,
+            price: orderType === 'LIMIT' ? orderPrice : undefined,
+            orderId: order.orderId?.toString(),
+          });
+        }
+
+        this.emit('positionOpened', {
           symbol,
           side,
-          orderType,
           quantity,
-          price: orderType === 'LIMIT' ? orderPrice : undefined,
-          orderId: order.orderId?.toString(),
+          price: orderType === 'LIMIT' ? orderPrice : entryPrice,
+          orderId: order.orderId,
+          leverage: symbolConfig.leverage,
+          orderType,
+          paperMode: false
         });
       }
-
-      this.emit('positionOpened', {
-        symbol,
-        side,
-        quantity,
-        price: orderType === 'LIMIT' ? orderPrice : entryPrice,
-        orderId: order.orderId,
-        leverage: symbolConfig.leverage,
-        orderType,
-        paperMode: false
-      });
 
     } catch (error: any) {
       // CRITICAL FIX: Remove pending order tracking when order placement fails

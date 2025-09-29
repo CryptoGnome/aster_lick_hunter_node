@@ -1,6 +1,5 @@
 # 🚀 Aster DEX Liquidation Hunter Bot
-<img width="1918" height="954" alt="image" src="https://github.com/user-attachments/assets/cfa2d243-ca66-4230-b834-1e558cb5ce0b" />
-
+<img width="1919" height="954" alt="image" src="https://github.com/user-attachments/assets/aab678aa-1e84-47e3-9e75-373acb78bad5" />
 
 > ⚠️ **OPEN BETA WARNING** - Please trade with caution! This software is in open beta.
 

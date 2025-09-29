@@ -11,7 +11,7 @@ import {
   assert,
   assertEqual,
   assertClose,
-  wait
+  wait as _wait
 } from '../utils/test-helpers';
 
 async function testPositionManagerInitialization() {
@@ -331,7 +331,7 @@ async function testBatchOrderFailureHandling() {
 
     const errors = ['Error 1', 'Error 2'];
     // Simulate processing errors
-    for (const error of errors) {
+    for (const _error of errors) {
       await mockErrorLogger.logTradingError();
     }
 

@@ -182,6 +182,13 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     setLoadingSymbols(true);
     try {
       const response = await fetch('/api/symbols');
+      if (!response.ok) {
+        throw new Error('Failed to fetch symbols');
+      }
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Invalid response type');
+      }
       const data = await response.json();
       if (data.symbols) {
         setAvailableSymbols(data.symbols);
@@ -241,10 +248,14 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     setLoadingDetails(true);
     try {
       const response = await fetch(`/api/symbol-details/${symbol}`);
-      const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch symbol details');
+        throw new Error('Failed to fetch symbol details');
       }
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Invalid response type');
+      }
+      const data = await response.json();
       setSymbolDetails(data);
     } catch (error) {
       console.error('Failed to fetch symbol details:', error);

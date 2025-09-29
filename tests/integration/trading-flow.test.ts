@@ -2,7 +2,7 @@
 
 import { Hunter } from '../../src/lib/bot/hunter';
 import { PositionManager } from '../../src/lib/bot/positionManager';
-import { loadConfig } from '../../src/lib/bot/config';
+// import { loadConfig } from '../../src/lib/bot/config';
 import {
   TestSummary,
   logSection,
@@ -176,7 +176,7 @@ async function testPaperModeFlow() {
 
   await summary.run('Simulate paper trades', async () => {
     const trades = [];
-    const mockLiquidation = createMockLiquidation({
+    const _mockLiquidation = createMockLiquidation({
       side: 'SELL',
       origQty: '1.0',
       price: '50000'
@@ -232,7 +232,7 @@ async function testErrorRecoveryFlow() {
 
   await summary.run('Handle connection loss during trade', async () => {
     let connected = true;
-    let hasOpenPosition = true;
+    const hasOpenPosition = true;
 
     connected = false;
 

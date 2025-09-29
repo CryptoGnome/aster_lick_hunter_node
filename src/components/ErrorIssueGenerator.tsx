@@ -220,7 +220,7 @@ export default function ErrorIssueGenerator({
     debugInfo += `*This debug information was automatically generated for AI-assisted debugging.*\n`;
 
     return debugInfo;
-  }, [error, systemInfo, similarErrors]);
+  }, [error, systemInfo, similarErrors, getGitHubLabels]);
 
   const generateIssueContent = React.useCallback(() => {
     setIsGenerating(true);

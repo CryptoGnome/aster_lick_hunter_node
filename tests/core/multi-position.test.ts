@@ -7,7 +7,7 @@ import {
   log,
   colors,
   createMockConfig,
-  createMockPosition,
+  createMockPosition as _createMockPosition,
   assert,
   assertEqual,
   wait
@@ -199,7 +199,7 @@ async function testMultiplePositions() {
 
       if (orders?.slOrderId) {
         const slOrder = mockOrders.find(o => o.orderId === orders.slOrderId);
-        const slQty = parseFloat(slOrder?.origQty || '0');
+        const _slQty = parseFloat(slOrder?.origQty || '0');
         assert(Math.abs(slQty - posAmt) < 0.00000001, `SL order quantity should match position for ${key}`);
         log(`  ${key}: Position=${posAmt}, SL Qty=${slQty}`, colors.gray);
       }
@@ -226,7 +226,7 @@ async function testMultiplePositions() {
     const orders = manager.positionOrders.get(firstPositionKey);
     if (orders?.slOrderId) {
       const slOrder = mockOrders.find(o => o.orderId === orders.slOrderId);
-      const slQty = parseFloat(slOrder?.origQty || '0');
+      const _slQty = parseFloat(slOrder?.origQty || '0');
       // Note: In real implementation, orders would be cancelled and replaced
       // For this test, we just verify the detection
       log(`  Position size changed to ${posAmt}, order adjustment would be triggered`, colors.gray);
@@ -236,8 +236,8 @@ async function testMultiplePositions() {
   await summary.run('Close one position - preserve other position orders', async () => {
     const secondPositionKey = Array.from(manager.currentPositions.keys())[1];
     const secondPositionOrders = manager.positionOrders.get(secondPositionKey);
-    const secondSlOrderId = secondPositionOrders?.slOrderId;
-    const secondTpOrderId = secondPositionOrders?.tpOrderId;
+    const _secondSlOrderId = secondPositionOrders?.slOrderId;
+    const _secondTpOrderId = secondPositionOrders?.tpOrderId;
 
     // Close first position
     mockPositions[0].positionAmt = '0';

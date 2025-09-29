@@ -7,8 +7,8 @@ import {
   log,
   colors,
   assert,
-  assertEqual,
-  wait
+  assertEqual as _assertEqual,
+  wait as _wait
 } from '../utils/test-helpers';
 
 async function testErrorLogging() {

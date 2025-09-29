@@ -9,7 +9,7 @@ import {
   createMockConfig,
   assert,
   assertEqual,
-  wait
+  wait as _wait
 } from '../utils/test-helpers';
 
 // Create a testable version of PositionManager

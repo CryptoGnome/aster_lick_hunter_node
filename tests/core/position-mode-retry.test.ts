@@ -3,14 +3,14 @@
 import { Hunter } from '../../src/lib/bot/hunter';
 import {
   TestSummary,
-  logSection,
+  logSection as _logSection,
   log,
   createMockConfig,
   assert
 } from '../utils/test-helpers';
 import * as ordersApi from '../../src/lib/api/orders';
-import * as positionModeApi from '../../src/lib/api/positionMode';
-import { Config } from '../../src/lib/types';
+// import * as positionModeApi from '../../src/lib/api/positionMode';
+// import { Config } from '../../src/lib/types';
 
 const summary = new TestSummary('Position Mode Retry Tests');
 
@@ -58,16 +58,16 @@ async function runTests() {
 
     // Mock other required functions
     const mockSetLeverage = async () => ({ leverage: 20 });
-    const mockGetSymbolFilters = async () => ({
+    const _mockGetSymbolFilters = async () => ({
       filters: [
         { filterType: 'MIN_NOTIONAL', notional: '5' },
         { filterType: 'PRICE_FILTER', tickSize: '0.001' },
         { filterType: 'LOT_SIZE', stepSize: '0.001' }
       ]
     });
-    const mockGetMarkPrice = async () => ({ markPrice: '1.88641469' });
-    const mockCalculateOptimalPrice = async () => 1.88641469;
-    const mockValidateOrderParams = async () => ({ valid: true });
+    const _mockGetMarkPrice = async () => ({ markPrice: '1.88641469' });
+    const _mockCalculateOptimalPrice = async () => 1.88641469;
+    const _mockValidateOrderParams = async () => ({ valid: true });
 
     (ordersApi as any).setLeverage = mockSetLeverage;
 

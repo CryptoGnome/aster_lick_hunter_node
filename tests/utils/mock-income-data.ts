@@ -1,4 +1,5 @@
-import { IncomeRecord, IncomeType, DailyPnL } from '@/lib/api/income';
+import { IncomeRecord, DailyPnL } from '@/lib/api/income';
+// import { IncomeType } from '@/lib/api/income';
 
 /**
  * Generate mock income records for testing
@@ -82,7 +83,8 @@ export class MockIncomeDataGenerator {
 
       // Add funding fee records (every 8 hours)
       if (includeFunding) {
-        for (let fundingHour of [0, 8, 16]) {
+        const fundingHours = [0, 8, 16];
+        for (const fundingHour of fundingHours) {
           const fundingTime = new Date(currentDate);
           fundingTime.setHours(fundingHour, 0, 0, 0);
 

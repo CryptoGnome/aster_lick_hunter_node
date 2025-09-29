@@ -35,8 +35,14 @@ export default function ConfigProvider({ children }: { children: React.ReactNode
     try {
       const response = await fetch('/api/config');
       if (response.ok) {
-        const data = await response.json();
-        setConfig(data);
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await response.json();
+          setConfig(data);
+        } else {
+          console.warn('Config API returned non-JSON response');
+          throw new Error('Invalid response type');
+        }
       } else if (response.status === 401) {
         // Not authenticated, use default config
         const defaultConfig: Config = {

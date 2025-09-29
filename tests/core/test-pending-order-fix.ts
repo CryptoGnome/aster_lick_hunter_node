@@ -14,7 +14,7 @@ import {
   colors,
   assert,
   assertEqual,
-  wait
+  wait as _wait
 } from '../utils/test-helpers';
 
 async function testPendingOrderFix() {

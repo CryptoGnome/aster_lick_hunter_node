@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* eslint-disable @typescript-eslint/no-require-imports */
+ 
 
 /**
  * Script to generate test errors for the error logging system

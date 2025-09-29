@@ -165,8 +165,16 @@ Connects to Aster Finance exchange API (`https://fapi.asterdex.com`):
 The project includes a comprehensive test suite:
 - **Unit Tests**: Individual component testing (Hunter, PositionManager, services)
 - **Integration Tests**: End-to-end trading flow validation
+- **API Tests**: Income API and position closing functionality
+- **Performance Tests**: Metrics tracking and performance monitoring
 - **Test Helpers** (`tests/utils/test-helpers.ts`): Utilities for test execution
 - **Run All Script** (`tests/run-all.ts`): Orchestrates test execution with detailed reporting
+
+Additional specialized tests:
+- **Multi-position handling**: Tests for managing multiple positions simultaneously
+- **Pending orders**: Hunter's pending order management
+- **Position mode sync**: Exchange position mode synchronization
+- **Retry logic**: Position mode setting retry mechanisms
 
 ## Error Handling
 
@@ -251,6 +259,8 @@ The Next.js application uses App Router with key pages:
 **NEVER** start the development server or run `npm run dev` or any server commands. The user manages the server themselves and starting additional servers can cause port conflicts and issues.
 
 **SECURITY NOTE**: User configuration is stored in `config.user.json` which is automatically excluded from git. Never commit API keys or sensitive configuration to version control.
+
+**TYPE CHECKING**: Always run `npx tsc --noEmit` to check for TypeScript errors after making changes to ensure type safety.
 
 ## Making API Calls to Aster Finance Exchange
 
@@ -390,3 +400,205 @@ The API includes intelligent rate limit management:
 - Use paper mode (`"paperMode": true` in config.user.json) when testing to avoid real trades
 - API responses include detailed error information in `error.response?.data` for debugging
 - The rate limit manager automatically handles 429 errors and retries requests
+
+## Git Branching Strategy
+
+This project follows a **Git Flow Lite** strategy optimized for small teams and continuous deployment:
+
+### Branch Structure
+```
+main (production-ready code)
+  └── dev (integration/staging branch)
+         └── feature/feature-name (new features)
+         └── fix/bug-description (bug fixes)
+         └── hotfix/critical-issue (urgent production fixes)
+```
+
+### Branch Types and Naming Conventions
+
+1. **main**: Production branch
+   - Always deployable
+   - Protected branch - requires PR to merge
+   - Never commit directly to main
+
+2. **dev**: Development/staging branch
+   - Integration branch for features
+   - Regularly synced with main
+   - Default branch for PRs from feature branches
+
+3. **feature/**: New features
+   - Created from: `dev`
+   - Merge back to: `dev`
+   - Naming: `feature/short-description` (e.g., `feature/add-trailing-stop`)
+
+4. **fix/**: Non-critical bug fixes
+   - Created from: `dev`
+   - Merge back to: `dev`
+   - Naming: `fix/issue-number-description` (e.g., `fix/42-order-validation`)
+
+5. **hotfix/**: Critical production fixes
+   - Created from: `main`
+   - Merge back to: `main` AND `dev`
+   - Naming: `hotfix/critical-issue` (e.g., `hotfix/api-auth-failure`)
+
+### Branch Management Commands
+
+#### Initial Setup (one-time)
+```bash
+# Create and push dev branch from main
+git checkout main
+git pull origin main
+git checkout -b dev
+git push -u origin dev
+
+# Set dev as default branch on GitHub
+gh repo edit --default-branch dev
+```
+
+#### Feature Development Workflow
+```bash
+# 1. Start a new feature
+git checkout dev
+git pull origin dev
+git checkout -b feature/my-feature
+
+# 2. Work on the feature
+# ... make changes, commit regularly ...
+
+# 3. Keep feature branch updated
+git fetch origin
+git rebase origin/dev  # or merge if preferred
+
+# 4. Push feature branch
+git push -u origin feature/my-feature
+
+# 5. Create PR to dev
+gh pr create --base dev --title "feat: add my feature" --body "Description of changes"
+
+# 6. After PR is merged, clean up
+git checkout dev
+git pull origin dev
+git branch -d feature/my-feature
+git push origin --delete feature/my-feature
+```
+
+#### Syncing dev with main
+```bash
+# Regular sync (after main has been updated)
+git checkout main
+git pull origin main
+git checkout dev
+git merge main
+git push origin dev
+```
+
+#### Releasing to Production
+```bash
+# 1. Ensure dev is stable and tested
+git checkout dev
+git pull origin dev
+
+# 2. Create PR from dev to main
+gh pr create --base main --head dev --title "Release: v1.2.0" --body "Release notes..."
+
+# 3. After PR is approved and merged
+git checkout main
+git pull origin main
+git tag -a v1.2.0 -m "Release version 1.2.0"
+git push origin v1.2.0
+```
+
+#### Hotfix Workflow
+```bash
+# 1. Create hotfix from main
+git checkout main
+git pull origin main
+git checkout -b hotfix/critical-fix
+
+# 2. Make the fix
+# ... implement fix ...
+
+# 3. Push and create PR to main
+git push -u origin hotfix/critical-fix
+gh pr create --base main --title "hotfix: fix critical issue" --body "Urgent fix for..."
+
+# 4. After merging to main, also merge to dev
+git checkout dev
+git pull origin dev
+git merge main
+git push origin dev
+
+# 5. Clean up
+git branch -d hotfix/critical-fix
+git push origin --delete hotfix/critical-fix
+```
+
+### Branch Cleanup
+
+#### List and Review Branches
+```bash
+# View all local branches
+git branch
+
+# View all remote branches
+git branch -r
+
+# View branches merged into main
+git branch -r --merged origin/main
+
+# View unmerged branches
+git branch -r --no-merged origin/main
+```
+
+#### Clean Up Stale Branches
+```bash
+# Delete local branches that have been merged
+git branch --merged | grep -v "\*\|main\|dev" | xargs -n 1 git branch -d
+
+# Prune deleted remote branches from local
+git remote prune origin
+
+# Delete multiple remote branches
+git push origin --delete branch1 branch2 branch3
+
+# Delete remote branches that are fully merged to main (careful!)
+git branch -r --merged origin/main | grep -v main | grep -v dev | sed 's/origin\///' | xargs -n 1 git push origin --delete
+```
+
+### Commit Message Conventions
+
+Follow conventional commits format:
+- `feat:` New feature
+- `fix:` Bug fix
+- `docs:` Documentation changes
+- `style:` Code style changes (formatting, etc.)
+- `refactor:` Code refactoring
+- `test:` Test additions or fixes
+- `chore:` Maintenance tasks
+- `perf:` Performance improvements
+
+Examples:
+```bash
+git commit -m "feat: add WebSocket reconnection logic"
+git commit -m "fix: resolve order validation error for small quantities"
+git commit -m "docs: update API authentication examples"
+```
+
+### Branch Protection Rules
+
+1. **Never delete**: `main`, `dev`
+2. **Require PR reviews**: For merges to `main` and `dev`
+3. **Run tests**: CI/CD should pass before merging
+4. **No force push**: To `main` or `dev`
+5. **Linear history**: Prefer rebase for feature branches, merge for releases
+
+### Important Notes for Claude Code
+
+When working with branches:
+1. Always check current branch before making changes: `git branch --show-current`
+2. Never force push to main or dev branches
+3. Always create feature branches from dev, not main
+4. Keep feature branches small and focused
+5. Regularly sync feature branches with dev to avoid conflicts
+6. Clean up merged branches to keep the repository tidy
+7. Use descriptive branch names that indicate the purpose

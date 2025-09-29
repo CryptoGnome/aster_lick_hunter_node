@@ -47,11 +47,9 @@ export default function DashboardPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [markPrices, setMarkPrices] = useState<Record<string, number>>({});
 
-  // Initialize order notifications with configurable URL
-  useOrderNotifications(wsUrl || undefined);
-
-  // Initialize error toasts with configurable URL
-  useErrorToasts(wsUrl || undefined);
+  // Initialize toast notifications
+  useOrderNotifications();
+  useErrorToasts();
 
   useEffect(() => {
     // Update websocketService URL when wsUrl is available

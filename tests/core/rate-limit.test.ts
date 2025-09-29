@@ -9,7 +9,7 @@ import {
   assert,
   assertEqual,
   assertClose,
-  wait
+  wait as _wait
 } from '../utils/test-helpers';
 
 async function testRateLimitInitialization() {
@@ -17,8 +17,8 @@ async function testRateLimitInitialization() {
   const summary = new TestSummary();
 
   await summary.run('Create RateLimitManager instance', async () => {
-    const manager = RateLimitManager.getInstance();
-    assert(manager !== null, 'RateLimitManager should be created');
+    const _manager = RateLimitManager.getInstance();
+    assert(_manager !== null, 'RateLimitManager should be created');
   });
 
   await summary.run('Singleton pattern', async () => {
@@ -28,7 +28,7 @@ async function testRateLimitInitialization() {
   });
 
   await summary.run('Initialize with default limits', async () => {
-    const manager = RateLimitManager.getInstance();
+    const _manager = RateLimitManager.getInstance();
     const limits = {
       orderLimit: 300,
       weightLimit: 1200,

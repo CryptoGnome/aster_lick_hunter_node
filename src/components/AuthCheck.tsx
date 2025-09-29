@@ -11,6 +11,19 @@ export function AuthCheck() {
       try {
         // Check if password is required
         const response = await fetch('/api/auth/check');
+
+        // Check if response is JSON
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          console.warn('Auth check returned non-JSON response, skipping auth check');
+          return;
+        }
+
+        if (!response.ok) {
+          console.warn('Auth check failed with status:', response.status);
+          return;
+        }
+
         const data = await response.json();
 
         // Set cookie to indicate if password is required

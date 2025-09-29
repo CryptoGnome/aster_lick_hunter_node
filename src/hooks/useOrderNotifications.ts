@@ -1,17 +1,16 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
-import { useWebSocketConfig } from '@/providers/WebSocketProvider';
+import websocketService from '@/lib/services/websocketService';
 
 interface OrderEvent {
   type: string;
   data: any;
 }
 
-export function useOrderNotifications(customWsUrl?: string) {
-  const { wsUrl: defaultWsUrl } = useWebSocketConfig();
-  const wsUrl = customWsUrl || defaultWsUrl;
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+export function useOrderNotifications() {
+  // Use a ref to track processed messages and prevent duplicates
+  const processedMessages = useRef<Map<string, number>>(new Map());
+  const cleanupTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const formatPrice = (price: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -39,28 +38,47 @@ export function useOrderNotifications(customWsUrl?: string) {
     return pnl >= 0 ? `+${formatted}` : `-${formatted.replace('-', '')}`;
   };
 
-  const connect = useCallback(() => {
-    // Prevent multiple connection attempts
-    if (wsRef.current?.readyState === WebSocket.OPEN ||
-        wsRef.current?.readyState === WebSocket.CONNECTING) {
-      return;
-    }
+  useEffect(() => {
+    // Clean up old processed messages periodically
+    const startCleanupTimer = () => {
+      cleanupTimerRef.current = setInterval(() => {
+        const now = Date.now();
+        const expiredKeys: string[] = [];
+        processedMessages.current.forEach((timestamp, key) => {
+          // Remove messages older than 5 seconds
+          if (now - timestamp > 5000) {
+            expiredKeys.push(key);
+          }
+        });
+        expiredKeys.forEach(key => processedMessages.current.delete(key));
+      }, 10000); // Clean up every 10 seconds
+    };
 
-    // Clear any existing reconnect timeout
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
+    startCleanupTimer();
 
-    try {
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+    // Add WebSocket message handler
+    const cleanup = websocketService.addMessageHandler((message: OrderEvent) => {
+      try {
+        // Only process order-related messages
+        if (!message.type || typeof message.type !== 'string') {
+          return;
+        }
 
-      ws.onmessage = (event) => {
-        try {
-          const message: OrderEvent = JSON.parse(event.data);
+        // Create a unique key for deduplication
+        const shortKey = `${message.type}-${message.data?.symbol || ''}-${message.data?.orderId || ''}`;
 
-          switch (message.type) {
+        // Check if we've recently processed this message
+        if (processedMessages.current.has(shortKey)) {
+          const lastProcessed = processedMessages.current.get(shortKey) || 0;
+          if (Date.now() - lastProcessed < 1000) { // Skip if processed within last second
+            return;
+          }
+        }
+
+        // Mark as processed
+        processedMessages.current.set(shortKey, Date.now());
+
+        switch (message.type) {
             case 'order_placed': {
               const { symbol, side, orderType, quantity, price } = message.data;
               const priceStr = price ? ` at $${formatPrice(price)}` : '';
@@ -210,61 +228,27 @@ export function useOrderNotifications(customWsUrl?: string) {
               break;
             }
 
-            default:
-              break;
-          }
-        } catch (error) {
-          console.error('Failed to parse order notification:', error);
+          default:
+            break;
         }
-      };
-
-      ws.onclose = () => {
-        wsRef.current = null;
-        // Only reconnect if the component is still mounted
-        if (!reconnectTimeoutRef.current) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectTimeoutRef.current = null;
-            connect();
-          }, 3000);
-        }
-      };
-
-      ws.onerror = () => {
-        // WebSocket errors don't provide useful information, just log connection issue
-        if (ws.readyState === WebSocket.CONNECTING) {
-          console.log('Order notifications WebSocket: Connection failed');
-        }
-      };
-
-    } catch (error) {
-      console.error('Failed to connect order notifications:', error);
-      // Only reconnect if component is still mounted
-      if (!reconnectTimeoutRef.current) {
-        reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectTimeoutRef.current = null;
-          connect();
-        }, 3000);
+      } catch (error) {
+        console.error('Failed to process order notification:', error);
       }
-    }
-  }, [wsUrl]);
-
-  useEffect(() => {
-    // Small delay to prevent race conditions during navigation
-    const connectTimeout = setTimeout(() => {
-      connect();
-    }, 100);
+    });
 
     return () => {
-      clearTimeout(connectTimeout);
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+      // Clean up message handler
+      cleanup();
+
+      // Clear cleanup timer
+      if (cleanupTimerRef.current) {
+        clearInterval(cleanupTimerRef.current);
+        cleanupTimerRef.current = null;
       }
-      if (wsRef.current) {
-        const ws = wsRef.current;
-        wsRef.current = null;
-        ws.close();
-      }
+
+      // Clear processed messages
+      const messages = processedMessages.current;
+      messages.clear();
     };
-  }, [wsUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // No dependencies needed since websocketService is a singleton
 }

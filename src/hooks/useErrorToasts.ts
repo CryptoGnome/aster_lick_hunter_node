@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 import {
   showWebSocketError,
   showApiError,
@@ -7,10 +7,10 @@ import {
   showErrorToast,
   ErrorDetails
 } from '@/lib/utils/errorToast';
-import { useWebSocketConfig } from '@/providers/WebSocketProvider';
+import websocketService from '@/lib/services/websocketService';
 
 interface ErrorEvent {
-  type: 'websocket_error' | 'api_error' | 'trading_error' | 'config_error' | 'general_error';
+  type: string;
   data: {
     title: string;
     message: string;
@@ -18,125 +18,94 @@ interface ErrorEvent {
   };
 }
 
-export function useErrorToasts(customWsUrl?: string) {
-  const { wsUrl: defaultWsUrl } = useWebSocketConfig();
-  const wsUrl = customWsUrl || defaultWsUrl;
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hasShownConnectionError = useRef(false);
-
-  const connect = useCallback(() => {
-    // Prevent multiple connection attempts
-    if (wsRef.current?.readyState === WebSocket.OPEN ||
-        wsRef.current?.readyState === WebSocket.CONNECTING) {
-      return;
-    }
-
-    // Clear any existing reconnect timeout
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    try {
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        hasShownConnectionError.current = false;
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const message: ErrorEvent = JSON.parse(event.data);
-
-          // Handle error events
-          if (message.type.endsWith('_error')) {
-            const { title, message: errorMessage, details } = message.data;
-
-            switch (message.type) {
-              case 'websocket_error':
-                showWebSocketError(title, errorMessage, details);
-                break;
-              case 'api_error':
-                showApiError(title, errorMessage, details);
-                break;
-              case 'trading_error':
-                showTradingError(title, errorMessage, details);
-                break;
-              case 'config_error':
-                showConfigError(title, errorMessage, details);
-                break;
-              case 'general_error':
-                showErrorToast({
-                  type: 'general',
-                  title,
-                  message: errorMessage,
-                  details,
-                });
-                break;
-            }
-          }
-        } catch (error) {
-          console.error('Failed to parse error notification:', error);
-        }
-      };
-
-      ws.onclose = () => {
-        wsRef.current = null;
-        // Only reconnect if the component is still mounted
-        if (!reconnectTimeoutRef.current) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectTimeoutRef.current = null;
-            connect();
-          }, 3000);
-        }
-      };
-
-      ws.onerror = () => {
-        // Show connection error only once per connection attempt
-        if (!hasShownConnectionError.current && ws.readyState === WebSocket.CONNECTING) {
-          hasShownConnectionError.current = true;
-          showWebSocketError(
-            'Connection Failed',
-            'Unable to connect to bot service. Make sure the bot is running.',
-            {
-              component: 'ErrorToastService',
-              timestamp: new Date().toISOString(),
-            }
-          );
-        }
-      };
-
-    } catch (error) {
-      console.error('Failed to connect error toast service:', error);
-      // Only reconnect if component is still mounted
-      if (!reconnectTimeoutRef.current) {
-        reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectTimeoutRef.current = null;
-          connect();
-        }, 3000);
-      }
-    }
-  }, [wsUrl]);
+export function useErrorToasts() {
+  // Use a ref to track processed messages and prevent duplicates
+  const processedErrors = useRef<Map<string, number>>(new Map());
+  const cleanupTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    // Small delay to prevent race conditions during navigation
-    const connectTimeout = setTimeout(() => {
-      connect();
-    }, 100);
+    // Clean up old processed errors periodically
+    const startCleanupTimer = () => {
+      cleanupTimerRef.current = setInterval(() => {
+        const now = Date.now();
+        const expiredKeys: string[] = [];
+        processedErrors.current.forEach((timestamp, key) => {
+          // Remove errors older than 10 seconds
+          if (now - timestamp > 10000) {
+            expiredKeys.push(key);
+          }
+        });
+        expiredKeys.forEach(key => processedErrors.current.delete(key));
+      }, 15000); // Clean up every 15 seconds
+    };
+
+    startCleanupTimer();
+
+    // Add WebSocket message handler
+    const cleanup = websocketService.addMessageHandler((message: ErrorEvent) => {
+      try {
+        // Only process error messages
+        if (!message.type || !message.type.endsWith('_error')) {
+          return;
+        }
+
+        const { title, message: errorMessage, details } = message.data || {};
+
+        // Create a unique key for deduplication
+        const errorKey = `${message.type}-${title}-${errorMessage}`;
+
+        // Check if we've recently processed this error
+        if (processedErrors.current.has(errorKey)) {
+          const lastProcessed = processedErrors.current.get(errorKey) || 0;
+          if (Date.now() - lastProcessed < 2000) { // Skip if processed within last 2 seconds
+            return;
+          }
+        }
+
+        // Mark as processed
+        processedErrors.current.set(errorKey, Date.now());
+
+        // Handle error events based on type
+        switch (message.type) {
+          case 'websocket_error':
+            showWebSocketError(title, errorMessage, details);
+            break;
+          case 'api_error':
+            showApiError(title, errorMessage, details);
+            break;
+          case 'trading_error':
+            showTradingError(title, errorMessage, details);
+            break;
+          case 'config_error':
+            showConfigError(title, errorMessage, details);
+            break;
+          case 'general_error':
+            showErrorToast({
+              type: 'general',
+              title,
+              message: errorMessage,
+              details,
+            });
+            break;
+        }
+      } catch (error) {
+        console.error('Failed to process error notification:', error);
+      }
+    });
 
     return () => {
-      clearTimeout(connectTimeout);
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+      // Clean up message handler
+      cleanup();
+
+      // Clear cleanup timer
+      if (cleanupTimerRef.current) {
+        clearInterval(cleanupTimerRef.current);
+        cleanupTimerRef.current = null;
       }
-      if (wsRef.current) {
-        const ws = wsRef.current;
-        wsRef.current = null;
-        ws.close();
-      }
+
+      // Clear processed errors
+      const errors = processedErrors.current;
+      errors.clear();
     };
-  }, [wsUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // No dependencies needed since websocketService is a singleton
 }

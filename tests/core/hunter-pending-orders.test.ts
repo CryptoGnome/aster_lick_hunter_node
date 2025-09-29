@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 
 import { Hunter } from '../../src/lib/bot/hunter';
-import { PositionManager } from '../../src/lib/bot/positionManager';
+// import { PositionManager } from '../../src/lib/bot/positionManager';
 import { EventEmitter } from 'events';
 import {
   TestSummary,
@@ -9,7 +9,7 @@ import {
   log,
   colors,
   createMockConfig,
-  createMockLiquidation,
+  createMockLiquidation as _createMockLiquidation,
   assert,
   assertEqual,
   wait
@@ -19,11 +19,11 @@ import {
 class MockPositionTracker extends EventEmitter {
   private positions = new Map<string, any>();
 
-  getUniquePositionCount(isHedgeMode: boolean): number {
+  getUniquePositionCount(_isHedgeMode: boolean): number {
     return this.positions.size;
   }
 
-  getMarginUsage(symbol: string): number {
+  getMarginUsage(_symbol: string): number {
     return 0;
   }
 
