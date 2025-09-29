@@ -271,9 +271,12 @@ export class StatusBroadcaster extends EventEmitter {
 
     // Send Discord notification for position events
     if (data.type === 'opened') {
+      // Convert BUY/SELL to LONG/SHORT for Discord
+      const discordSide = data.side === 'BUY' ? 'LONG' : 'SHORT';
+
       discordService.notifyPositionOpened({
         symbol: data.symbol,
-        side: data.side as 'LONG' | 'SHORT',
+        side: discordSide,
         quantity: data.quantity,
         price: data.price,
       }).catch(error => {
@@ -369,6 +372,7 @@ export class StatusBroadcaster extends EventEmitter {
     symbol: string;
     side: string;
     quantity: number;
+    price?: number;
     pnl?: number;
     reason?: string;
   }): void {
@@ -378,11 +382,14 @@ export class StatusBroadcaster extends EventEmitter {
     });
 
     // Send Discord notification for position closed
+    // Convert side to LONG/SHORT for Discord (data.side is already converted from BUY/SELL)
+    const discordSide = data.side as 'LONG' | 'SHORT';
+
     discordService.notifyPositionClosed({
       symbol: data.symbol,
-      side: data.side as 'LONG' | 'SHORT',
+      side: discordSide,
       quantity: data.quantity,
-      price: 0, // Price not available in this context
+      price: data.price || 0, // Use actual exit price if available
       pnl: data.pnl,
       reason: data.reason,
     }).catch(error => {

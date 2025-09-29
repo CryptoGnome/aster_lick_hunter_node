@@ -31,7 +31,7 @@ export class DiscordService {
       try {
         new URL(webhookUrl!);
         console.log('🔔 Discord notifications enabled');
-      } catch (error) {
+      } catch (_error) {
         console.log('🔕 Discord notifications disabled (invalid webhook URL)');
         this.isEnabled = false;
       }
@@ -40,7 +40,7 @@ export class DiscordService {
     }
   }
 
-  private async sendWebhook(embed: any): Promise<void> {
+  private async sendWebhook(message: string): Promise<void> {
     if (!this.isEnabled || !this.config?.webhookUrl) {
       return;
     }
@@ -52,120 +52,54 @@ export class DiscordService {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          embeds: [embed],
+          content: message,
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`Discord webhook failed: ${response.status} ${response.statusText}`);
+        const errorText = await response.text().catch(() => 'Unable to read error response');
+        console.error('Discord webhook failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText,
+        });
+        throw new Error(`Discord webhook failed: ${response.status} ${response.statusText} - ${errorText}`);
       }
     } catch (error) {
-      console.error('Failed to send Discord notification:', error);
+      console.error('Failed to send Discord notification:', error instanceof Error ? error.message : String(error));
       // Don't throw - we don't want Discord failures to break the bot
     }
   }
 
-  private createPositionOpenedEmbed(notification: DiscordNotification): any {
-    const { symbol, side, quantity, price, timestamp } = notification;
-    const sideEmoji = side === 'LONG' ? '📈' : '📉';
-    const sideColor = side === 'LONG' ? 0x00ff00 : 0xff0000; // Green for long, red for short
+  private createPositionOpenedMessage(notification: DiscordNotification): string {
+    const { symbol, side, quantity, price } = notification;
+    // LONG positions (buying) = green, SHORT positions (selling) = red
+    const colorEmoji = side === 'LONG' ? '🟢' : '🔴';
 
-    return {
-      title: `${sideEmoji} Position Opened`,
-      color: sideColor,
-      fields: [
-        {
-          name: 'Symbol',
-          value: `\`${symbol}\``,
-          inline: true,
-        },
-        {
-          name: 'Side',
-          value: `**${side}**`,
-          inline: true,
-        },
-        {
-          name: 'Quantity',
-          value: `\`${quantity}\``,
-          inline: true,
-        },
-        {
-          name: 'Entry Price',
-          value: `\`$${price.toFixed(4)}\``,
-          inline: true,
-        },
-        {
-          name: 'Time',
-          value: `<t:${Math.floor(timestamp.getTime() / 1000)}:R>`,
-          inline: true,
-        },
-      ],
-      footer: {
-        text: 'Aster Liquidation Hunter Bot',
-      },
-      timestamp: timestamp.toISOString(),
-    };
+    return `[OPEN]  ${colorEmoji} ${symbol} ${side} | Qty: ${quantity} | Entry: $${price.toFixed(4)}`;
   }
 
-  private createPositionClosedEmbed(notification: DiscordNotification): any {
-    const { symbol, side, quantity, price, pnl, reason, timestamp } = notification;
-    const sideEmoji = side === 'LONG' ? '📈' : '📉';
-    const pnlEmoji = pnl && pnl > 0 ? '💰' : pnl && pnl < 0 ? '💸' : '⚖️';
-    const pnlColor = pnl && pnl > 0 ? 0x00ff00 : pnl && pnl < 0 ? 0xff0000 : 0x808080;
+  private createPositionClosedMessage(notification: DiscordNotification): string {
+    const { symbol, side, quantity, price, pnl } = notification;
+    const colorEmoji = pnl && pnl > 0 ? '✅' : pnl && pnl < 0 ? '❌' : '⚪';
 
-    const fields = [
-      {
-        name: 'Symbol',
-        value: `\`${symbol}\``,
-        inline: true,
-      },
-      {
-        name: 'Side',
-        value: `**${side}**`,
-        inline: true,
-      },
-      {
-        name: 'Quantity',
-        value: `\`${quantity}\``,
-        inline: true,
-      },
-      {
-        name: 'Exit Price',
-        value: `\`$${price.toFixed(4)}\``,
-        inline: true,
-      },
-      {
-        name: 'Time',
-        value: `<t:${Math.floor(timestamp.getTime() / 1000)}:R>`,
-        inline: true,
-      },
-    ];
+    let message = `[CLOSE] ${colorEmoji} ${symbol} ${side} | Qty: ${quantity} | Exit: $${price.toFixed(4)}`;
 
     if (pnl !== undefined) {
-      fields.push({
-        name: 'PnL',
-        value: `${pnlEmoji} \`$${pnl.toFixed(2)}\``,
-        inline: true,
-      });
+      const pnlSign = pnl >= 0 ? '+' : '';
+      message += ` | PnL: ${pnlSign}$${pnl.toFixed(2)}`;
     }
 
-    if (reason) {
-      fields.push({
-        name: 'Reason',
-        value: `\`${reason}\``,
-        inline: false,
-      });
-    }
+    return message;
+  }
 
-    return {
-      title: `${sideEmoji} Position Closed`,
-      color: pnlColor,
-      fields,
-      footer: {
-        text: 'Aster Liquidation Hunter Bot',
-      },
-      timestamp: timestamp.toISOString(),
-    };
+  // Méthode publique pour créer des messages de test
+  static createTestMessage(type: 'open' | 'close'): string {
+    if (type === 'open') {
+      return `[OPEN]  🟢 BTCUSDT LONG | Qty: 0.001 | Entry: $45,000.00`;
+    } else {
+      return `[CLOSE] ✅ BTCUSDT LONG | Qty: 0.001 | Exit: $46,500.00 | PnL: +$1.50`;
+    }
   }
 
   async notifyPositionOpened(data: {
@@ -178,6 +112,12 @@ export class DiscordService {
       return;
     }
 
+    // Validation des données requises
+    if (!data.symbol || !data.side || data.quantity === undefined || data.price === undefined) {
+      console.error('Discord notification skipped: missing required data for position opened', data);
+      return;
+    }
+
     const notification: DiscordNotification = {
       type: 'position_opened',
       symbol: data.symbol,
@@ -187,8 +127,8 @@ export class DiscordService {
       timestamp: new Date(),
     };
 
-    const embed = this.createPositionOpenedEmbed(notification);
-    await this.sendWebhook(embed);
+    const message = this.createPositionOpenedMessage(notification);
+    await this.sendWebhook(message);
   }
 
   async notifyPositionClosed(data: {
@@ -203,6 +143,18 @@ export class DiscordService {
       return;
     }
 
+    // Validation des données requises
+    if (!data.symbol || !data.side || data.quantity === undefined || data.price === undefined) {
+      console.error('Discord notification skipped: missing required data for position closed', data);
+      return;
+    }
+
+    // Skip notifications with zero PnL to avoid noise
+    if (data.pnl !== undefined && data.pnl === 0) {
+      console.log(`Discord notification skipped: PnL is zero for ${data.symbol} ${data.side} (likely noise)`);
+      return;
+    }
+
     const notification: DiscordNotification = {
       type: 'position_closed',
       symbol: data.symbol,
@@ -214,8 +166,8 @@ export class DiscordService {
       timestamp: new Date(),
     };
 
-    const embed = this.createPositionClosedEmbed(notification);
-    await this.sendWebhook(embed);
+    const message = this.createPositionClosedMessage(notification);
+    await this.sendWebhook(message);
   }
 
   isNotificationEnabled(type: 'position_opened' | 'position_closed'): boolean {

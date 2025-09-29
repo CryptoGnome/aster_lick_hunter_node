@@ -943,11 +943,34 @@ export class PositionManager extends EventEmitter implements PositionTracker {
     // Enhanced logging for order lifecycle tracking
     console.log(`PositionManager: ORDER_TRADE_UPDATE - Symbol: ${symbol}, OrderId: ${orderId}, Type: ${orderType}, Status: ${orderStatus}, Side: ${side}`);
 
-    // Check if this is a filled order that affects positions (SL/TP fills)
+    // Check if this is a filled order that affects positions (SL/TP fills or manual REDUCE)
     if (orderStatus === 'FILLED' && order.rp) { // rp = realized profit (from exchange API)
       console.log(`PositionManager: Reduce-only order filled for ${symbol}`);
       // Trigger balance refresh after SL/TP execution
       this.refreshBalance();
+
+      // Handle any REDUCE order (not just SL/TP) for Discord notifications
+      const realizedPnl = parseFloat(order.rp || '0');
+      const executedQty = parseFloat(order.z || '0');
+      const avgPrice = parseFloat(order.ap || '0');
+
+      if (executedQty > 0 && avgPrice > 0) {
+        console.log(`PositionManager: REDUCE order filled - ${symbol} ${side} qty=${executedQty} price=${avgPrice} pnl=${realizedPnl.toFixed(2)}`);
+
+        // Send Discord notification for any position reduction/closure
+        if (this.statusBroadcaster) {
+          this.statusBroadcaster.broadcastPositionClosed({
+            symbol,
+            side: side === 'BUY' ? 'SHORT' : 'LONG', // Opposite of closing order
+            quantity: executedQty,
+            price: avgPrice,
+            pnl: realizedPnl,
+            reason: orderType.includes('STOP') ? 'Stop Loss' :
+                   orderType.includes('TAKE_PROFIT') ? 'Take Profit' :
+                   'Position Reduced',
+          });
+        }
+      }
     }
 
     // Track our SL/TP order IDs when they're placed
@@ -1144,6 +1167,7 @@ export class PositionManager extends EventEmitter implements PositionTracker {
             symbol,
             side: side === 'BUY' ? 'SHORT' : 'LONG', // Opposite of closing order
             quantity: executedQty,
+            price: avgPrice, // Add exit price for Discord notification
             pnl: realizedPnl,
             reason: orderType.includes('STOP') ? 'Stop Loss' : 'Take Profit',
           });
@@ -1156,6 +1180,57 @@ export class PositionManager extends EventEmitter implements PositionTracker {
             price: parseFloat(order.ap || '0'),
             type: 'closed',
             pnl: realizedPnl,
+          });
+        }
+      }
+    }
+
+    // Handle any FILLED order that might close a position (even without explicit rp)
+    if (orderStatus === 'FILLED' && !order.rp) {
+      const executedQty = parseFloat(order.z || '0');
+      const avgPrice = parseFloat(order.ap || '0');
+
+      // Check if this could be a position-closing order by looking at order types and reduce-only flag
+      const isReduceOnly = order.R === true || order.R === 'true';
+      const isClosingOrder = orderType === 'MARKET' && isReduceOnly;
+
+      if (isClosingOrder && executedQty > 0 && avgPrice > 0) {
+        console.log(`PositionManager: Position-closing order filled (no rp) - ${symbol} ${side} qty=${executedQty} price=${avgPrice}`);
+
+        // Try to calculate PnL from position data if available
+        let calculatedPnl = 0;
+        for (const [_key, position] of this.currentPositions.entries()) {
+          if (position.symbol === symbol) {
+            const posAmt = parseFloat(position.positionAmt);
+            const entryPrice = parseFloat(position.entryPrice || '0');
+
+            // Check if this order would close this position
+            if ((posAmt > 0 && side === 'SELL') || (posAmt < 0 && side === 'BUY')) {
+              if (entryPrice > 0) {
+                // Calculate PnL
+                if (side === 'SELL') {
+                  // Closing LONG: profit = (exit - entry) * quantity
+                  calculatedPnl = (avgPrice - entryPrice) * executedQty;
+                } else {
+                  // Closing SHORT: profit = (entry - exit) * quantity
+                  calculatedPnl = (entryPrice - avgPrice) * executedQty;
+                }
+                console.log(`PositionManager: Calculated PnL for position close: Entry=${entryPrice.toFixed(4)}, Exit=${avgPrice.toFixed(4)}, Qty=${executedQty}, PnL=$${calculatedPnl.toFixed(2)}`);
+                break;
+              }
+            }
+          }
+        }
+
+        // Send Discord notification for position closure
+        if (this.statusBroadcaster) {
+          this.statusBroadcaster.broadcastPositionClosed({
+            symbol,
+            side: side === 'BUY' ? 'SHORT' : 'LONG', // Opposite of closing order
+            quantity: executedQty,
+            price: avgPrice,
+            pnl: calculatedPnl,
+            reason: 'Position Closed',
           });
         }
       }
@@ -1513,6 +1588,7 @@ export class PositionManager extends EventEmitter implements PositionTracker {
                 symbol,
                 side: isLong ? 'LONG' : 'SHORT',
                 quantity,
+                price: currentPrice, // Add current price as exit price
                 pnl: pnlPercent * quantity * currentPrice / 100,
                 reason: 'Auto-closed at market (exceeded TP target in batch)',
               });
@@ -1798,6 +1874,7 @@ export class PositionManager extends EventEmitter implements PositionTracker {
                 symbol,
                 side: isLong ? 'LONG' : 'SHORT',
                 quantity,
+                price: currentPrice, // Add current price as exit price
                 pnl: pnlPercent * quantity * currentPrice / 100,
                 reason: 'Auto-closed at market (exceeded TP target)',
               });
@@ -2333,6 +2410,7 @@ export class PositionManager extends EventEmitter implements PositionTracker {
                   symbol,
                   side: isLong ? 'LONG' : 'SHORT',
                   quantity: positionQty,
+                  price: markPrice, // Add mark price as exit price
                   pnl: pnlPercent * positionQty * markPrice / 100,
                   reason: 'Periodic auto-close (exceeded TP target)',
                 });

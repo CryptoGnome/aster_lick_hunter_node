@@ -114,6 +114,44 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     });
   };
 
+  const handleTestDiscord = async () => {
+    if (!config.global.discord?.webhookUrl) {
+      toast.error('No Discord webhook URL configured');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/discord/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          webhookUrl: config.global.discord.webhookUrl,
+          notifyOnPositionOpen: config.global.discord.notifyOnPositionOpen,
+          notifyOnPositionClose: config.global.discord.notifyOnPositionClose,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        toast.error(`Discord test failed: ${errorText}`);
+        return;
+      }
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast.success('Discord test notifications sent successfully!');
+      } else {
+        toast.error(`Discord test failed: ${result.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Discord test error:', error);
+      toast.error('Failed to send Discord test notifications');
+    }
+  };
+
   const handleApiChange = (field: string, value: string) => {
     setConfig({
       ...config,
@@ -684,12 +722,24 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
               </div>
 
               {config.global.discord?.webhookUrl && (
-                <Alert>
-                  <MessageSquare className="h-4 w-4" />
-                  <AlertDescription>
-                    Discord notifications are configured. Test notifications will be sent when positions are opened or closed.
-                  </AlertDescription>
-                </Alert>
+                <div className="flex items-center justify-between">
+                  <Alert className="flex-1 mr-4">
+                    <MessageSquare className="h-4 w-4" />
+                    <AlertDescription>
+                      Discord webhook configured. Notifications will be sent based on your settings above.
+                    </AlertDescription>
+                  </Alert>
+                  
+                  <Button 
+                    type="button"
+                    variant="outline" 
+                    size="sm"
+                    onClick={handleTestDiscord}
+                    className="shrink-0"
+                  >
+                    Test
+                  </Button>
+                </div>
               )}
             </CardContent>
           </Card>
