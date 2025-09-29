@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getOpenOrders } from '@/lib/api/market';
 import { loadConfig } from '@/lib/bot/config';
+import { withAuth } from '@/lib/auth/with-auth';
 
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest, _user) => {
   try {
     const config = await loadConfig();
 
@@ -40,4 +41,4 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-}
+});

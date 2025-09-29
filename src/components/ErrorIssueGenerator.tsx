@@ -122,6 +122,7 @@ export default function ErrorIssueGenerator({
 
   const generateAIDebugInfo = React.useCallback(() => {
     const subCategory = getErrorSubCategory(error);
+    const _labels = getGitHubLabels(error);
 
     let debugInfo = `## AI Debug Information\n\n`;
     debugInfo += `This error report is formatted for AI assistance (Claude, ChatGPT, etc.)\n\n`;

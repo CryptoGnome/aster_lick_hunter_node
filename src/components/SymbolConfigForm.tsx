@@ -188,6 +188,13 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
   };
 
   const handleSave = () => {
+    // Validate dashboard password if set
+    const dashboardPassword = config.global.server?.dashboardPassword;
+    if (dashboardPassword && dashboardPassword.length > 0 && dashboardPassword.length < 4) {
+      alert('Dashboard password must be at least 4 characters');
+      return;
+    }
+
     onSave(config);
   };
 
@@ -499,11 +506,17 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                     ...config.global.server,
                     dashboardPassword: e.target.value
                   })}
-                  placeholder="Leave empty for no password protection"
+                  placeholder="Enter dashboard password (min 4 characters)"
+                  minLength={4}
                 />
                 <p className="text-xs text-muted-foreground">
                   Set a password to protect your dashboard when exposing it to external networks
                 </p>
+                {config.global.server?.dashboardPassword && config.global.server.dashboardPassword.length > 0 && config.global.server.dashboardPassword.length < 4 && (
+                  <p className="text-xs text-destructive">
+                    Password must be at least 4 characters
+                  </p>
+                )}
               </div>
 
               <Separator />

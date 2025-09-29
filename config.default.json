@@ -28,7 +28,7 @@
     "maxOpenPositions": 5,
     "useThresholdSystem": false,
     "server": {
-      "dashboardPassword": "",
+      "dashboardPassword": "admin",
       "dashboardPort": 3000,
       "websocketPort": 8080,
       "useRemoteWebSocket": false,

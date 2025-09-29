@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { useOnboarding } from './OnboardingProvider';
 import { useConfig } from '@/components/ConfigProvider';
 import { WelcomeStep } from './steps/WelcomeStep';
+import { PasswordSetup } from './steps/PasswordSetup';
 import { ApiKeyStep } from './steps/ApiKeyStep';
 import { SymbolConfigStep } from './steps/SymbolConfigStep';
 import { DashboardTourStep } from './steps/DashboardTourStep';
@@ -38,6 +39,32 @@ export function OnboardingModal() {
 
   const handleWelcomeNext = () => {
     completeStep('welcome');
+    nextStep();
+  };
+
+  const handlePasswordSetup = async (password: string) => {
+    // Update config with the new password
+    if (config) {
+      const updatedConfig = {
+        ...config,
+        global: {
+          ...config.global,
+          server: {
+            ...config.global.server,
+            dashboardPassword: password,
+          },
+        },
+      };
+      await updateConfig(updatedConfig);
+    }
+
+    completeStep('password-setup');
+    nextStep();
+  };
+
+  const handlePasswordSkip = () => {
+    // Keep default "admin" password
+    completeStep('password-setup');
     nextStep();
   };
 
@@ -123,12 +150,14 @@ export function OnboardingModal() {
       case 0:
         return <WelcomeStep onNext={handleWelcomeNext} onSkip={handleSkip} />;
       case 1:
-        return <ApiKeyStep onNext={handleApiKeyNext} onBack={previousStep} onSkip={handleSkip} />;
+        return <PasswordSetup onComplete={handlePasswordSetup} onSkip={handlePasswordSkip} />;
       case 2:
-        return <SymbolConfigStep onNext={handleSymbolConfigNext} onBack={previousStep} isPaperMode={isPaperMode} />;
+        return <ApiKeyStep onNext={handleApiKeyNext} onBack={previousStep} onSkip={handleSkip} />;
       case 3:
-        return <DashboardTourStep onNext={handleDashboardTourNext} onBack={previousStep} onStartTour={handleStartTour} />;
+        return <SymbolConfigStep onNext={handleSymbolConfigNext} onBack={previousStep} isPaperMode={isPaperMode} />;
       case 4:
+        return <DashboardTourStep onNext={handleDashboardTourNext} onBack={previousStep} onStartTour={handleStartTour} />;
+      case 5:
         return <CompletionStep onComplete={handleComplete} isPaperMode={isPaperMode} hasApiKeys={!!apiKeys.apiKey} />;
       default:
         return null;

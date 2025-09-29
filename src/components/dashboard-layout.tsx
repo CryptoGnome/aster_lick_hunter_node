@@ -14,29 +14,22 @@ import { Separator } from "@/components/ui/separator"
 import { Button } from "@/components/ui/button"
 import { LogOut } from "lucide-react"
 import { useConfig } from "@/components/ConfigProvider"
-import { AuthCheck } from "@/components/AuthCheck"
+import { signOut } from "next-auth/react"
 
 interface DashboardLayoutProps {
   children: React.ReactNode
 }
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
-  const router = useRouter();
-  const { config } = useConfig();
-  const [showLogout, setShowLogout] = React.useState(false);
-
-  React.useEffect(() => {
-    // Only show logout button if password is configured
-    setShowLogout(!!config?.global?.server?.dashboardPassword);
-  }, [config]);
+  const _router = useRouter();
+  const { config: _config } = useConfig();
 
   const handleLogout = async () => {
     try {
-      const response = await fetch('/api/auth/logout', { method: 'POST' });
-      if (response.ok) {
-        router.push('/login');
-        router.refresh();
-      }
+      await signOut({
+        callbackUrl: '/login',
+        redirect: true
+      });
     } catch (error) {
       console.error('Logout failed:', error);
     }
@@ -44,7 +37,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <>
-      <AuthCheck />
       <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
@@ -104,21 +96,16 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </Link>
               </div>
               <Separator orientation="vertical" className="h-4" />
-              {showLogout && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleLogout}
-                    className="gap-2"
-                  >
-                    <LogOut className="h-4 w-4" />
-                    Logout
-                  </Button>
-                  <Separator orientation="vertical" className="h-4" />
-                </>
-              )}
               <ThemeToggle />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleLogout}
+                className="h-8 w-8 p-0"
+                title="Logout"
+              >
+                <LogOut className="h-4 w-4" />
+              </Button>
             </div>
           </div>
         </header>

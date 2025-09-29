@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { DashboardLayout } from '@/components/dashboard-layout';
-// import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -26,6 +25,7 @@ import { useErrorToasts } from '@/hooks/useErrorToasts';
 import { useWebSocketUrl } from '@/hooks/useWebSocketUrl';
 import { RateLimitToastListener } from '@/hooks/useRateLimitToasts';
 import dataStore, { AccountInfo, Position } from '@/lib/services/dataStore';
+import { signOut } from 'next-auth/react';
 
 interface BalanceStatus {
   source?: string;
@@ -207,6 +207,17 @@ export default function DashboardPage() {
       // TODO: Implement position closing API call
       // For now, just log the action
     } catch (_error) {
+    }
+  };
+
+  const _handleLogout = async () => {
+    try {
+      await signOut({
+        callbackUrl: '/login',
+        redirect: true
+      });
+    } catch (error) {
+      console.error('Logout failed:', error);
     }
   };
 

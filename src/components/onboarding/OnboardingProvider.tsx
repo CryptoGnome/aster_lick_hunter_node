@@ -45,6 +45,12 @@ const initialSteps: OnboardingStep[] = [
     completed: false,
   },
   {
+    id: 'password-setup',
+    title: 'Dashboard Security',
+    description: 'Set a password to protect your dashboard',
+    completed: false,
+  },
+  {
     id: 'api-setup',
     title: 'API Key Configuration',
     description: 'Connect your Aster Exchange account',

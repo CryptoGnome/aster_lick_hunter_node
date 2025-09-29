@@ -3,10 +3,12 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 
 const CONFIG_USER_FILE = 'config.user.json';
 const CONFIG_LEGACY_FILE = 'config.json';
 const CONFIG_DEFAULT_FILE = 'config.default.json';
+const ENV_LOCAL_FILE = '.env.local';
 
 async function fileExists(filePath) {
   try {
@@ -17,8 +19,44 @@ async function fileExists(filePath) {
   }
 }
 
+async function setupNextAuthSecret() {
+  const envPath = path.join(process.cwd(), ENV_LOCAL_FILE);
+
+  try {
+    // Check if .env.local exists
+    let envContent = '';
+    if (await fileExists(envPath)) {
+      envContent = await fs.readFile(envPath, 'utf8');
+
+      // Check if NEXTAUTH_SECRET already exists
+      if (envContent.includes('NEXTAUTH_SECRET=')) {
+        console.log('✅ NEXTAUTH_SECRET already configured in .env.local');
+        return;
+      }
+    }
+
+    // Generate a new secret
+    const secret = crypto.randomBytes(32).toString('base64');
+
+    // Append to .env.local (or create it)
+    const newContent = envContent + (envContent && !envContent.endsWith('\n') ? '\n' : '') +
+                       `NEXTAUTH_SECRET=${secret}\n`;
+
+    await fs.writeFile(envPath, newContent, 'utf8');
+    console.log('🔐 Generated NEXTAUTH_SECRET and saved to .env.local');
+
+  } catch (error) {
+    console.error('⚠️  Warning: Failed to setup NEXTAUTH_SECRET:', error.message);
+    console.log('   Please manually add NEXTAUTH_SECRET to your .env.local file');
+    console.log('   Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"');
+  }
+}
+
 async function setupConfig() {
   console.log('🔧 Setting up configuration...\n');
+
+  // First, setup NextAuth secret
+  await setupNextAuthSecret();
 
   const userConfigPath = path.join(process.cwd(), CONFIG_USER_FILE);
   const legacyConfigPath = path.join(process.cwd(), CONFIG_LEGACY_FILE);

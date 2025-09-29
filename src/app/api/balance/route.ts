@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getBalance, getAccountInfo } from '@/lib/api/market';
 import { loadConfig } from '@/lib/bot/config';
 import { getBalanceService } from '@/lib/services/balanceService';
+import { withAuth } from '@/lib/auth/with-auth';
 
 // Simple in-memory cache
 interface CacheEntry {
@@ -12,7 +13,7 @@ interface CacheEntry {
 const cache: Map<string, CacheEntry> = new Map();
 const CACHE_TTL = 5000; // 5 seconds
 
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest, _user) => {
   const startTime = Date.now();
   const cacheKey = 'balance';
 
@@ -181,4 +182,4 @@ export async function GET(request: NextRequest) {
       responseTime: Date.now() - startTime,
     }, { status: 500 });
   }
-}
+});

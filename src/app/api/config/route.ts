@@ -29,6 +29,13 @@ export async function GET() {
         paperMode: true,
         positionMode: 'HEDGE',
         maxOpenPositions: 10,
+        server: {
+          dashboardPassword: 'admin',
+          dashboardPort: 3000,
+          websocketPort: 8080,
+          useRemoteWebSocket: false,
+          websocketHost: null
+        }
       },
       symbols: {},
       version: '1.0.0',

@@ -68,6 +68,25 @@ class AsterBot {
       discordService.initialize(this.config.global.discord);
       console.log('✅ Discord service initialized');
 
+      // Security warnings
+      const dashboardPassword = this.config.global.server?.dashboardPassword;
+      if (!dashboardPassword || dashboardPassword === 'admin') {
+        console.warn('⚠️  WARNING: Using default "admin" dashboard password!');
+        console.warn('   Please change it at http://localhost:3000/config for better security');
+      } else if (dashboardPassword.length < 8) {
+        console.warn('⚠️  WARNING: Dashboard password is less than 8 characters');
+        console.warn('   Consider using a stronger password for better security');
+      }
+
+      // Check if exposing to network with weak password
+      const websocketHost = this.config.global.server?.websocketHost;
+      const isRemoteAccess = this.config.global.server?.useRemoteWebSocket || websocketHost;
+      if (isRemoteAccess && (!dashboardPassword || dashboardPassword === 'admin' || dashboardPassword.length < 8)) {
+        console.warn('🔴 SECURITY RISK: Remote access enabled with weak/default password!');
+        console.warn('   This could allow unauthorized access to your bot controls');
+        console.warn('   Please set a strong password immediately at /config');
+      }
+
       // Initialize threshold monitor with actual config
       thresholdMonitor.updateConfig(this.config);
       console.log(`✅ Threshold monitor initialized with ${Object.keys(this.config.symbols).length} symbols`);

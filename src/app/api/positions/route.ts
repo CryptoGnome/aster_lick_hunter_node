@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPositions } from '@/lib/api/orders';
 import { getOpenOrders } from '@/lib/api/market';
 import { loadConfig } from '@/lib/bot/config';
+import { withAuth } from '@/lib/auth/with-auth';
 
 // Simple in-memory cache
 interface CacheEntry {
@@ -12,7 +13,7 @@ interface CacheEntry {
 const cache: Map<string, CacheEntry> = new Map();
 const CACHE_TTL = 5000; // 5 seconds
 
-export async function GET(request: NextRequest) {
+export const GET = withAuth(async (request: NextRequest, _user) => {
   const cacheKey = 'positions';
 
   // Check if force refresh is requested
@@ -101,4 +102,4 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-}
+});

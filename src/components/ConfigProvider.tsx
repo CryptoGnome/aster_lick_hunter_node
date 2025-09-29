@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useState, useEffect, useContext } from 'react';
+import { usePathname } from 'next/navigation';
 import { Config } from '@/lib/types';
 import { OnboardingProvider } from './onboarding/OnboardingProvider';
 import { OnboardingModal } from './onboarding/OnboardingModal';
@@ -25,6 +26,10 @@ export const useConfig = () => useContext(ConfigContext);
 export default function ConfigProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(true);
+  const pathname = usePathname();
+
+  // Don't show onboarding on login page
+  const isLoginPage = pathname === '/login';
 
   const loadConfig = async () => {
     try {
@@ -32,6 +37,44 @@ export default function ConfigProvider({ children }: { children: React.ReactNode
       if (response.ok) {
         const data = await response.json();
         setConfig(data);
+      } else if (response.status === 401) {
+        // Not authenticated, use default config
+        const defaultConfig: Config = {
+          api: {
+            apiKey: '',
+            secretKey: '',
+          },
+          symbols: {
+            ASTERUSDT: {
+              longVolumeThresholdUSDT: 1000,
+              shortVolumeThresholdUSDT: 2500,
+              tradeSize: 0.69,
+              shortTradeSize: 0.69,
+              maxPositionMarginUSDT: 200,
+              leverage: 10,
+              tpPercent: 1,
+              slPercent: 20,
+              vwapProtection: true,
+              vwapTimeframe: "5m",
+              vwapLookback: 200
+            },
+          },
+          global: {
+            riskPercent: 90,
+            paperMode: true,
+            positionMode: "HEDGE",
+            maxOpenPositions: 5,
+            server: {
+              dashboardPassword: "",
+              dashboardPort: 3000,
+              websocketPort: 8080,
+              useRemoteWebSocket: false,
+              websocketHost: null
+            }
+          },
+          version: "1.1.0"
+        };
+        setConfig(defaultConfig);
       }
     } catch (error) {
       console.error('Failed to load config:', error);
@@ -122,11 +165,15 @@ export default function ConfigProvider({ children }: { children: React.ReactNode
         reloadConfig: loadConfig,
       }}
     >
-      <OnboardingProvider>
-        {children}
-        <OnboardingModal />
-        <TutorialOverlay />
-      </OnboardingProvider>
+      {isLoginPage ? (
+        children
+      ) : (
+        <OnboardingProvider>
+          {children}
+          <OnboardingModal />
+          <TutorialOverlay />
+        </OnboardingProvider>
+      )}
     </ConfigContext.Provider>
   );
 }
