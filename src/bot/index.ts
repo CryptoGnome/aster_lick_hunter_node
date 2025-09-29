@@ -17,6 +17,7 @@ import { getRateLimitManager } from '../lib/api/rateLimitManager';
 import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
+import { discordService } from '../lib/services/discordService';
 
 // Helper function to kill all child processes (synchronous for exit handler)
 function killAllProcesses() {
@@ -63,6 +64,10 @@ class AsterBot {
       this.config = await configManager.initialize();
       console.log('✅ Configuration loaded');
 
+      // Initialize Discord service with config
+      discordService.initialize(this.config.global.discord);
+      console.log('✅ Discord service initialized');
+
       // Initialize threshold monitor with actual config
       thresholdMonitor.updateConfig(this.config);
       console.log(`✅ Threshold monitor initialized with ${Object.keys(this.config.symbols).length} symbols`);
@@ -80,6 +85,10 @@ class AsterBot {
       this.statusBroadcaster = new StatusBroadcaster(wsPort);
       await this.statusBroadcaster.start();
       console.log(`✅ WebSocket status server started on port ${wsPort}`);
+
+      // Initialize Discord service in StatusBroadcaster
+      this.statusBroadcaster.initializeDiscord(this.config);
+      console.log('✅ Discord service initialized in StatusBroadcaster');
 
       // Start rate limit monitoring with toast notifications
       startRateLimitLogging(60000); // Log status every minute
@@ -373,6 +382,7 @@ class AsterBot {
         this.statusBroadcaster.updateStatus({
           positionsOpen: (this.statusBroadcaster as any).status.positionsOpen + 1,
         });
+
 
         // Subscribe to price updates for the new position's symbol
         const priceService = getPriceService();

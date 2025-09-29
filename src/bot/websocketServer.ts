@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { EventEmitter } from 'events';
 import { LiquidationEvent } from '../lib/types';
 import { errorLogger } from '../lib/services/errorLogger';
+import { discordService } from '../lib/services/discordService';
 
 export interface BotStatus {
   isRunning: boolean;
@@ -33,6 +34,11 @@ export class StatusBroadcaster extends EventEmitter {
 
   constructor(private port: number = 8080) {
     super();
+  }
+
+  // Initialize Discord service with config
+  initializeDiscord(config: any): void {
+    discordService.initialize(config?.global?.discord);
   }
 
   async start(): Promise<void> {
@@ -262,6 +268,18 @@ export class StatusBroadcaster extends EventEmitter {
       ...data,
       timestamp: new Date(),
     });
+
+    // Send Discord notification for position events
+    if (data.type === 'opened') {
+      discordService.notifyPositionOpened({
+        symbol: data.symbol,
+        side: data.side as 'LONG' | 'SHORT',
+        quantity: data.quantity,
+        price: data.price,
+      }).catch(error => {
+        console.error('Failed to send Discord notification for position opened:', error);
+      });
+    }
   }
 
   // Broadcast balance updates to web UI
@@ -357,6 +375,18 @@ export class StatusBroadcaster extends EventEmitter {
     this._broadcast('position_closed', {
       ...data,
       timestamp: new Date(),
+    });
+
+    // Send Discord notification for position closed
+    discordService.notifyPositionClosed({
+      symbol: data.symbol,
+      side: data.side as 'LONG' | 'SHORT',
+      quantity: data.quantity,
+      price: 0, // Price not available in this context
+      pnl: data.pnl,
+      reason: data.reason,
+    }).catch(error => {
+      console.error('Failed to send Discord notification for position closed:', error);
     });
   }
 

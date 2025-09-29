@@ -40,6 +40,11 @@
       "reservePercent": 30,
       "enableBatching": true,
       "queueTimeout": 30000
+    },
+    "discord": {
+      "webhookUrl": "",
+      "notifyOnPositionOpen": false,
+      "notifyOnPositionClose": false
     }
   },
   "version": "1.1.0"

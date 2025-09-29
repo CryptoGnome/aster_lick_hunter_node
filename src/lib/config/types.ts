@@ -48,12 +48,19 @@ export const serverConfigSchema = z.object({
   websocketHost: z.string().nullable().optional(),
 }).optional();
 
+export const discordConfigSchema = z.object({
+  webhookUrl: z.string().optional().default(''),
+  notifyOnPositionOpen: z.boolean().optional().default(false),
+  notifyOnPositionClose: z.boolean().optional().default(false),
+}).optional();
+
 export const globalConfigSchema = z.object({
   riskPercent: z.number().min(0).max(100),
   paperMode: z.boolean(),
   positionMode: z.enum(['ONE_WAY', 'HEDGE']).optional(),
   maxOpenPositions: z.number().min(1).optional(),
   server: serverConfigSchema,
+  discord: discordConfigSchema,
 });
 
 export const configSchema = z.object({
@@ -65,6 +72,7 @@ export const configSchema = z.object({
 
 export type SymbolConfig = z.infer<typeof symbolConfigSchema>;
 export type ApiCredentials = z.infer<typeof apiCredentialsSchema>;
+export type DiscordConfig = z.infer<typeof discordConfigSchema>;
 export type GlobalConfig = z.infer<typeof globalConfigSchema>;
 export type Config = z.infer<typeof configSchema>;
 

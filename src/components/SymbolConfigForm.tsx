@@ -24,6 +24,7 @@ import {
   AlertCircle,
   Settings2,
   BarChart3,
+  MessageSquare,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -48,6 +49,11 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         websocketPort: 8080,
         useRemoteWebSocket: false,
         websocketHost: null
+      },
+      discord: {
+        webhookUrl: '',
+        notifyOnPositionOpen: false,
+        notifyOnPositionClose: false
       }
     },
     symbols: {},
@@ -91,6 +97,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       global: {
         ...config.global,
         [field]: value,
+      },
+    });
+  };
+
+  const handleDiscordChange = (field: string, value: any) => {
+    setConfig({
+      ...config,
+      global: {
+        ...config.global,
+        discord: {
+          ...config.global.discord,
+          [field]: value,
+        },
       },
     });
   };
@@ -588,6 +607,77 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   {config.global.server?.dashboardPassword && " Password protection is active - you'll need to login to access the dashboard."}
                 </AlertDescription>
               </Alert>
+            </CardContent>
+          </Card>
+
+          {/* Discord Notifications Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5" />
+                Discord Notifications
+              </CardTitle>
+              <CardDescription>
+                Get notified about position events via Discord webhook
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="discord-webhook">Webhook URL</Label>
+                <Input
+                  id="discord-webhook"
+                  type="text"
+                  placeholder="https://discord.com/api/webhooks/..."
+                  value={config.global.discord?.webhookUrl || ''}
+                  onChange={(e) => handleDiscordChange('webhookUrl', e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Create a webhook in your Discord server settings and paste the URL here
+                </p>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-4">
+                <h4 className="text-sm font-medium">Notification Settings</h4>
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="notify-position-open">Position Opened</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Get notified when a new position is opened
+                    </p>
+                  </div>
+                  <Switch
+                    id="notify-position-open"
+                    checked={config.global.discord?.notifyOnPositionOpen || false}
+                    onCheckedChange={(checked) => handleDiscordChange('notifyOnPositionOpen', checked)}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="notify-position-close">Position Closed</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Get notified when a position is closed (with PnL)
+                    </p>
+                  </div>
+                  <Switch
+                    id="notify-position-close"
+                    checked={config.global.discord?.notifyOnPositionClose || false}
+                    onCheckedChange={(checked) => handleDiscordChange('notifyOnPositionClose', checked)}
+                  />
+                </div>
+              </div>
+
+              {config.global.discord?.webhookUrl && (
+                <Alert>
+                  <MessageSquare className="h-4 w-4" />
+                  <AlertDescription>
+                    Discord notifications are configured. Test notifications will be sent when positions are opened or closed.
+                  </AlertDescription>
+                </Alert>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

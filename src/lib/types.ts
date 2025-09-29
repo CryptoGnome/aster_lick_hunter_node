@@ -53,6 +53,12 @@ export interface RateLimitConfig {
   queueTimeout?: number;       // Timeout for queued requests in ms (default: 30000)
 }
 
+export interface DiscordConfig {
+  webhookUrl?: string;           // Discord webhook URL for notifications
+  notifyOnPositionOpen?: boolean; // Send notification when position opens (default: false)
+  notifyOnPositionClose?: boolean; // Send notification when position closes (default: false)
+}
+
 export interface GlobalConfig {
   riskPercent: number;     // Max risk per trade as % of account balance
   paperMode: boolean;      // If true, simulate trades without executing
@@ -61,6 +67,7 @@ export interface GlobalConfig {
   useThresholdSystem?: boolean; // Enable 60-second rolling volume threshold system (default: false)
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration
+  discord?: DiscordConfig;  // Discord notification configuration
 }
 
 export interface Config {
