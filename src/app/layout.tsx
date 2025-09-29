@@ -5,6 +5,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import ConfigProvider from "@/components/ConfigProvider";
 import ErrorNotificationButton from "@/components/ErrorNotificationButton";
+import { WebSocketProvider } from "@/providers/WebSocketProvider";
+import { WebSocketErrorModal } from "@/components/WebSocketErrorModal";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -40,9 +42,12 @@ export default function RootLayout({
         >
           <AuthProvider>
             <ConfigProvider>
-              {children}
-              <Toaster />
-              <ErrorNotificationButton />
+              <WebSocketProvider>
+                {children}
+                <Toaster />
+                <ErrorNotificationButton />
+                <WebSocketErrorModal />
+              </WebSocketProvider>
             </ConfigProvider>
           </AuthProvider>
         </ThemeProvider>

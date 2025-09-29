@@ -14,6 +14,7 @@ class WebSocketService {
   private url: string;
   private isConnected = false;
   private connectionListeners: Set<(connected: boolean) => void> = new Set();
+  private isIntentionalDisconnect = false;
 
   constructor(url?: string) {
     // Will be set dynamically based on config
@@ -98,6 +99,13 @@ class WebSocketService {
       this.ws.addEventListener('message', (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
+
+          // Handle shutdown message specially
+          if (message.type === 'shutdown') {
+            console.log('WebSocketService: Received shutdown message - bot service stopping');
+            this.isIntentionalDisconnect = true;
+          }
+
           this.handlers.forEach(handler => {
             try {
               handler(message);
@@ -111,10 +119,17 @@ class WebSocketService {
       });
 
       this.ws.addEventListener('close', () => {
-        console.log('WebSocketService: Connection closed');
+        console.log('WebSocketService: Connection closed' + (this.isIntentionalDisconnect ? ' (intentional)' : ''));
         this.isConnected = false;
-        this.notifyConnectionChange(false);
-        this.attemptReconnect();
+
+        // Only notify connection change if not intentional disconnect
+        if (!this.isIntentionalDisconnect) {
+          this.notifyConnectionChange(false);
+          this.attemptReconnect();
+        } else {
+          // Reset flag for next connection
+          this.isIntentionalDisconnect = false;
+        }
       });
     });
   }
@@ -151,6 +166,21 @@ class WebSocketService {
   addMessageHandler(handler: MessageHandler): () => void {
     this.handlers.add(handler);
 
+    // Check if we should auto-connect (skip on excluded pages)
+    if (typeof window !== 'undefined') {
+      const pathname = window.location.pathname;
+      const wsExcludedPaths = ['/errors', '/config', '/auth', '/wiki', '/login'];
+      const shouldConnect = !wsExcludedPaths.some(path => pathname.startsWith(path));
+
+      if (!shouldConnect) {
+        console.log('WebSocketService: Skipping auto-connect on excluded page:', pathname);
+        // Return cleanup function without connecting
+        return () => {
+          this.handlers.delete(handler);
+        };
+      }
+    }
+
     // Auto-connect if not already connected or connecting
     if (!this.isConnected && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
       // Reset reconnect attempts when adding new handler
@@ -177,6 +207,19 @@ class WebSocketService {
   }
 
   addConnectionListener(listener: (connected: boolean) => void): () => void {
+    // Check if we should skip on excluded pages
+    if (typeof window !== 'undefined') {
+      const pathname = window.location.pathname;
+      const wsExcludedPaths = ['/errors', '/config', '/auth', '/wiki', '/login'];
+      const shouldConnect = !wsExcludedPaths.some(path => pathname.startsWith(path));
+
+      if (!shouldConnect) {
+        console.log('WebSocketService: Skipping connection listener on excluded page:', pathname);
+        // Return no-op cleanup function
+        return () => {};
+      }
+    }
+
     this.connectionListeners.add(listener);
 
     // Immediately notify of current state
@@ -223,6 +266,10 @@ class WebSocketService {
 
   getConnectionStatus(): boolean {
     return this.isConnected;
+  }
+
+  isIntentionallyDisconnected(): boolean {
+    return this.isIntentionalDisconnect;
   }
 }
 

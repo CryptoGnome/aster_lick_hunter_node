@@ -39,13 +39,17 @@
       "maxOrderCount": 1200,
       "reservePercent": 30,
       "enableBatching": true,
-      "queueTimeout": 30000
+      "queueTimeout": 30000,
+      "enableDeduplication": true,
+      "deduplicationWindowMs": 1000,
+      "parallelProcessing": true,
+      "maxConcurrentRequests": 3
     },
     "discord": {
       "webhookUrl": "",
       "notifyOnPositionOpen": false,
       "notifyOnPositionClose": false
-    }
+    },
   },
   "version": "1.1.0"
 }

@@ -83,7 +83,7 @@ export interface RateLimitedAxiosInstance extends AxiosInstance {
 export function createRateLimitedAxios(baseURL: string = 'https://fapi.asterdex.com'): RateLimitedAxiosInstance {
   const instance = axios.create({
     baseURL,
-    timeout: 10000,
+    timeout: 10000,  // Default timeout, will be overridden for specific endpoints
   }) as RateLimitedAxiosInstance;
 
   const rateLimitManager = getRateLimitManager();
@@ -100,6 +100,11 @@ export function createRateLimitedAxios(baseURL: string = 'https://fapi.asterdex.
       let weight = ENDPOINT_WEIGHTS[endpoint] || 1;
       const priority = ENDPOINT_PRIORITIES[endpoint] || RequestPriority.MEDIUM;
       const isOrder = endpoint === '/fapi/v1/order' || endpoint === '/fapi/v1/batchOrders';
+
+      // Use longer timeout for order endpoints to handle queue delays
+      if (isOrder) {
+        config.timeout = 20000; // 20 seconds for order placement
+      }
 
       // Adjust weight for special cases
       if (endpoint === '/fapi/v1/depth') {
@@ -158,21 +163,102 @@ export function createRateLimitedAxios(baseURL: string = 'https://fapi.asterdex.
     }
   );
 
-  // Override request methods to use rate limiter
-  const originalRequest = instance.request.bind(instance);
+  // Store original methods
+  const originalGet = instance.get.bind(instance);
+  const originalPost = instance.post.bind(instance);
+  const originalPut = instance.put.bind(instance);
+  const originalDelete = instance.delete.bind(instance);
 
-  instance.request = async function<T = any>(config: AxiosRequestConfig): Promise<AxiosResponse<T>> {
-    const meta = (config as any).rateLimitMeta || {
-      weight: 1,
-      priority: RequestPriority.MEDIUM,
-      isOrder: false
-    };
+  // Override GET method
+  instance.get = async function<T = any>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
+    // Extract endpoint from URL for weight calculation
+    // Handle both relative and absolute URLs
+    let endpoint = url.split('?')[0];
+    if (endpoint.startsWith('http')) {
+      // Extract path from full URL
+      const urlObj = new URL(endpoint);
+      endpoint = urlObj.pathname;
+    } else if (endpoint.startsWith(baseURL)) {
+      endpoint = endpoint.replace(baseURL, '');
+    }
+
+    const weight = ENDPOINT_WEIGHTS[endpoint] || 1;
+    const priority = ENDPOINT_PRIORITIES[endpoint] || RequestPriority.MEDIUM;
+    const isOrder = false;
+
 
     return rateLimitManager.executeRequest(
-      () => originalRequest<T>(config),
-      meta.weight,
-      meta.isOrder,
-      meta.priority
+      () => originalGet<T>(url, config),
+      weight,
+      isOrder,
+      priority
+    );
+  } as any;
+
+  // Override POST method
+  instance.post = async function<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
+    // Extract endpoint from URL for weight calculation
+    let endpoint = url.split('?')[0];
+    if (endpoint.startsWith('http')) {
+      const urlObj = new URL(endpoint);
+      endpoint = urlObj.pathname;
+    } else if (endpoint.startsWith(baseURL)) {
+      endpoint = endpoint.replace(baseURL, '');
+    }
+
+    const weight = ENDPOINT_WEIGHTS[endpoint] || 1;
+    const priority = ENDPOINT_PRIORITIES[endpoint] || RequestPriority.MEDIUM;
+    const isOrder = endpoint === '/fapi/v1/order' || endpoint === '/fapi/v1/batchOrders';
+
+    return rateLimitManager.executeRequest(
+      () => originalPost<T>(url, data, config),
+      weight,
+      isOrder,
+      priority
+    );
+  } as any;
+
+  // Override PUT method
+  instance.put = async function<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
+    let endpoint = url.split('?')[0];
+    if (endpoint.startsWith('http')) {
+      const urlObj = new URL(endpoint);
+      endpoint = urlObj.pathname;
+    } else if (endpoint.startsWith(baseURL)) {
+      endpoint = endpoint.replace(baseURL, '');
+    }
+
+    const weight = ENDPOINT_WEIGHTS[endpoint] || 1;
+    const priority = ENDPOINT_PRIORITIES[endpoint] || RequestPriority.MEDIUM;
+    const isOrder = false;
+
+    return rateLimitManager.executeRequest(
+      () => originalPut<T>(url, data, config),
+      weight,
+      isOrder,
+      priority
+    );
+  } as any;
+
+  // Override DELETE method
+  instance.delete = async function<T = any>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
+    let endpoint = url.split('?')[0];
+    if (endpoint.startsWith('http')) {
+      const urlObj = new URL(endpoint);
+      endpoint = urlObj.pathname;
+    } else if (endpoint.startsWith(baseURL)) {
+      endpoint = endpoint.replace(baseURL, '');
+    }
+
+    const weight = ENDPOINT_WEIGHTS[endpoint] || 1;
+    const priority = ENDPOINT_PRIORITIES[endpoint] || RequestPriority.HIGH; // DELETE is usually important
+    const isOrder = endpoint === '/fapi/v1/order' || endpoint === '/fapi/v1/allOpenOrders';
+
+    return rateLimitManager.executeRequest(
+      () => originalDelete<T>(url, config),
+      weight,
+      isOrder,
+      priority
     );
   } as any;
 

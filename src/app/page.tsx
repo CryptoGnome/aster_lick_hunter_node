@@ -18,6 +18,7 @@ import PositionTable from '@/components/PositionTable';
 import PnLChart from '@/components/PnLChart';
 import PerformanceCardInline from '@/components/PerformanceCardInline';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
+import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
 import { useConfig } from '@/components/ConfigProvider';
 import websocketService from '@/lib/services/websocketService';
 import { useOrderNotifications } from '@/hooks/useOrderNotifications';
@@ -237,6 +238,9 @@ export default function DashboardPage() {
 
   return (
     <DashboardLayout>
+      {/* Trade Size Warning Modal */}
+      <TradeSizeWarningModal />
+
       {/* Rate Limit Toast Listener */}
       <RateLimitToastListener />
 

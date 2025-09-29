@@ -39,18 +39,21 @@ export function useOrderNotifications() {
   };
 
   useEffect(() => {
+    // Store ref value to avoid stale closure in cleanup
+    const messagesMap = processedMessages.current;
+
     // Clean up old processed messages periodically
     const startCleanupTimer = () => {
       cleanupTimerRef.current = setInterval(() => {
         const now = Date.now();
         const expiredKeys: string[] = [];
-        processedMessages.current.forEach((timestamp, key) => {
+        messagesMap.forEach((timestamp, key) => {
           // Remove messages older than 5 seconds
           if (now - timestamp > 5000) {
             expiredKeys.push(key);
           }
         });
-        expiredKeys.forEach(key => processedMessages.current.delete(key));
+        expiredKeys.forEach(key => messagesMap.delete(key));
       }, 10000); // Clean up every 10 seconds
     };
 
@@ -246,9 +249,8 @@ export function useOrderNotifications() {
         cleanupTimerRef.current = null;
       }
 
-      // Clear processed messages
-      const messages = processedMessages.current;
-      messages.clear();
+      // Clear processed messages using the stored reference
+      messagesMap.clear();
     };
   }, []); // No dependencies needed since websocketService is a singleton
 }

@@ -31,7 +31,9 @@
       "Bash(npx jest:*)",
       "WebFetch(domain:github.com)",
       "Bash(gh issue view:*)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(npx next build:*)",
+      "Read(//c/Users/oimap/**)"
     ],
     "deny": [],
     "ask": []

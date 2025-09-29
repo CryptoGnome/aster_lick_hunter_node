@@ -300,15 +300,25 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     setUseSeparateTradeSizes(separateSizes);
   }, [config.symbols]);
 
-  // Calculate minimum margin based on leverage (with 20% buffer for safety)
+  // Calculate minimum margin based on leverage (with 30% buffer for safety)
   const getMinimumMargin = () => {
     if (!symbolDetails || !selectedSymbol || !config.symbols[selectedSymbol]) {
       return null;
     }
     const leverage = config.symbols[selectedSymbol].leverage || 1;
-    const rawMinimum = symbolDetails.minNotional / leverage;
-    // Add 20% buffer to avoid rejection due to price movements
-    return rawMinimum * 1.2;
+
+    // Calculate minimum from notional requirement
+    const minFromNotional = symbolDetails.minNotional / leverage;
+
+    // Calculate minimum from quantity requirement
+    // minQty * currentPrice = notional needed, then divide by leverage for margin
+    const minFromQuantity = (symbolDetails.minQty * symbolDetails.currentPrice) / leverage;
+
+    // Use the larger of the two requirements
+    const rawMinimum = Math.max(minFromNotional, minFromQuantity);
+
+    // Add 30% buffer to avoid rejection due to price movements
+    return rawMinimum * 1.3;
   };
 
   // Get raw minimum without buffer (for display purposes)
@@ -317,7 +327,12 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       return null;
     }
     const leverage = config.symbols[selectedSymbol].leverage || 1;
-    return symbolDetails.minNotional / leverage;
+
+    // Calculate both minimums and return the larger one
+    const minFromNotional = symbolDetails.minNotional / leverage;
+    const minFromQuantity = (symbolDetails.minQty * symbolDetails.currentPrice) / leverage;
+
+    return Math.max(minFromNotional, minFromQuantity);
   };
 
   return (
@@ -1015,7 +1030,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                       )}
                                     </div>
                                     <p className="text-xs text-muted-foreground">
-                                      Exchange min: ${getRawMinimum()!.toFixed(2)} @ {config.symbols[selectedSymbol].leverage}x (20% buffer added)
+                                      Exchange min: ${getRawMinimum()!.toFixed(2)} @ {config.symbols[selectedSymbol].leverage}x (30% buffer added)
                                     </p>
                                   </div>
                                 )}
@@ -1076,7 +1091,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                         )}
                                       </div>
                                       <p className="text-xs text-muted-foreground">
-                                        Min: ${getRawMinimum()!.toFixed(2)} + 20% buffer
+                                        Min: ${getRawMinimum()!.toFixed(2)} + 30% buffer
                                       </p>
                                     </div>
                                   )}
@@ -1130,7 +1145,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                         )}
                                       </div>
                                       <p className="text-xs text-muted-foreground">
-                                        Min: ${getRawMinimum()!.toFixed(2)} + 20% buffer
+                                        Min: ${getRawMinimum()!.toFixed(2)} + 30% buffer
                                       </p>
                                     </div>
                                   )}

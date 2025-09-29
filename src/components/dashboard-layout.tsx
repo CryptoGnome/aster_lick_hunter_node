@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { LogOut } from "lucide-react"
 import { useConfig } from "@/components/ConfigProvider"
 import { signOut } from "next-auth/react"
+import { RateLimitBarCompact } from "@/components/RateLimitBar"
 
 interface DashboardLayoutProps {
   children: React.ReactNode
@@ -50,6 +51,10 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             <span className="font-medium">OPEN BETA</span>
             <span className="text-muted-foreground">- Only use what you can afford to lose</span>
           </div>
+
+          {/* Rate Limit Compact Bar */}
+          <Separator orientation="vertical" className="mx-2 h-4" />
+          <RateLimitBarCompact />
 
           <div className="flex flex-1 items-center justify-end">
             <div className="flex items-center gap-4">

@@ -653,10 +653,14 @@ export class Hunter extends EventEmitter {
   }
 
   private async placeTrade(symbol: string, side: 'BUY' | 'SELL', symbolConfig: SymbolConfig, entryPrice: number): Promise<void> {
+    // Track when this trade attempt started (for timestamp validation)
+    const tradeStartTime = Date.now();
+
     // Declare variables that will be used in error handling
+    // Initialize with meaningful defaults to avoid misleading error logs
     let currentPrice: number = entryPrice;
-    let quantity: number = 0;
-    let notionalUSDT: number = 0;
+    let quantity: number | undefined;  // Don't initialize to 0 - use undefined
+    let notionalUSDT: number | undefined;  // Don't initialize to 0 - use undefined
     let tradeSizeUSDT: number = symbolConfig.tradeSize; // Default to general tradeSize
     let order: any; // Declare order variable for error handling
 
@@ -786,6 +790,48 @@ export class Hunter extends EventEmitter {
 
       // Always format quantity and price using symbolPrecision (which now has defaults)
       quantity = symbolPrecision.formatQuantity(symbol, calculatedQuantity);
+
+      // Check if quantity rounds to zero or is below minimum
+      const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+      const minQty = lotSizeFilter ? parseFloat(lotSizeFilter.minQty || '0.001') : 0.001;
+
+      if (quantity === 0 || quantity < minQty) {
+        // Calculate what the minimum trade size should be
+        const minNotionalForMargin = minNotional / symbolConfig.leverage;
+        const minQtyForMargin = (minQty * currentPrice) / symbolConfig.leverage;
+        const recommendedTradeSize = Math.max(minNotionalForMargin, minQtyForMargin) * 1.3; // 30% buffer
+
+        console.error(`Hunter: Trade size too small for ${symbol} - quantity rounds to zero or below minimum`);
+        console.error(`  Current trade size: ${tradeSizeUSDT} USDT`);
+        console.error(`  Calculated quantity: ${calculatedQuantity.toFixed(8)} -> ${quantity} (after formatting)`);
+        console.error(`  Minimum quantity: ${minQty}`);
+        console.error(`  Minimum notional: ${minNotional} USDT (${minNotionalForMargin.toFixed(2)} USDT at ${symbolConfig.leverage}x leverage)`);
+        console.error(`  RECOMMENDED: Set trade size to at least ${recommendedTradeSize.toFixed(2)} USDT`);
+
+        // Broadcast error to UI
+        if (this.statusBroadcaster) {
+          this.statusBroadcaster.broadcastTradingError(
+            `Trade Size Too Small - ${symbol}`,
+            `Trade size ${tradeSizeUSDT.toFixed(2)} USDT is too small. Minimum recommended: ${recommendedTradeSize.toFixed(2)} USDT`,
+            {
+              component: 'Hunter',
+              symbol,
+              details: {
+                currentTradeSize: tradeSizeUSDT,
+                minimumRequired: recommendedTradeSize,
+                calculatedQuantity: calculatedQuantity,
+                formattedQuantity: quantity,
+                minQuantity: minQty,
+                currentPrice: currentPrice,
+                leverage: symbolConfig.leverage
+              }
+            }
+          );
+        }
+
+        // Don't attempt to place the trade
+        return;
+      }
 
       // Validate order parameters
       if (orderType === 'LIMIT') {
@@ -978,10 +1024,10 @@ export class Hunter extends EventEmitter {
         }
       }
 
-      // Parse the error with context
+      // Parse the error with context (use actual values or defaults)
       const tradingError = parseExchangeError(error, {
         symbol,
-        quantity,
+        quantity: quantity || 0,  // Use actual quantity if calculated, otherwise 0
         price: currentPrice,
         leverage: symbolConfig.leverage,
         positionSide: getPositionSide(this.isHedgeMode, side)
@@ -994,11 +1040,11 @@ export class Hunter extends EventEmitter {
         tradingError,
         {
           side,
-          quantity,
+          quantity: quantity || 0,  // Use actual quantity if calculated, otherwise 0
           price: currentPrice,
           leverage: symbolConfig.leverage,
           tradeSizeUSDT,
-          notionalUSDT,
+          notionalUSDT: notionalUSDT || 0,  // Use actual notional if calculated, otherwise 0
           errorCode: tradingError.code,
           errorType: tradingError.constructor.name
         }
@@ -1150,6 +1196,13 @@ export class Hunter extends EventEmitter {
 
       // If limit order fails, try fallback to market order
       if (symbolConfig.orderType !== 'MARKET') {
+        // Check if too much time has passed since initial attempt (to avoid timestamp errors)
+        const timeSinceStart = Date.now() - tradeStartTime;
+        if (timeSinceStart > 15000) {
+          console.warn(`Hunter: Skipping fallback order - ${timeSinceStart}ms elapsed, timestamp would be stale`);
+          return;
+        }
+
         console.log(`Hunter: Retrying with market order for ${symbol}`);
 
         // Declare fallback variables for error handling

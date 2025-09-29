@@ -15,7 +15,7 @@ export function buildSignedForm(params: Record<string, any>, credentials: ApiCre
   const finalParams: Record<string, any> = {
     ...params,
     timestamp,
-    recvWindow: 5000
+    recvWindow: 20000  // Increased from 5000ms to handle queue delays and prevent timestamp errors
   };
 
   // Build URLSearchParams in the order keys will be sent (insertion order)

@@ -24,18 +24,21 @@ export function useErrorToasts() {
   const cleanupTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    // Store ref value to avoid stale closure in cleanup
+    const errorsMap = processedErrors.current;
+
     // Clean up old processed errors periodically
     const startCleanupTimer = () => {
       cleanupTimerRef.current = setInterval(() => {
         const now = Date.now();
         const expiredKeys: string[] = [];
-        processedErrors.current.forEach((timestamp, key) => {
+        errorsMap.forEach((timestamp, key) => {
           // Remove errors older than 10 seconds
           if (now - timestamp > 10000) {
             expiredKeys.push(key);
           }
         });
-        expiredKeys.forEach(key => processedErrors.current.delete(key));
+        expiredKeys.forEach(key => errorsMap.delete(key));
       }, 15000); // Clean up every 15 seconds
     };
 
@@ -103,9 +106,8 @@ export function useErrorToasts() {
         cleanupTimerRef.current = null;
       }
 
-      // Clear processed errors
-      const errors = processedErrors.current;
-      errors.clear();
+      // Clear processed errors using the stored reference
+      errorsMap.clear();
     };
   }, []); // No dependencies needed since websocketService is a singleton
 }

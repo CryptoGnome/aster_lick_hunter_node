@@ -33,11 +33,40 @@ if (isWindows) {
     : ['next', 'dev', '--turbopack', '-p', String(dashboardPort)];
 }
 
+// Routes to suppress logging for (only for successful requests)
+const suppressedRoutes = [
+  '/api/rate-limits',
+  '/api/errors',
+  '/api/positions'
+];
+
 // Spawn the Next.js process
 const nextProcess = spawn(command, args, {
-  stdio: 'inherit',
+  stdio: ['inherit', 'pipe', 'pipe'], // Pipe stdout and stderr to filter logs
   shell: isWindows, // Use shell on Windows
   env: process.env
+});
+
+// Filter stdout logs
+nextProcess.stdout.on('data', (data) => {
+  const logString = data.toString();
+
+  // Check if this is a request log we want to suppress
+  const isSuccessfulRequest = logString.includes('GET') && logString.includes('200');
+  const isSuppressedRoute = suppressedRoutes.some(route => logString.includes(route));
+
+  // Only suppress successful (200) requests to these specific routes
+  if (isSuccessfulRequest && isSuppressedRoute) {
+    return; // Skip logging
+  }
+
+  // Log everything else
+  process.stdout.write(data);
+});
+
+// Pass stderr through unchanged
+nextProcess.stderr.on('data', (data) => {
+  process.stderr.write(data);
 });
 
 // Handle spawn errors

@@ -2,13 +2,14 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import axios, { AxiosResponse } from 'axios';
 import { Config } from '../types';
-import { getSignedParams, paramsToQuery } from '../api/auth';
-import { getExchangeInfo } from '../api/market';
+import { buildSignedQuery } from '../api/auth';
+import { getExchangeInfo, getMarkPrice } from '../api/market';
 import { placeOrder, cancelOrder } from '../api/orders';
 import { placeStopLossAndTakeProfit } from '../api/batchOrders';
 import { symbolPrecision } from '../utils/symbolPrecision';
 import { getBalanceService } from '../services/balanceService';
 import { errorLogger } from '../services/errorLogger';
+import { getPriceService } from '../services/priceService';
 
 // Minimal local state - only track order IDs linked to positions
 interface PositionOrders {
@@ -21,7 +22,7 @@ interface ExchangePosition {
   symbol: string;
   positionAmt: string;
   entryPrice: string;
-  markPrice: string;
+  markPrice: string;  // Note: This will be '0' from ACCOUNT_UPDATE, use PriceService for real mark prices
   unRealizedProfit: string;
   liquidationPrice: string;
   leverage: string;
@@ -529,13 +530,8 @@ export class PositionManager extends EventEmitter implements PositionTracker {
 
   // Get all positions from exchange
   private async getPositionsFromExchange(): Promise<ExchangePosition[]> {
-    const params = {
-      timestamp: Date.now(),
-      recvWindow: 5000
-    };
-
-    const signedParams = getSignedParams(params, this.config.api);
-    const queryString = paramsToQuery(signedParams);
+    const params = {};
+    const queryString = buildSignedQuery(params, this.config.api);
 
     const response = await axios.get(`${BASE_URL}/fapi/v2/positionRisk?${queryString}`, {
       headers: { 'X-MBX-APIKEY': this.config.api.apiKey }
@@ -546,13 +542,8 @@ export class PositionManager extends EventEmitter implements PositionTracker {
 
   // Get all open orders from exchange
   private async getOpenOrdersFromExchange(): Promise<ExchangeOrder[]> {
-    const params = {
-      timestamp: Date.now(),
-      recvWindow: 5000
-    };
-
-    const signedParams = getSignedParams(params, this.config.api);
-    const queryString = paramsToQuery(signedParams);
+    const params = {};
+    const queryString = buildSignedQuery(params, this.config.api);
 
     const response = await axios.get(`${BASE_URL}/fapi/v1/openOrders?${queryString}`, {
       headers: { 'X-MBX-APIKEY': this.config.api.apiKey }
@@ -815,7 +806,7 @@ export class PositionManager extends EventEmitter implements PositionTracker {
             symbol: pos.s,
             positionAmt: pos.pa,
             entryPrice: pos.ep,
-            markPrice: pos.mp || '0',
+            markPrice: pos.mp || '0',  // Note: This is often '0' from WebSocket, use PriceService for real prices
             unRealizedProfit: pos.up,
             liquidationPrice: pos.lp || '0',
             leverage: leverage, // Use tracked leverage or '0' if not yet received
@@ -825,6 +816,13 @@ export class PositionManager extends EventEmitter implements PositionTracker {
             positionSide: positionSide,
             updateTime: event.E
           });
+
+          // Subscribe to mark price updates for this symbol
+          const priceService = getPriceService();
+          if (priceService && !this.previousPositionSizes.has(key)) {
+            priceService.subscribeToSymbols([pos.s]);
+            console.log(`📊 Added price streaming for new position: ${pos.s}`);
+          }
 
           // Check if this position has SL/TP orders and if they need adjustment
           if (sizeChanged) {
@@ -2342,13 +2340,49 @@ export class PositionManager extends EventEmitter implements PositionTracker {
       // Get all open orders from exchange
       const openOrders = await this.getOpenOrdersFromExchange();
 
+      // Get price service instance
+      const priceService = getPriceService();
+
       // Check each position
       for (const [key, position] of this.currentPositions.entries()) {
         const symbol = position.symbol;
         const posAmt = parseFloat(position.positionAmt);
         const positionQty = Math.abs(posAmt);
         const entryPrice = parseFloat(position.entryPrice);
-        const markPrice = parseFloat(position.markPrice);
+
+        // Get real-time mark price from PriceService
+        let markPrice: number = 0;
+        const priceData = priceService?.getMarkPrice(symbol);
+
+        if (priceData && priceData.markPrice) {
+          // Check if price data is fresh (within 10 seconds)
+          const priceAge = Date.now() - priceData.timestamp;
+          if (priceAge <= 10000) {
+            markPrice = parseFloat(priceData.markPrice);
+          } else {
+            console.log(`PositionManager: WebSocket mark price stale for ${symbol} (${priceAge}ms old), fetching from API`);
+          }
+        }
+
+        // Fallback to API if WebSocket price is not available or stale
+        if (markPrice <= 0) {
+          try {
+            const apiPriceData = await getMarkPrice(symbol) as any;
+            if (apiPriceData && apiPriceData.markPrice) {
+              markPrice = parseFloat(apiPriceData.markPrice);
+              console.log(`PositionManager: Fetched mark price from API for ${symbol}: ${markPrice}`);
+            }
+          } catch (error) {
+            console.error(`PositionManager: Failed to fetch mark price from API for ${symbol}:`, error);
+          }
+        }
+
+        // Final validation
+        if (markPrice <= 0) {
+          console.log(`PositionManager: WARNING - No valid mark price available for ${symbol}, skipping TP check`);
+          continue;
+        }
+
         const isLong = posAmt > 0;
 
         // Only manage positions for symbols in our config

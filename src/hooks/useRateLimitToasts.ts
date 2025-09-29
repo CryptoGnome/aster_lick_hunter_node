@@ -23,18 +23,21 @@ export function useRateLimitToasts() {
   const cleanupTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    // Store ref value to avoid stale closure in cleanup
+    const toastsMap = processedToasts.current;
+
     // Clean up old processed toasts periodically
     const startCleanupTimer = () => {
       cleanupTimerRef.current = setInterval(() => {
         const now = Date.now();
         const expiredKeys: string[] = [];
-        processedToasts.current.forEach((timestamp, key) => {
+        toastsMap.forEach((timestamp, key) => {
           // Remove toasts older than 5 seconds
           if (now - timestamp > 5000) {
             expiredKeys.push(key);
           }
         });
-        expiredKeys.forEach(key => processedToasts.current.delete(key));
+        expiredKeys.forEach(key => toastsMap.delete(key));
       }, 10000); // Clean up every 10 seconds
     };
 
@@ -105,9 +108,8 @@ export function useRateLimitToasts() {
         cleanupTimerRef.current = null;
       }
 
-      // Clear processed toasts
-      const toasts = processedToasts.current;
-      toasts.clear();
+      // Clear processed toasts using the stored reference
+      toastsMap.clear();
     };
   }, []);
 

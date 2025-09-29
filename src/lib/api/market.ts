@@ -1,6 +1,6 @@
 import { AxiosResponse } from 'axios';
 import { ApiCredentials, MarkPrice, Kline } from '../types';
-import { getSignedParams, paramsToQuery } from './auth';
+import { buildSignedQuery, paramsToQuery } from './auth';
 import { getRateLimitedAxios } from './requestInterceptor';
 
 const BASE_URL = 'https://fapi.asterdex.com';
@@ -51,8 +51,7 @@ export async function getRecentTrades(symbol: string, limit: number = 500): Prom
 // Signed endpoints (require authentication)
 export async function getBalance(credentials: ApiCredentials): Promise<any> {
   const params = {}; // Empty params for balance endpoint
-  const signedParams = getSignedParams(params, credentials);
-  const query = paramsToQuery(signedParams);
+  const query = buildSignedQuery(params, credentials);
 
   try {
     const axios = getRateLimitedAxios();
@@ -76,8 +75,7 @@ export async function getBalance(credentials: ApiCredentials): Promise<any> {
 
 export async function getAccountInfo(credentials: ApiCredentials): Promise<any> {
   const params = {}; // Empty params for account endpoint
-  const signedParams = getSignedParams(params, credentials);
-  const query = paramsToQuery(signedParams);
+  const query = buildSignedQuery(params, credentials);
 
   try {
     const axios = getRateLimitedAxios();
@@ -109,8 +107,7 @@ export async function getPositionRisk(symbol?: string, credentials?: ApiCredenti
   if (symbol) {
     params.symbol = symbol;
   }
-  const signedParams = getSignedParams(params, credentials);
-  const query = paramsToQuery(signedParams);
+  const query = buildSignedQuery(params, credentials);
   const axios = getRateLimitedAxios();
   const response: AxiosResponse = await axios.get(`${BASE_URL}/fapi/v2/positionRisk?${query}`, {
     headers: {
@@ -130,8 +127,7 @@ export async function getOpenOrders(symbol?: string, credentials?: ApiCredential
   if (symbol) {
     params.symbol = symbol;
   }
-  const signedParams = getSignedParams(params, credentials);
-  const query = paramsToQuery(signedParams);
+  const query = buildSignedQuery(params, credentials);
   const axios = getRateLimitedAxios();
   const response: AxiosResponse = await axios.get(`${BASE_URL}/fapi/v1/openOrders?${query}`, {
     headers: {

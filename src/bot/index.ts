@@ -41,6 +41,7 @@ class AsterBot {
   private isRunning = false;
   private statusBroadcaster: StatusBroadcaster;
   private isHedgeMode: boolean = false;
+  private tradeSizeWarnings: any[] = [];
 
   constructor() {
     // Will be initialized with config port
@@ -67,6 +68,27 @@ class AsterBot {
       // Initialize Discord service with config
       discordService.initialize(this.config.global.discord);
       console.log('✅ Discord service initialized');
+      // Validate trade sizes against exchange minimums
+      const { validateAllTradeSizes } = await import('../lib/validation/tradeSizeValidator');
+      const validationResult = await validateAllTradeSizes(this.config);
+
+      if (!validationResult.valid) {
+        console.error('❌ CONFIGURATION ERROR: Trade sizes below exchange minimums detected!');
+        console.error('The following symbols have insufficient trade sizes:');
+
+        validationResult.warnings.forEach(warning => {
+          console.error(`  ${warning.symbol}: ${warning.reason}`);
+          console.error(`    Current price: $${warning.currentPrice.toFixed(2)}`);
+          console.error(`    Leverage: ${warning.leverage}x`);
+          console.error(`    MINIMUM REQUIRED: ${warning.minimumRequired.toFixed(2)} USDT`);
+        });
+
+        console.error('\n⚠️  Please update your configuration at http://localhost:3000/config');
+        console.error('The bot will continue but trades for these symbols will be rejected.\n');
+
+        // Store warnings to broadcast to UI
+        this.tradeSizeWarnings = validationResult.warnings;
+      }
 
       // Security warnings
       const dashboardPassword = this.config.global.server?.dashboardPassword;
@@ -122,6 +144,11 @@ class AsterBot {
         paperMode: this.config.global.paperMode,
         symbols: Object.keys(this.config.symbols),
       });
+
+      // Broadcast trade size warnings if any
+      if (this.tradeSizeWarnings.length > 0) {
+        this.statusBroadcaster.broadcastTradeSizeWarnings(this.tradeSizeWarnings);
+      }
 
       // Listen for config updates
       configManager.on('config:updated', (newConfig) => {

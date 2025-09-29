@@ -3,6 +3,7 @@ import { getBalance, getAccountInfo } from '@/lib/api/market';
 import { loadConfig } from '@/lib/bot/config';
 import { getBalanceService } from '@/lib/services/balanceService';
 import { withAuth } from '@/lib/auth/with-auth';
+import { getRateLimitManager, RequestPriority } from '@/lib/api/rateLimitManager';
 
 // Simple in-memory cache
 interface CacheEntry {
@@ -84,6 +85,23 @@ export const GET = withAuth(async (request: NextRequest, _user) => {
         }
       }
     } else {
+    }
+
+    // Check rate limit before making REST API call
+    const rateLimitManager = getRateLimitManager();
+    const canMakeRequest = rateLimitManager.canMakeRequest(5, false, RequestPriority.MEDIUM);
+
+    if (!canMakeRequest) {
+      // Return cached data if available when rate limited
+      const cached = cache.get(cacheKey);
+      if (cached) {
+        return NextResponse.json({
+          ...cached.data,
+          cached: true,
+          rateLimited: true,
+          responseTime: Date.now() - startTime,
+        });
+      }
     }
 
     // Fallback to REST API if WebSocket service is not available or data is stale

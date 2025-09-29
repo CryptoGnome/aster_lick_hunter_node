@@ -21,6 +21,8 @@ export interface RateLimitConfig {
   windowMs: number;          // Default: 60000 (1 minute)
   enableBatching: boolean;   // Default: true
   queueTimeout: number;      // Default: 30000ms
+  enableDeduplication: boolean; // Default: true
+  deduplicationWindowMs: number; // Default: 1000ms
 }
 
 export interface RequestInfo {
@@ -53,6 +55,9 @@ export class RateLimitManager extends EventEmitter {
   private currentOrderCount = 0;
   private lastHeaderUpdate = 0;
 
+  // Request deduplication
+  private recentRequests = new Map<string, { timestamp: number; promise: Promise<any> }>();
+
   constructor(config: Partial<RateLimitConfig> = {}) {
     super();
 
@@ -62,7 +67,9 @@ export class RateLimitManager extends EventEmitter {
       reservePercent: config.reservePercent || 30,
       windowMs: config.windowMs || 60000,
       enableBatching: config.enableBatching ?? true,
-      queueTimeout: config.queueTimeout || 30000
+      queueTimeout: config.queueTimeout || 30000,
+      enableDeduplication: config.enableDeduplication ?? true,
+      deduplicationWindowMs: config.deduplicationWindowMs || 1000
     };
 
     // Clean up old requests every 10 seconds
@@ -70,6 +77,19 @@ export class RateLimitManager extends EventEmitter {
 
     // Process queue
     setInterval(() => this.processQueue(), 100);
+  }
+
+  /**
+   * Update configuration at runtime
+   */
+  public updateConfig(config: Partial<RateLimitConfig>): void {
+    this.config = {
+      ...this.config,
+      ...config
+    };
+
+    // Emit config change event
+    this.emit('configUpdated', this.config);
   }
 
   /**
@@ -99,13 +119,51 @@ export class RateLimitManager extends EventEmitter {
   }
 
   /**
-   * Execute a request with rate limiting
+   * Execute a request with rate limiting and deduplication
    */
   public async executeRequest<T>(
     request: () => Promise<T>,
     weight: number,
     isOrder: boolean = false,
-    priority: RequestPriority = RequestPriority.MEDIUM
+    priority: RequestPriority = RequestPriority.MEDIUM,
+    requestKey?: string
+  ): Promise<T> {
+    // Check for duplicate requests if deduplication is enabled
+    if (this.config.enableDeduplication && requestKey) {
+      const recent = this.recentRequests.get(requestKey);
+      if (recent) {
+        const age = Date.now() - recent.timestamp;
+        if (age < this.config.deduplicationWindowMs) {
+          // Return the existing promise for this request
+          return recent.promise as Promise<T>;
+        }
+      }
+    }
+
+    // Create the promise for this request
+    const requestPromise = this._executeRequestInternal(request, weight, isOrder, priority);
+
+    // Store for deduplication if enabled
+    if (this.config.enableDeduplication && requestKey) {
+      this.recentRequests.set(requestKey, {
+        timestamp: Date.now(),
+        promise: requestPromise
+      });
+
+      // Clean up after deduplication window
+      setTimeout(() => {
+        this.recentRequests.delete(requestKey);
+      }, this.config.deduplicationWindowMs);
+    }
+
+    return requestPromise;
+  }
+
+  private async _executeRequestInternal<T>(
+    request: () => Promise<T>,
+    weight: number,
+    isOrder: boolean,
+    priority: RequestPriority
   ): Promise<T> {
     // Immediate execution for critical requests if possible
     if (priority === RequestPriority.CRITICAL &&
@@ -159,6 +217,7 @@ export class RateLimitManager extends EventEmitter {
       timestamp: Date.now()
     });
 
+
     this.lastRequestTime = Date.now();
 
     try {
@@ -175,7 +234,7 @@ export class RateLimitManager extends EventEmitter {
   }
 
   /**
-   * Process queued requests
+   * Process queued requests (with parallel processing support)
    */
   private async processQueue(): Promise<void> {
     if (this.processing || this.queue.length === 0) {
@@ -185,45 +244,80 @@ export class RateLimitManager extends EventEmitter {
     this.processing = true;
 
     try {
-      // Process requests by priority
-      for (let i = 0; i < this.queue.length; i++) {
-        const request = this.queue[i];
-
-        // Check if request has timed out
-        if (Date.now() - request.addedAt > this.config.queueTimeout) {
-          this.queue.splice(i, 1);
+      // Remove timed out requests first
+      const now = Date.now();
+      this.queue = this.queue.filter(request => {
+        if (now - request.addedAt > this.config.queueTimeout) {
           request.reject(new Error('Request timeout'));
-          i--;
-          continue;
+          return false;
         }
+        return true;
+      });
 
-        // Check if we can execute this request
+      // Calculate how many requests we can process in parallel
+      const availableCapacity = this.calculateAvailableCapacity();
+      const maxConcurrent = 3; // Maximum parallel requests to avoid overwhelming the API
+      const batchSize = Math.min(availableCapacity, this.queue.length, maxConcurrent);
+
+      if (batchSize === 0) {
+        return; // No capacity to process any requests
+      }
+
+      // Get batch of requests to process (prioritized)
+      const batch: QueuedRequest[] = [];
+      for (let i = 0; i < this.queue.length && batch.length < batchSize; i++) {
+        const request = this.queue[i];
         if (this.canMakeRequest(request.info.weight, request.info.isOrder, request.info.priority)) {
+          batch.push(request);
           this.queue.splice(i, 1);
-
-          try {
-            const result = await this.executeImmediate(
-              request.execute,
-              request.info.weight,
-              request.info.isOrder,
-              request.info.priority
-            );
-            request.resolve(result);
-          } catch (error) {
-            request.reject(error);
-          }
-
-          // Small delay between requests to avoid bursts
-          if (this.queue.length > 0) {
-            await new Promise(resolve => setTimeout(resolve, 50));
-          }
-
           i--; // Adjust index since we removed an item
         }
+      }
+
+      if (batch.length === 0) {
+        return; // No requests can be processed right now
+      }
+
+      // Process batch in parallel
+      const promises = batch.map(async (request) => {
+        try {
+          const result = await this.executeImmediate(
+            request.execute,
+            request.info.weight,
+            request.info.isOrder,
+            request.info.priority
+          );
+          request.resolve(result);
+        } catch (error) {
+          request.reject(error);
+        }
+      });
+
+      await Promise.allSettled(promises);
+
+      // Small delay to avoid bursts if more requests are queued
+      if (this.queue.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
     } finally {
       this.processing = false;
     }
+  }
+
+  /**
+   * Calculate available capacity for new requests
+   */
+  private calculateAvailableCapacity(): number {
+    const usage = this.getCurrentUsage();
+    const availableWeight = this.config.maxRequestWeight - usage.weight;
+    const availableOrders = this.config.maxOrderCount - usage.orders;
+
+    // Conservative estimate: how many average requests can we handle
+    const averageWeight = 5; // Typical request weight
+    const capacityByWeight = Math.floor(availableWeight / averageWeight);
+    const capacityByOrders = availableOrders;
+
+    return Math.min(capacityByWeight, capacityByOrders);
   }
 
   /**
@@ -369,12 +463,31 @@ export class RateLimitManager extends EventEmitter {
   }
 }
 
-// Singleton instance
-let instance: RateLimitManager | null = null;
+// Singleton instance - store it globally to ensure same instance across modules
+const GLOBAL_KEY = Symbol.for('app.rateLimitManager');
+const globalSymbols = Object.getOwnPropertySymbols(global as any);
+const hasInstance = globalSymbols.indexOf(GLOBAL_KEY) > -1;
+
+if (!hasInstance) {
+  (global as any)[GLOBAL_KEY] = null;
+}
 
 export function getRateLimitManager(config?: Partial<RateLimitConfig>): RateLimitManager {
-  if (!instance) {
-    instance = new RateLimitManager(config);
+  if (!(global as any)[GLOBAL_KEY]) {
+    (global as any)[GLOBAL_KEY] = new RateLimitManager(config);
+  } else if (config && Object.keys(config).length > 0) {
+    // Update existing instance configuration
+    (global as any)[GLOBAL_KEY].updateConfig(config);
   }
-  return instance;
+  return (global as any)[GLOBAL_KEY];
+}
+
+/**
+ * Reset the singleton instance (useful for testing)
+ */
+export function resetRateLimitManager(): void {
+  if ((global as any)[GLOBAL_KEY]) {
+    (global as any)[GLOBAL_KEY].reset();
+    (global as any)[GLOBAL_KEY] = null;
+  }
 }

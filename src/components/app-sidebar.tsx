@@ -15,6 +15,7 @@ import {
   Bug,
 } from "lucide-react"
 
+import { RateLimitSidebar } from "@/components/RateLimitSidebar"
 import {
   Sidebar,
   SidebarContent,
@@ -186,6 +187,13 @@ export function AppSidebar() {
                     <span className="text-sm font-medium">{positions.length}</span>
                   </div>
                 </>
+              )}
+
+              {/* Rate Limits */}
+              {isConnected && (
+                <div className="mt-3 pt-3 border-t border-sidebar-border">
+                  <RateLimitSidebar />
+                </div>
               )}
             </div>
           </SidebarGroupContent>
