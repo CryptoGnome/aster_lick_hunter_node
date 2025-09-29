@@ -729,10 +729,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                       Discord webhook configured. Notifications will be sent based on your settings above.
                     </AlertDescription>
                   </Alert>
-                  
-                  <Button 
+
+                  <Button
                     type="button"
-                    variant="outline" 
+                    variant="outline"
                     size="sm"
                     onClick={handleTestDiscord}
                     className="shrink-0"
