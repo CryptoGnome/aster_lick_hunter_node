@@ -23,7 +23,9 @@ class WebSocketService {
     } else if (typeof window !== 'undefined') {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const wsHost = window.location.hostname;
+      // Use port 8080 as default, will be updated by WebSocketProvider
       this.url = `${wsProtocol}://${wsHost}:8080`;
+      console.log('WebSocketService: Initialized with default URL from window location:', this.url);
     } else {
       // Don't set a default URL during SSR - it will be set by WebSocketProvider
       this.url = '';
@@ -38,17 +40,45 @@ class WebSocketService {
       if (this.isConnected) {
         this.disconnect();
         this.reconnectAttempts = 0;
-        this.connect().catch(_error => {
-          console.log('WebSocketService: Reconnection with new URL failed');
+        this.connect().catch(error => {
+          console.log('WebSocketService: Reconnection with new URL failed:', error.message);
         });
       }
     }
+  }
+
+  // Test if WebSocket server is reachable
+  async testConnection(): Promise<boolean> {
+    if (!this.url) {
+      console.log('WebSocketService: Cannot test connection - URL not configured');
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      const testWs = new WebSocket(this.url);
+      const timeout = setTimeout(() => {
+        testWs.close();
+        resolve(false);
+      }, 3000); // 3 second timeout
+
+      testWs.onopen = () => {
+        clearTimeout(timeout);
+        testWs.close();
+        resolve(true);
+      };
+
+      testWs.onerror = () => {
+        clearTimeout(timeout);
+        resolve(false);
+      };
+    });
   }
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       // Don't attempt to connect if URL is not set
       if (!this.url) {
+        console.log('WebSocketService: Cannot connect - URL not configured');
         reject(new Error('WebSocket URL not configured'));
         return;
       }
@@ -64,7 +94,7 @@ class WebSocketService {
           if (this.ws?.readyState === WebSocket.OPEN) {
             resolve();
           } else if (this.ws?.readyState === WebSocket.CLOSED || this.ws?.readyState === WebSocket.CLOSING) {
-            reject(new Error('WebSocket connection failed'));
+            reject(new Error('WebSocket connection failed - connection closed during handshake'));
           } else {
             setTimeout(checkConnection, 50);
           }
@@ -73,13 +103,13 @@ class WebSocketService {
         return;
       }
 
-      console.log('WebSocketService: Connecting to', this.url);
+      console.log('WebSocketService: Attempting to connect to', this.url);
 
       try {
         this.ws = new WebSocket(this.url);
       } catch (error) {
         console.log('WebSocketService: Failed to create WebSocket:', error);
-        reject(new Error('Failed to create WebSocket connection'));
+        reject(new Error(`Failed to create WebSocket connection: ${error instanceof Error ? error.message : 'Unknown error'}`));
         return;
       }
 
@@ -99,12 +129,19 @@ class WebSocketService {
         resolve();
       };
 
-      const onError = (_event: Event) => {
+      const onError = (event: Event) => {
         console.log('WebSocketService: Connection failed to', this.url);
+        console.log('WebSocketService: Error event details:', {
+          type: event.type,
+          target: event.target instanceof WebSocket ? {
+            readyState: event.target.readyState,
+            url: event.target.url
+          } : 'unknown'
+        });
         cleanup();
         // Only reject if we're still in connecting state
         if (this.ws?.readyState === WebSocket.CONNECTING || this.ws?.readyState === WebSocket.CLOSED) {
-          reject(new Error('WebSocket connection failed'));
+          reject(new Error(`WebSocket connection failed to ${this.url} - Check if bot service is running on the correct port`));
         }
       };
 

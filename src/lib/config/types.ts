@@ -49,6 +49,7 @@ export const serverConfigSchema = z.object({
   websocketPort: z.number().optional(),
   useRemoteWebSocket: z.boolean().optional(),
   websocketHost: z.string().nullable().optional(),
+  envWebSocketHost: z.string().optional(), // For environment variable override
 }).optional();
 
 export const rateLimitConfigSchema = z.object({
