@@ -5,12 +5,14 @@ import websocketService from '@/lib/services/websocketService';
 
 interface WebSocketContextType {
   wsPort: number;
+  wsHost: string;
   wsUrl: string;
 }
 
 const WebSocketContext = createContext<WebSocketContextType>({
   wsPort: 8080,
-  wsUrl: 'ws://localhost:8080'
+  wsHost: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
+  wsUrl: typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8080` : 'ws://localhost:8080'
 });
 
 export const useWebSocketConfig = () => useContext(WebSocketContext);
@@ -30,38 +32,63 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
         setWsPort(port);
 
-        // Determine the host based on configuration
+        // Determine the host based on configuration with priority order
         let host = 'localhost'; // default
 
-        // Check for environment variable override first
-        if (process.env.NEXT_PUBLIC_WS_HOST) {
-          host = process.env.NEXT_PUBLIC_WS_HOST;
+        // 1. Check for environment variable override first (highest priority)
+        // Note: NEXT_PUBLIC_ env vars are available in browser, but we use config for flexibility
+        const envHost = data.config?.global?.server?.envWebSocketHost;
+        
+        if (envHost) {
+          host = envHost;
         } else if (useRemoteWebSocket) {
-          // If remote WebSocket is enabled
+          // 2. If remote WebSocket is enabled in config
           if (configHost) {
-            // Use the configured host if specified
+            // 3. Use the configured host if specified
             host = configHost;
           } else if (typeof window !== 'undefined') {
-            // Auto-detect from browser location
+            // 4. Auto-detect from browser location
             host = window.location.hostname;
           }
         }
 
         setWsHost(host);
-        const url = `ws://${host}:${port}`;
+        
+        // Determine protocol based on current page and host
+        let protocol = 'ws';
+        if (typeof window !== 'undefined') {
+          // Use secure WebSocket if page is HTTPS or if connecting to a different host
+          protocol = window.location.protocol === 'https:' || host !== window.location.hostname ? 'wss' : 'ws';
+        }
+        
+        const url = `${protocol}://${host}:${port}`;
+        console.log('WebSocketProvider: Configured WebSocket URL:', url);
         websocketService.setUrl(url);
       })
       .catch(err => {
         console.error('Failed to load WebSocket config:', err);
-        // Use default
-        websocketService.setUrl('ws://localhost:8080');
+        // Use smart defaults
+        let fallbackHost = 'localhost';
+        let fallbackProtocol = 'ws';
+        
+        if (typeof window !== 'undefined') {
+          fallbackHost = window.location.hostname;
+          fallbackProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        }
+        
+        setWsHost(fallbackHost);
+        const fallbackUrl = `${fallbackProtocol}://${fallbackHost}:8080`;
+        console.log('WebSocketProvider: Using fallback WebSocket URL:', fallbackUrl);
+        websocketService.setUrl(fallbackUrl);
       });
   }, []);
 
-  const wsUrl = `ws://${wsHost}:${wsPort}`;
+  // Determine protocol for context URL
+  const wsProtocol = typeof window !== 'undefined' && (window.location.protocol === 'https:' || wsHost !== window.location.hostname) ? 'wss' : 'ws';
+  const wsUrl = `${wsProtocol}://${wsHost}:${wsPort}`;
 
   return (
-    <WebSocketContext.Provider value={{ wsPort, wsUrl }}>
+    <WebSocketContext.Provider value={{ wsPort, wsHost, wsUrl }}>
       {children}
     </WebSocketContext.Provider>
   );

@@ -10,7 +10,7 @@ class WebSocketService {
   private handlers: Set<MessageHandler> = new Set();
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private url: string;
   private isConnected = false;
   private connectionListeners: Set<(connected: boolean) => void> = new Set();
@@ -18,12 +18,21 @@ class WebSocketService {
 
   constructor(url?: string) {
     // Will be set dynamically based on config
-    // Initial URL will be updated when WebSocketProvider loads config
-    this.url = url || 'ws://localhost:8080';
+    if (url) {
+      this.url = url;
+    } else if (typeof window !== 'undefined') {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const wsHost = window.location.hostname;
+      this.url = `${wsProtocol}://${wsHost}:8080`;
+    } else {
+      // Don't set a default URL during SSR - it will be set by WebSocketProvider
+      this.url = '';
+    }
   }
 
   setUrl(url: string): void {
     if (this.url !== url) {
+      console.log('WebSocketService: Setting URL from', this.url, 'to', url);
       this.url = url;
       // If connected, reconnect with new URL
       if (this.isConnected) {
@@ -38,6 +47,12 @@ class WebSocketService {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Don't attempt to connect if URL is not set
+      if (!this.url) {
+        reject(new Error('WebSocket URL not configured'));
+        return;
+      }
+
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         resolve();
         return;
@@ -181,13 +196,13 @@ class WebSocketService {
       }
     }
 
-    // Auto-connect if not already connected or connecting
-    if (!this.isConnected && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
+    // Auto-connect if not already connected or connecting, and URL is configured
+    if (this.url && !this.isConnected && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
       // Reset reconnect attempts when adding new handler
       this.reconnectAttempts = 0;
       // Add small delay to prevent race conditions during component mounting
       setTimeout(() => {
-        if (!this.isConnected && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
+        if (this.url && !this.isConnected && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
           this.connect().catch(_error => {
             console.log('WebSocketService: Auto-connect failed, will retry');
           });
@@ -244,6 +259,12 @@ class WebSocketService {
   private attemptReconnect(): void {
     if (this.handlers.size === 0) {
       // No handlers left, don't reconnect
+      return;
+    }
+
+    if (!this.url) {
+      // No URL configured, don't reconnect
+      console.log('WebSocketService: Cannot reconnect - URL not configured');
       return;
     }
 
