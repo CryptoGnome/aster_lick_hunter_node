@@ -8,6 +8,7 @@ export function useWebSocketUrl() {
     fetch('/api/config')
       .then(res => res.json())
       .then(data => {
+        // Fix: API returns config directly, not nested under config property
         const port = data.global?.server?.websocketPort || 8080;
         const useRemoteWebSocket = data.global?.server?.useRemoteWebSocket || false;
         const configHost = data.global?.server?.websocketHost;
@@ -15,9 +16,11 @@ export function useWebSocketUrl() {
         // Determine the host based on configuration
         let host = 'localhost'; // default
 
-        // Check for environment variable override first
-        if (process.env.NEXT_PUBLIC_WS_HOST) {
-          host = process.env.NEXT_PUBLIC_WS_HOST;
+        // Check for environment variable override (handled by server config)
+        const envHost = data.global?.server?.envWebSocketHost;
+        
+        if (envHost) {
+          host = envHost;
         } else if (useRemoteWebSocket) {
           // If remote WebSocket is enabled
           if (configHost) {
@@ -27,14 +30,31 @@ export function useWebSocketUrl() {
             // Auto-detect from browser location
             host = window.location.hostname;
           }
+        } else if (typeof window !== 'undefined') {
+          // Default to current hostname when useRemoteWebSocket is false but we're in browser
+          host = window.location.hostname;
         }
 
-        setWsUrl(`ws://${host}:${port}`);
+        // Determine protocol based on current page
+        let protocol = 'ws';
+        if (typeof window !== 'undefined') {
+          protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        }
+
+        setWsUrl(`${protocol}://${host}:${port}`);
       })
       .catch(err => {
         console.error('Failed to load WebSocket config:', err);
-        // Use default
-        setWsUrl('ws://localhost:8080');
+        // Use smart defaults
+        let fallbackHost = 'localhost';
+        let fallbackProtocol = 'ws';
+        
+        if (typeof window !== 'undefined') {
+          fallbackHost = window.location.hostname;
+          fallbackProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        }
+        
+        setWsUrl(`${fallbackProtocol}://${fallbackHost}:8080`);
       });
   }, []);
 

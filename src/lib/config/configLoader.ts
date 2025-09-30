@@ -69,6 +69,9 @@ export class ConfigLoader {
       // Add any missing fields from defaults
       userConfig = addMissingFields(userConfig, defaultConfig);
 
+      // Apply environment variable overrides
+      this.applyEnvironmentOverrides(userConfig);
+
       // Validate the final config
       const validated = configSchema.parse(userConfig);
 
@@ -154,6 +157,16 @@ export class ConfigLoader {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private applyEnvironmentOverrides(config: any): void {
+    // Apply WebSocket host environment variable override
+    if (process.env.NEXT_PUBLIC_WS_HOST) {
+      if (!config.global) config.global = {};
+      if (!config.global.server) config.global.server = {};
+      config.global.server.envWebSocketHost = process.env.NEXT_PUBLIC_WS_HOST;
+      console.log('Applied WebSocket host environment override:', process.env.NEXT_PUBLIC_WS_HOST);
     }
   }
 
