@@ -14,6 +14,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { AlertTriangle, TrendingUp, Settings } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import websocketService from '@/lib/services/websocketService';
 
 interface TradeSizeWarning {
   symbol: string;
@@ -39,20 +40,15 @@ export function TradeSizeWarningModal({ onClose }: TradeSizeWarningModalProps) {
   useEffect(() => {
     checkTradeSizes();
 
-    // Listen for WebSocket warnings
-    const ws = new WebSocket(`ws://localhost:8080`);
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'trade_size_warnings' && data.data.warnings.length > 0) {
-        setWarnings(data.data.warnings);
+    // Listen for WebSocket warnings using the websocket service
+    const cleanup = websocketService.addMessageHandler((message) => {
+      if (message.type === 'trade_size_warnings' && message.data.warnings.length > 0) {
+        setWarnings(message.data.warnings);
         setIsOpen(true);
       }
-    };
+    });
 
-    return () => {
-      ws.close();
-    };
+    return cleanup;
   }, []);
 
   const checkTradeSizes = async () => {
