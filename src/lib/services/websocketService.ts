@@ -11,6 +11,7 @@ class WebSocketService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
   private url: string;
   private isConnected = false;
   private connectionListeners: Set<(connected: boolean) => void> = new Set();
@@ -125,6 +126,14 @@ class WebSocketService {
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this.notifyConnectionChange(true);
+        
+        // Setup ping interval for keep-alive
+        this.pingInterval = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 30000); // Ping every 30 seconds
+        
         cleanup();
         resolve();
       };
@@ -152,6 +161,11 @@ class WebSocketService {
         try {
           const message: WebSocketMessage = JSON.parse(event.data);
 
+          // Handle ping/pong for keep-alive (ignore silently)
+          if (message.type === 'pong') {
+            return;
+          }
+
           // Handle shutdown message specially
           if (message.type === 'shutdown') {
             console.log('WebSocketService: Received shutdown message - bot service stopping');
@@ -174,6 +188,12 @@ class WebSocketService {
         console.log('WebSocketService: Connection closed' + (this.isIntentionalDisconnect ? ' (intentional)' : ''));
         this.isConnected = false;
 
+        // Clear ping interval
+        if (this.pingInterval) {
+          clearInterval(this.pingInterval);
+          this.pingInterval = null;
+        }
+
         // Only notify connection change if not intentional disconnect
         if (!this.isIntentionalDisconnect) {
           this.notifyConnectionChange(false);
@@ -195,6 +215,11 @@ class WebSocketService {
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
+    }
+
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
 
     if (this.ws) {
