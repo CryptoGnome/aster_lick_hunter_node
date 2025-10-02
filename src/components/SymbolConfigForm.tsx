@@ -33,25 +33,86 @@ interface SymbolConfigFormProps {
 }
 
 export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfigFormProps) {
-  const [config, setConfig] = useState<Config>(currentConfig || {
-    api: {
-      apiKey: '',
-      secretKey: '',
-    },
-    global: {
-      riskPercent: 2,
-      paperMode: true,
-      positionMode: 'ONE_WAY',
-      server: {
-        dashboardPassword: '',
-        dashboardPort: 3000,
-        websocketPort: 8080,
-        useRemoteWebSocket: false,
-        websocketHost: null
+  // Ensure we have a properly initialized config with all required fields
+  const getInitialConfig = (): Config => {
+    if (currentConfig) {
+      // Ensure api object exists
+      if (!currentConfig.api) {
+        currentConfig.api = { apiKey: '', secretKey: '' };
       }
-    },
-    symbols: {},
-  });
+      
+      // Ensure global object exists with all required fields
+      if (!currentConfig.global) {
+        currentConfig.global = {
+          riskPercent: 2,
+          paperMode: true,
+          positionMode: 'HEDGE',
+          maxOpenPositions: 10,
+          useThresholdSystem: false,
+          server: {
+            dashboardPassword: '',
+            dashboardPort: 3000,
+            websocketPort: 8080,
+            useRemoteWebSocket: false,
+            websocketHost: null
+          },
+          rateLimit: {
+            maxRequestWeight: 2400,
+            maxOrderCount: 1200,
+            reservePercent: 30,
+            enableBatching: true,
+            queueTimeout: 30000,
+            enableDeduplication: true,
+            deduplicationWindowMs: 1000,
+            parallelProcessing: true,
+            maxConcurrentRequests: 3
+          }
+        };
+      }
+      
+      // Ensure symbols object exists
+      if (!currentConfig.symbols) {
+        currentConfig.symbols = {};
+      }
+      
+      return { ...currentConfig };
+    }
+    
+    // Default config if none provided
+    return {
+      api: {
+        apiKey: '',
+        secretKey: ''
+      },
+      global: {
+        riskPercent: 2,
+        paperMode: true,
+        positionMode: 'HEDGE',
+        maxOpenPositions: 10,
+        useThresholdSystem: false,
+        server: {
+          dashboardPassword: 'admin',
+          dashboardPort: 3000,
+          websocketPort: 8080,
+          useRemoteWebSocket: false,
+          websocketHost: null
+        },
+        rateLimit: {
+          maxRequestWeight: 2400,
+          maxOrderCount: 1200,
+          reservePercent: 30,
+          enableBatching: true,
+          queueTimeout: 30000,
+          parallelProcessing: true,
+          maxConcurrentRequests: 3
+        }
+      },
+      symbols: {},
+      version: '1.1.0'
+    };
+  };
+
+  const [config, setConfig] = useState<Config>(getInitialConfig());
 
   const [selectedSymbol, setSelectedSymbol] = useState<string>('');
   const [newSymbol, setNewSymbol] = useState<string>('');
@@ -310,7 +371,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 <Input
                   id="apiKey"
                   type="text"
-                  value={config.api.apiKey}
+                  value={config.api?.apiKey || ''} 
                   onChange={(e) => handleApiChange('apiKey', e.target.value)}
                   placeholder="Enter your API key (optional for paper mode)"
                   className="font-mono"
@@ -326,7 +387,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   <Input
                     id="secretKey"
                     type={showApiSecret ? 'text' : 'password'}
-                    value={config.api.secretKey}
+                    value={config.api?.secretKey || ''} 
                     onChange={(e) => handleApiChange('secretKey', e.target.value)}
                     placeholder="Enter your secret key (optional for paper mode)"
                     className="font-mono pr-10"

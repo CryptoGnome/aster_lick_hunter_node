@@ -6,6 +6,9 @@ export interface SymbolFilter {
   quantityPrecision: number;
   tickSize: string;
   stepSize: string;
+  maxQuantity?: number;
+  minNotional?: number;
+  minQuantity?: number;
 }
 
 export class SymbolPrecisionManager {
@@ -24,14 +27,20 @@ export class SymbolPrecisionManager {
     for (const symbolInfo of exchangeInfo.symbols) {
       const symbol = symbolInfo.symbol;
 
-      // Find PRICE_FILTER and LOT_SIZE filters
+      // Find PRICE_FILTER, LOT_SIZE, and MIN_NOTIONAL filters
       const priceFilter = symbolInfo.filters?.find((f: any) => f.filterType === 'PRICE_FILTER');
       const lotSizeFilter = symbolInfo.filters?.find((f: any) => f.filterType === 'LOT_SIZE');
+      const minNotionalFilter = symbolInfo.filters?.find((f: any) => f.filterType === 'MIN_NOTIONAL');
 
       if (priceFilter && lotSizeFilter) {
         // Calculate precision from tick size and step size
         const pricePrecision = this.getPrecisionFromString(priceFilter.tickSize);
         const quantityPrecision = this.getPrecisionFromString(lotSizeFilter.stepSize);
+        
+        // Parse quantity limits
+        const maxQuantity = lotSizeFilter.maxQty ? parseFloat(lotSizeFilter.maxQty) : undefined;
+        const minQuantity = lotSizeFilter.minQty ? parseFloat(lotSizeFilter.minQty) : undefined;
+        const minNotional = minNotionalFilter?.minNotional ? parseFloat(minNotionalFilter.minNotional) : undefined;
 
         this.symbolFilters.set(symbol, {
           symbol,
@@ -39,7 +48,13 @@ export class SymbolPrecisionManager {
           quantityPrecision,
           tickSize: priceFilter.tickSize,
           stepSize: lotSizeFilter.stepSize,
+          maxQuantity,
+          minQuantity,
+          minNotional
         });
+        
+        // Log the limits for debugging
+        console.log(`Symbol ${symbol} limits - MaxQty: ${maxQuantity || 'none'}, MinQty: ${minQuantity || 'none'}, MinNotional: ${minNotional || 'none'}`);
       } else {
         console.warn(`SymbolPrecisionManager: Missing filters for ${symbol}, using defaults`);
       }
@@ -153,6 +168,65 @@ export class SymbolPrecisionManager {
       quantityPrecision: this.DEFAULT_QUANTITY_PRECISION,
       tickSize: this.DEFAULT_TICK_SIZE,
       stepSize: this.DEFAULT_STEP_SIZE,
+    };
+  }
+
+  /**
+   * Validates and adjusts the quantity to comply with exchange limits
+   * @param symbol The trading pair symbol (e.g., 'BTCUSDT')
+   * @param quantity The desired quantity to validate
+   * @param price The current price (required for notional validation)
+   * @returns Object containing the adjusted quantity and a boolean indicating if adjustment was needed
+   */
+  public validateAndAdjustQuantity(symbol: string, quantity: number, price: number): { quantity: number; adjusted: boolean } {
+    if (quantity <= 0) {
+      throw new Error(`Invalid quantity: ${quantity}. Quantity must be positive.`);
+    }
+
+    const filter = this.symbolFilters.get(symbol) || this.getDefaultFilter(symbol);
+    let adjusted = false;
+    let adjustedQty = this.formatQuantity(symbol, quantity);
+    
+    // Check minimum quantity
+    if (filter.minQuantity && adjustedQty < filter.minQuantity) {
+      adjustedQty = filter.minQuantity;
+      adjusted = true;
+      console.warn(`SymbolPrecisionManager: Quantity ${quantity} is below minimum for ${symbol}, adjusted to ${adjustedQty}`);
+    }
+    
+    // Check maximum quantity
+    if (filter.maxQuantity && adjustedQty > filter.maxQuantity) {
+      adjustedQty = filter.maxQuantity;
+      adjusted = true;
+      console.warn(`SymbolPrecisionManager: Quantity ${quantity} exceeds maximum for ${symbol}, adjusted to ${adjustedQty}`);
+    }
+    
+    // Check minimum notional (price * quantity)
+    if (price > 0 && filter.minNotional) {
+      const notional = price * adjustedQty;
+      if (notional < filter.minNotional) {
+        // Calculate minimum quantity to meet notional requirement
+        const minQtyToMeetNotional = Math.ceil((filter.minNotional / price) * Math.pow(10, filter.quantityPrecision)) / 
+                                    Math.pow(10, filter.quantityPrecision);
+        
+        // If even the minimum quantity is too small, we can't proceed
+        if (minQtyToMeetNotional > (filter.maxQuantity || Infinity)) {
+          throw new Error(`Cannot meet minimum notional requirement for ${symbol} with current price ${price}. ` +
+                         `Required min quantity: ${minQtyToMeetNotional}, max allowed: ${filter.maxQuantity}`);
+        }
+        
+        adjustedQty = minQtyToMeetNotional;
+        adjusted = true;
+        console.warn(`SymbolPrecisionManager: Notional too low for ${symbol}, adjusted quantity to ${adjustedQty} to meet minimum notional`);
+      }
+    }
+    
+    // Final format to ensure proper precision
+    adjustedQty = this.formatQuantity(symbol, adjustedQty);
+    
+    return {
+      quantity: adjustedQty,
+      adjusted
     };
   }
 }
