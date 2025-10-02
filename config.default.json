@@ -5,6 +5,7 @@
   },
   "symbols": {
     "ASTERUSDT": {
+      "trade_side": "OPPOSITE",
       "longVolumeThresholdUSDT": 1000,
       "shortVolumeThresholdUSDT": 2500,
       "tradeSize": 0.69,

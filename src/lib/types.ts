@@ -26,6 +26,9 @@ export interface SymbolConfig {
   vwapTimeframe?: string;      // Timeframe for VWAP calculation: 1m, 5m, 15m, 30m, 1h (default: '1m')
   vwapLookback?: number;       // Number of candles to use for VWAP calculation (default: 100)
 
+  // Trade direction settings
+  trade_side?: 'OPPOSITE' | 'SAME'; // Trade direction relative to liquidation: OPPOSITE (default) or SAME
+
   // Threshold system settings (60-second rolling window)
   useThreshold?: boolean;       // Enable threshold-based triggering for this symbol (default: false)
   thresholdTimeWindow?: number; // Time window in ms for volume accumulation (default: 60000)

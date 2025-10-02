@@ -28,6 +28,9 @@ export const symbolConfigSchema = z.object({
   vwapTimeframe: z.string().optional(),
   vwapLookback: z.number().min(10).max(500).optional(),
 
+  // Trade direction settings
+  trade_side: z.enum(['OPPOSITE', 'SAME']).optional(),
+
   // Threshold system settings
   useThreshold: z.boolean().optional(),
 }).refine(data => {

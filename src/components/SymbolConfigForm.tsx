@@ -79,6 +79,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       priceOffsetBps: 5,      // 5 basis points offset for limit orders
       maxSlippageBps: 50,     // 50 basis points max slippage
       orderType: 'LIMIT' as const,
+      trade_side: 'OPPOSITE' as const, // Default to contrarian strategy
       vwapProtection: false,  // VWAP protection disabled by default
       vwapTimeframe: '1m',    // Default to 1 minute timeframe
       vwapLookback: 100,      // Default to 100 candles
@@ -1062,6 +1063,43 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                           />
                           <p className="text-xs text-muted-foreground">
                             Take profit percentage
+                          </p>
+                        </div>
+
+                        {/* Trade Direction Strategy */}
+                        <div className="space-y-2">
+                          <Label className="flex items-center gap-2">
+                            <TrendingUp className="h-4 w-4" />
+                            Trade Direction
+                          </Label>
+                          <Select
+                            value={config.symbols[selectedSymbol].trade_side || 'OPPOSITE'}
+                            onValueChange={(value: 'OPPOSITE' | 'SAME') =>
+                              handleSymbolChange(selectedSymbol, 'trade_side', value)
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="OPPOSITE">
+                                <div className="flex flex-col items-start">
+                                  <span>Opposite (Contrarian)</span>
+                                  <span className="text-xs text-muted-foreground">Trade against liquidations</span>
+                                </div>
+                              </SelectItem>
+                              <SelectItem value="SAME">
+                                <div className="flex flex-col items-start">
+                                  <span>Same (Momentum)</span>
+                                  <span className="text-xs text-muted-foreground">Trade with liquidations</span>
+                                </div>
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            {config.symbols[selectedSymbol].trade_side === 'SAME'
+                              ? 'Buy on buy liquidations, sell on sell liquidations (momentum strategy)'
+                              : 'Buy on sell liquidations, sell on buy liquidations (contrarian strategy - default)'}
                           </p>
                         </div>
 
