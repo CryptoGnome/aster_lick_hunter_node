@@ -520,7 +520,7 @@ export class Hunter extends EventEmitter {
 
       if (volumeUSDT < thresholdToCheck) return; // Too small
 
-      console.log(`Hunter: Liquidation detected - ${liquidation.symbol} ${liquidation.side} ${volumeUSDT.toFixed(2)} USDT`);
+      console.log(`Hunter: [${tradeDirection}] Liquidation detected - ${liquidation.symbol} ${liquidation.side} ${volumeUSDT.toFixed(2)} USDT`);
 
       // Analyze and trade with instant trigger
       await this.analyzeAndTrade(liquidation, symbolConfig);
@@ -652,14 +652,13 @@ export class Hunter extends EventEmitter {
       if (triggerBuy) {
         const volumeUSDT = liquidation.qty * liquidation.price;
 
-         // * Generate reason based on trade side mode
+        // * Generate reason based on trade side mode
         let reason: string;
         if (tradeSide === 'OPPOSITE') {
           reason = `SELL liquidation at ${((1 - priceRatio) * 100).toFixed(2)}% below mark price (contrarian)`;
         } else {
           reason = `BUY liquidation at ${((priceRatio - 1) * 100).toFixed(2)}% above mark price (momentum)`;
         }
-
 
         // Emit trade opportunity
         this.emit('tradeOpportunity', {
