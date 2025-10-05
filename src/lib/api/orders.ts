@@ -2,6 +2,8 @@ import { AxiosResponse } from 'axios';
 import { ApiCredentials, Order } from '../types';
 import { buildSignedForm, buildSignedQuery } from './auth';
 import { getRateLimitedAxios } from './requestInterceptor';
+import { symbolPrecision } from '../utils/symbolPrecision';
+import { getMarkPrice } from './market';
 
 const BASE_URL = 'https://fapi.asterdex.com';
 
@@ -17,8 +19,51 @@ export async function placeOrder(params: {
   positionSide?: 'BOTH' | 'LONG' | 'SHORT';
   timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'GTX';
 }, credentials: ApiCredentials): Promise<Order> {
+  // Validate quantity before proceeding
+  let validatedQuantity = params.quantity;
+  let priceForValidation = params.price || 0;
+  
+  try {
+    // For market orders or when price is not provided, get the current mark price for validation
+    if (params.type === 'MARKET' || !params.price) {
+      try {
+        const markPriceData = await getMarkPrice(params.symbol);
+        if (Array.isArray(markPriceData)) {
+          // Find the symbol in the array of mark prices
+          const symbolData = markPriceData.find(item => item.symbol === params.symbol);
+          if (symbolData && symbolData.markPrice) {
+            priceForValidation = parseFloat(symbolData.markPrice);
+          }
+        } else if (markPriceData && markPriceData.markPrice) {
+          // Handle single symbol response
+          priceForValidation = parseFloat(markPriceData.markPrice);
+        }
+      } catch (error) {
+        console.warn(`Failed to get mark price for ${params.symbol}:`, error);
+        // Fall back to the provided price or 0 if not available
+        priceForValidation = params.price || 0;
+      }
+    }
+    
+    // Validate and adjust quantity
+    const { quantity: adjustedQty, adjusted } = symbolPrecision.validateAndAdjustQuantity(
+      params.symbol,
+      params.quantity,
+      priceForValidation
+    );
+    
+    if (adjusted) {
+      console.warn(`Order quantity adjusted from ${params.quantity} to ${adjustedQty} for ${params.symbol} to comply with exchange limits`);
+      validatedQuantity = adjustedQty;
+    }
+  } catch (error: any) {
+    console.error(`Failed to validate order quantity for ${params.symbol}:`, error.message);
+    throw new Error(`Order validation failed: ${error.message}`);
+  }
+
   const orderParams = {
     ...params,
+    quantity: validatedQuantity, // Use the validated quantity
   };
 
   // Add timeInForce for limit orders if not specified

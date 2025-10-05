@@ -1,5 +1,6 @@
 import { getRateLimitManager, resetRateLimitManager, RequestPriority } from '../../src/lib/api/rateLimitManager';
-import axios from 'axios';
+// Using _ prefix to indicate intentionally unused import for test setup
+import _axios from 'axios';
 
 describe('Rate Limit Manager', () => {
   beforeEach(() => {
@@ -262,8 +263,8 @@ describe('Rate Limit Manager', () => {
           false,
           RequestPriority.MEDIUM
         );
-      } catch (error) {
-        // Expected
+      } catch (_error) {
+        // Expected - using _error to indicate intentionally unused
       }
 
       // Circuit breaker should prevent non-critical requests

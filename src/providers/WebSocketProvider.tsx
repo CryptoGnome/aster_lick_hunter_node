@@ -15,7 +15,13 @@ const WebSocketContext = createContext<WebSocketContextType>({
   wsUrl: typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:8080` : 'ws://localhost:8080'
 });
 
-export const useWebSocketConfig = () => useContext(WebSocketContext);
+export const useWebSocketConfig = () => {
+  const context = useContext(WebSocketContext);
+  if (context === undefined) {
+    throw new Error('useWebSocketConfig must be used within a WebSocketProvider');
+  }
+  return context;
+};
 
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [wsPort, setWsPort] = useState(8080);
@@ -65,15 +71,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           console.log('WebSocketProvider: Using current hostname (useRemoteWebSocket disabled):', host);
         }
 
+        // Set the host and port in state
         setWsHost(host);
-        
+
         // Determine protocol based on current page and host
         let protocol = 'ws';
         if (typeof window !== 'undefined') {
           // Use secure WebSocket if page is HTTPS
           protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         }
-        
+
         const url = `${protocol}://${host}:${port}`;
         console.log('WebSocketProvider: Configured WebSocket URL:', url);
         websocketService.setUrl(url);

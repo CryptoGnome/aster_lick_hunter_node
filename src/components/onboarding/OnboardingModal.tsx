@@ -12,6 +12,7 @@ import { Progress } from '@/components/ui/progress';
 import { Button } from '@/components/ui/button';
 import { useOnboarding } from './OnboardingProvider';
 import { useConfig } from '@/components/ConfigProvider';
+import type { Config, SymbolConfig } from '@/lib/types';
 import { WelcomeStep } from './steps/WelcomeStep';
 import { PasswordSetup } from './steps/PasswordSetup';
 import { ApiKeyStep } from './steps/ApiKeyStep';
@@ -43,23 +44,93 @@ export function OnboardingModal() {
   };
 
   const handlePasswordSetup = async (password: string) => {
-    // Update config with the new password
-    if (config) {
-      const updatedConfig = {
-        ...config,
-        global: {
-          ...config.global,
-          server: {
-            ...config.global.server,
-            dashboardPassword: password,
-          },
-        },
-      };
-      await updateConfig(updatedConfig);
+    console.log('🔍 handlePasswordSetup - DEBUG START');
+    console.log('Password received:', password);
+    console.log('Current config exists:', !!config);
+
+    if (!config) {
+      console.error('❌ Config not loaded yet');
+      return;
     }
 
-    completeStep('password-setup');
-    nextStep();
+    // Ensure we have all required fields with defaults if missing
+    const updatedConfig = {
+      // Ensure API exists with empty strings if not present
+      api: {
+        apiKey: config.api?.apiKey || '',
+        secretKey: config.api?.secretKey || ''
+      },
+      // Ensure symbols exist with at least one default symbol if empty
+      symbols: config.symbols && Object.keys(config.symbols).length > 0 
+        ? config.symbols 
+        : {
+            'BTCUSDT': {
+              tradeSize: 0.001,
+              leverage: 5,
+              tpPercent: 5,
+              slPercent: 2,
+              longVolumeThresholdUSDT: 10000,
+              shortVolumeThresholdUSDT: 10000,
+              maxPositionMarginUSDT: 5000,
+              priceOffsetBps: 5,
+              maxSlippageBps: 50,
+              orderType: 'LIMIT' as const,
+              vwapProtection: true,
+              vwapTimeframe: '1m',
+              vwapLookback: 200
+            }
+          },
+      // Ensure global config has all required fields
+      global: {
+        riskPercent: config.global?.riskPercent || 5,
+        paperMode: config.global?.paperMode ?? true,
+        positionMode: config.global?.positionMode || 'ONE_WAY',
+        maxOpenPositions: config.global?.maxOpenPositions || 10,
+        useThresholdSystem: config.global?.useThresholdSystem ?? false,
+        rateLimit: config.global?.rateLimit || {
+          maxRequestWeight: 2400,
+          maxOrderCount: 1200,
+          reservePercent: 30,
+          enableBatching: true,
+          queueTimeout: 30000,
+          enableDeduplication: true,
+          deduplicationWindowMs: 1000,
+          parallelProcessing: true,
+          maxConcurrentRequests: 3
+        },
+        server: {
+          ...config.global?.server,
+          dashboardPassword: password,
+          dashboardPort: config.global?.server?.dashboardPort || 3000,
+          websocketPort: config.global?.server?.websocketPort || 3001,
+          useRemoteWebSocket: config.global?.server?.useRemoteWebSocket ?? false,
+          websocketHost: config.global?.server?.websocketHost || null
+        }
+      },
+      version: config.version || '1.1.0'
+    };
+
+    console.log('📋 Config structure check:', {
+      hasApi: !!updatedConfig.api,
+      hasSymbols: !!updatedConfig.symbols && Object.keys(updatedConfig.symbols).length > 0,
+      hasGlobal: !!updatedConfig.global,
+      apiKeysPresent: !!(updatedConfig.api.apiKey && updatedConfig.api.secretKey),
+      globalRiskPercent: updatedConfig.global.riskPercent,
+      globalPaperMode: updatedConfig.global.paperMode
+    });
+
+    console.log('📤 Config to be sent:', JSON.stringify(updatedConfig, null, 2));
+    console.log('🔍 handlePasswordSetup - DEBUG END');
+
+    try {
+      await updateConfig(updatedConfig);
+      console.log('✅ Config saved successfully');
+      completeStep('password-setup');
+      nextStep();
+    } catch (error) {
+      console.error('❌ Config save failed:', error);
+      throw error;
+    }
   };
 
   const handlePasswordSkip = () => {
@@ -70,18 +141,45 @@ export function OnboardingModal() {
 
   const handleApiKeyNext = async (apiKey: string, secretKey: string) => {
     setApiKeys({ apiKey, secretKey });
-    setIsPaperMode(!apiKey && !secretKey);
+    const paperMode = !apiKey && !secretKey;
+    setIsPaperMode(paperMode);
 
     // Update config with API keys
     if (config) {
-      const updatedConfig = {
+      const updatedConfig: Config = {
         ...config,
         api: { apiKey, secretKey },
         global: {
           ...config.global,
-          paperMode: !apiKey && !secretKey,
+          paperMode,
+          // Ensure all required global config properties are present
+          riskPercent: config.global?.riskPercent ?? 2,
+          positionMode: config.global?.positionMode ?? 'ONE_WAY',
+          maxOpenPositions: config.global?.maxOpenPositions ?? 10,
+          useThresholdSystem: config.global?.useThresholdSystem ?? false,
+          server: {
+            ...config.global?.server,
+            dashboardPassword: config.global?.server?.dashboardPassword ?? '',
+            dashboardPort: config.global?.server?.dashboardPort ?? 3000,
+            websocketPort: config.global?.server?.websocketPort ?? 3001,
+            useRemoteWebSocket: config.global?.server?.useRemoteWebSocket ?? false,
+            websocketHost: config.global?.server?.websocketHost ?? null
+          },
+          rateLimit: {
+            ...config.global?.rateLimit,
+            maxRequestWeight: config.global?.rateLimit?.maxRequestWeight ?? 2400,
+            maxOrderCount: config.global?.rateLimit?.maxOrderCount ?? 1200,
+            reservePercent: config.global?.rateLimit?.reservePercent ?? 30,
+            enableBatching: config.global?.rateLimit?.enableBatching ?? true,
+            queueTimeout: config.global?.rateLimit?.queueTimeout ?? 30000,
+            parallelProcessing: config.global?.rateLimit?.parallelProcessing ?? false,
+            maxConcurrentRequests: config.global?.rateLimit?.maxConcurrentRequests ?? 3
+          }
         },
+        // Ensure symbols exist
+        symbols: config.symbols || {}
       };
+      
       await updateConfig(updatedConfig);
     }
 
@@ -89,27 +187,56 @@ export function OnboardingModal() {
     nextStep();
   };
 
-  const handleSymbolConfigNext = async (symbolConfigs: any[], riskPercent: number) => {
+  const handleSymbolConfigNext = async (symbolConfigs: Array<{
+    symbol: string;
+    volumeThreshold: number;
+    leverage: number;
+    tpPercent: number;
+    slPercent: number;
+  }>, riskPercent: number) => {
     if (config) {
-      const symbolsObject: any = {};
+      const symbolsObject: Record<string, any> = {};
+      
       symbolConfigs.forEach(sc => {
         symbolsObject[sc.symbol] = {
-          volumeThresholdUSDT: sc.volumeThreshold,
+          // Required fields
           tradeSize: sc.symbol === 'BTCUSDT' ? 0.001 : 0.01,
           leverage: sc.leverage,
           tpPercent: sc.tpPercent,
           slPercent: sc.slPercent,
+          
+          // Volume thresholds
+          volumeThresholdUSDT: sc.volumeThreshold,
+          longVolumeThresholdUSDT: sc.volumeThreshold,
+          shortVolumeThresholdUSDT: sc.volumeThreshold,
+          
+          // Default values for other required fields
+          maxPositionMarginUSDT: 1000,
+          priceOffsetBps: 10,
+          usePostOnly: true,
+          maxSlippageBps: 50,
+          orderType: 'LIMIT' as const,
+          vwapProtection: false,
+          vwapTimeframe: '1m',
+          vwapLookback: 100,
+          useThreshold: false,
+          thresholdTimeWindow: 60000,
+          thresholdCooldown: 30000,
+          
+          // Optional fields with defaults
+          shortTradeSize: sc.symbol === 'BTCUSDT' ? 0.001 : 0.01
         };
       });
 
-      const updatedConfig = {
+      const updatedConfig: Config = {
         ...config,
-        symbols: symbolsObject,
+        symbols: symbolsObject as Record<string, SymbolConfig>,
         global: {
           ...config.global,
           riskPercent,
         },
       };
+      
       await updateConfig(updatedConfig);
     }
 
