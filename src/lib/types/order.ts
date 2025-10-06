@@ -132,3 +132,20 @@ export interface OrderUpdate {
     realizedProfit: string;
   };
 }
+
+export interface Trade {
+  buyer: boolean;
+  commission: string;
+  commissionAsset: string;
+  id: number;
+  maker: boolean;
+  orderId: number;
+  price: string;
+  qty: string;
+  quoteQty: string;
+  realizedPnl: string;
+  side: OrderSide;
+  positionSide: PositionSide;
+  symbol: string;
+  time: number;
+}

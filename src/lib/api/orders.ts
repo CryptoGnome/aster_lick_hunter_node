@@ -1,5 +1,6 @@
 import { AxiosResponse } from 'axios';
 import { ApiCredentials, Order } from '../types';
+import { Trade } from '../types/order';
 import { buildSignedForm, buildSignedQuery } from './auth';
 import { getRateLimitedAxios } from './requestInterceptor';
 import { symbolPrecision } from '../utils/symbolPrecision';
@@ -222,6 +223,41 @@ export async function getPositions(credentials: ApiCredentials): Promise<any[]> 
       'X-MBX-APIKEY': credentials.apiKey
     }
   });
+  return response.data;
+}
+
+// Get user trades for a specific symbol
+export async function getUserTrades(
+  symbol: string,
+  credentials: ApiCredentials,
+  params?: {
+    startTime?: number;
+    endTime?: number;
+    fromId?: number;
+    limit?: number;
+  }
+): Promise<Trade[]> {
+  const queryParams: Record<string, any> = {
+    symbol,
+    limit: params?.limit || 500,
+  };
+
+  if (params?.startTime) queryParams.startTime = params.startTime;
+  if (params?.endTime) queryParams.endTime = params.endTime;
+  if (params?.fromId) queryParams.fromId = params.fromId;
+
+  const query = buildSignedQuery(queryParams, credentials);
+
+  const axios = getRateLimitedAxios();
+  const response: AxiosResponse<Trade[]> = await axios.get(
+    `${BASE_URL}/fapi/v1/userTrades?${query}`,
+    {
+      headers: {
+        'X-MBX-APIKEY': credentials.apiKey
+      }
+    }
+  );
+
   return response.data;
 }
 

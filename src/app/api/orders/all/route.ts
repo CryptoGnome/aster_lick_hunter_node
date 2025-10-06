@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllOrders } from '@/lib/api/orders';
+import { getAllOrders, getUserTrades } from '@/lib/api/orders';
 import { loadConfig } from '@/lib/bot/config';
 import { Order, OrderStatus } from '@/lib/types/order';
-import { getIncomeHistory } from '@/lib/api/income';
 
 // Cache for orders to reduce API calls
 let ordersCache: { data: Order[]; timestamp: number } | null = null;
@@ -54,8 +53,8 @@ export async function GET(request: NextRequest) {
         );
         allOrders = orders;
       } else if (configuredSymbols.length > 0) {
-        // Fetch for all configured symbols (up to a reasonable limit)
-        const symbolsToFetch = configuredSymbols.slice(0, 5); // Limit to 5 symbols to avoid too many API calls
+        // Fetch for all configured symbols
+        const symbolsToFetch = configuredSymbols; // Fetch all configured symbols
 
         for (const sym of symbolsToFetch) {
           try {
@@ -83,43 +82,54 @@ export async function GET(request: NextRequest) {
         allOrders = orders;
       }
 
-      // Fetch income history to get realized PnL for filled orders
-      let incomeRecords: any[] = [];
-      try {
-        // Fetch income history for the same time period
-        const incomeParams = {
-          startTime: startTime ? parseInt(startTime) : Date.now() - 7 * 24 * 60 * 60 * 1000, // Default to 7 days
-          endTime: endTime ? parseInt(endTime) : Date.now(),
-          incomeType: 'REALIZED_PNL' as any,
-          limit: 1000,
-        };
-        incomeRecords = await getIncomeHistory(config.api, incomeParams);
-      } catch (err) {
-        console.error('Failed to fetch income history:', err);
-      }
+      // Fetch user trades to get realized PnL for filled orders
+      const pnlMap = new Map<number, number>(); // orderId → total realizedPnl
 
-      // Create a map of realized PnL by time (within a 5 second window)
-      const pnlMap = new Map<string, string>();
-      incomeRecords.forEach(record => {
-        if (record.incomeType === 'REALIZED_PNL' && record.symbol) {
-          // Create a key with symbol and time window
-          const timeWindow = Math.floor(record.time / 5000) * 5000; // 5 second window
-          const key = `${record.symbol}_${timeWindow}`;
-          pnlMap.set(key, record.income);
+      if (symbol && symbol !== 'ALL') {
+        // Fetch trades for specific symbol
+        try {
+          const trades = await getUserTrades(symbol, config.api, {
+            startTime: startTime ? parseInt(startTime) : Date.now() - 7 * 24 * 60 * 60 * 1000,
+            endTime: endTime ? parseInt(endTime) : Date.now(),
+            limit: 1000,
+          });
+
+          // Aggregate PnL by orderId (handle multiple fills per order)
+          trades.forEach(trade => {
+            const existing = pnlMap.get(trade.orderId) || 0;
+            pnlMap.set(trade.orderId, existing + parseFloat(trade.realizedPnl));
+          });
+        } catch (err) {
+          console.error(`Failed to fetch trades for ${symbol}:`, err);
         }
-      });
+      } else if (configuredSymbols.length > 0) {
+        // Fetch trades for all configured symbols
+        const symbolsToFetch = configuredSymbols;
+
+        for (const sym of symbolsToFetch) {
+          try {
+            const trades = await getUserTrades(sym, config.api, {
+              startTime: startTime ? parseInt(startTime) : Date.now() - 7 * 24 * 60 * 60 * 1000,
+              endTime: endTime ? parseInt(endTime) : Date.now(),
+              limit: 1000,
+            });
+
+            // Aggregate PnL by orderId (handle multiple fills per order)
+            trades.forEach(trade => {
+              const existing = pnlMap.get(trade.orderId) || 0;
+              pnlMap.set(trade.orderId, existing + parseFloat(trade.realizedPnl));
+            });
+          } catch (err) {
+            console.error(`Failed to fetch trades for ${sym}:`, err);
+          }
+        }
+      }
 
       // Transform and enrich order data
       const transformedOrders: Order[] = allOrders.map(order => {
-        // Try to find matching PnL from income history
-        let realizedPnl = '0';
-
-        // For filled orders, try to match PnL by symbol and time
-        if (order.status === 'FILLED' && order.updateTime) {
-          const timeWindow = Math.floor(order.updateTime / 5000) * 5000;
-          const key = `${order.symbol}_${timeWindow}`;
-          realizedPnl = pnlMap.get(key) || '0';
-        }
+        // Get realized PnL from trades map using orderId
+        const realizedPnl = pnlMap.get(order.orderId);
+        const realizedPnlStr = realizedPnl !== undefined ? realizedPnl.toString() : '0';
 
         return {
           symbol: order.symbol,
@@ -144,7 +154,7 @@ export async function GET(request: NextRequest) {
           priceProtect: order.priceProtect || false,
           avgPrice: order.avgPrice || order.price,
           origType: order.origType || order.type,
-          realizedProfit: realizedPnl,
+          realizedProfit: realizedPnlStr,
         };
       });
 
