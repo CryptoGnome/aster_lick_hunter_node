@@ -401,7 +401,7 @@ export default function SymbolConfigForm({ onSave, currentConfig, symbol }: Symb
     setUseSeparateTradeSizes(separateSizes);
   }, [config.symbols]);
 
-  // Calculate minimum margin based on leverage (with 30% buffer for safety)
+  // Calculate minimum margin based on leverage (with 50% buffer for safety and rounded up to nearest dollar)
   const getMinimumMargin = () => {
     if (!symbolDetails || !selectedSymbol || !config.symbols[selectedSymbol]) {
       return null;
@@ -418,8 +418,9 @@ export default function SymbolConfigForm({ onSave, currentConfig, symbol }: Symb
     // Use the larger of the two requirements
     const rawMinimum = Math.max(minFromNotional, minFromQuantity);
 
-    // Add 30% buffer to avoid rejection due to price movements
-    return rawMinimum * 1.3;
+    // Add 50% buffer (increased from 30%) to avoid rejection due to price movements
+    // and round up to the nearest dollar for cleaner numbers
+    return Math.ceil(rawMinimum * 1.305);
   };
 
   // Get raw minimum without buffer (for display purposes)
