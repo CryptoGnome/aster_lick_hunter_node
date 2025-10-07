@@ -167,16 +167,48 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
   };
 
   const handleSymbolChange = (symbol: string, field: string, value: any) => {
-    setConfig({
-      ...config,
-      symbols: {
-        ...config.symbols,
-        [symbol]: {
-          ...config.symbols[symbol],
-          [field]: value,
-        },
-      },
-    });
+    const newConfig = JSON.parse(JSON.stringify(config)); // Deep clone to avoid reference issues
+    
+    // If we're setting to undefined, remove the field entirely
+    if (value === undefined) {
+      if (field in newConfig.symbols[symbol]) {
+        delete newConfig.symbols[symbol][field];
+        
+        // If we're removing a trade size field, also update the separate trade sizes state
+        if (field === 'longTradeSize' || field === 'shortTradeSize') {
+          const otherField = field === 'longTradeSize' ? 'shortTradeSize' : 'longTradeSize';
+          const hasOtherField = otherField in newConfig.symbols[symbol];
+          
+          // If the other trade size field doesn't exist, turn off separate trade sizes
+          if (!hasOtherField) {
+            setUseSeparateTradeSizes(prev => ({
+              ...prev,
+              [symbol]: false
+            }));
+          }
+        }
+      }
+    } else {
+      // Otherwise, update the field normally
+      newConfig.symbols[symbol] = {
+        ...newConfig.symbols[symbol],
+        [field]: value,
+      };
+      
+      // If we're setting a trade size field, ensure the separate trade sizes is enabled
+      if (field === 'longTradeSize' || field === 'shortTradeSize') {
+        setUseSeparateTradeSizes(prev => ({
+          ...prev,
+          [symbol]: true
+        }));
+      }
+    }
+    if (field === 'tradeSize' && !useSeparateTradeSizes[symbol]) {
+      const { longTradeSize, shortTradeSize, ...rest } = newConfig.symbols[symbol];
+      newConfig.symbols[symbol] = rest;
+    }
+    
+    setConfig(newConfig);
   };
 
   // Fetch available symbols when the symbols tab is clicked
@@ -296,10 +328,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     const separateSizes: Record<string, boolean> = {};
     Object.keys(config.symbols).forEach(symbol => {
       const symbolConfig = config.symbols[symbol];
-      // Check if either longTradeSize or shortTradeSize exists (not undefined)
+      // Only set to true if both longTradeSize and shortTradeSize are explicitly defined
       const hasLongSize = symbolConfig.longTradeSize !== undefined;
       const hasShortSize = symbolConfig.shortTradeSize !== undefined;
-      separateSizes[symbol] = hasLongSize || hasShortSize;
+      separateSizes[symbol] = hasLongSize && hasShortSize;
     });
     setUseSeparateTradeSizes(separateSizes);
   }, [config.symbols]);
@@ -900,15 +932,21 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   setLongTradeSizeInput(longSize.toString());
                                   setShortTradeSizeInput(shortSize.toString());
                                 } else {
-                                  // Remove separate values when toggling off
-                                  const { longTradeSize: _longTradeSize, shortTradeSize: _shortTradeSize, ...restConfig } = config.symbols[selectedSymbol];
+                                  // Create a new config without the separate trade sizes
+                                  const newSymbols = { ...config.symbols };
+                                  const { longTradeSize, shortTradeSize, ...restConfig } = newSymbols[selectedSymbol];
+                                  
+                                  // Only keep the tradeSize and other config
+                                  newSymbols[selectedSymbol] = {
+                                    ...restConfig,
+                                    tradeSize: config.symbols[selectedSymbol].tradeSize
+                                  };
+                                  
                                   setConfig({
                                     ...config,
-                                    symbols: {
-                                      ...config.symbols,
-                                      [selectedSymbol]: restConfig,
-                                    },
+                                    symbols: newSymbols
                                   });
+                                  
                                   // Reset input fields to tradeSize
                                   const currentTradeSize = config.symbols[selectedSymbol].tradeSize;
                                   setLongTradeSizeInput(currentTradeSize.toString());
@@ -1033,18 +1071,23 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                       if (!isNaN(value)) {
                                         handleSymbolChange(selectedSymbol, 'shortTradeSize', value);
                                       }
+                                    } else {
+                                      // When field is cleared, remove the shortTradeSize
+                                      handleSymbolChange(selectedSymbol, 'shortTradeSize', undefined);
+                                      // Update input to show the fallback value
+                                      const fallbackValue = config.symbols[selectedSymbol].tradeSize;
+                                      setShortTradeSizeInput(fallbackValue.toString());
                                     }
                                   }}
                                   onBlur={(e) => {
-                                    // On blur, if empty, reset to tradeSize
                                     if (e.target.value === '') {
+                                      // When field is cleared and blurred, remove the shortTradeSize
+                                      handleSymbolChange(selectedSymbol, 'shortTradeSize', undefined);
+                                      // Update input to show the fallback value
                                       const fallbackValue = config.symbols[selectedSymbol].tradeSize;
                                       setShortTradeSizeInput(fallbackValue.toString());
-                                      handleSymbolChange(selectedSymbol, 'shortTradeSize', fallbackValue);
                                     }
                                   }}
-                                  min="0"
-                                  step="0.01"
                                 />
                                 <div className="space-y-1">
                                   <p className="text-xs text-muted-foreground">
