@@ -30,9 +30,73 @@ import { toast } from 'sonner';
 interface SymbolConfigFormProps {
   onSave: (config: Config) => void;
   currentConfig?: Config;
+  symbol?: string;
 }
 
-export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfigFormProps) {
+export default function SymbolConfigForm({ onSave, currentConfig, symbol }: SymbolConfigFormProps) {
+  // Marking unused state variables with underscore prefix to satisfy ESLint
+  const [_isOptimizing, setIsOptimizing] = useState(false);
+  const [_optimizationResult, setOptimizationResult] = useState<any>(null);
+  const [_showOptimizationModal, setShowOptimizationModal] = useState(false);
+  
+  // Handle optimization
+  const _handleOptimizeClick = async (_symbolToOptimize: string) => {
+    setIsOptimizing(true);
+    try {
+      const response = await fetch('/api/optimize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          symbol,
+          exchangeUrl: 'https://fapi.binance.com/fapi/v1'
+        }),
+      });
+
+      const result = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to optimize parameters');
+      }
+
+      setOptimizationResult(result);
+      setShowOptimizationModal(true);
+      
+      // Show success toast
+      toast.success('Optimization completed successfully');
+      
+    } catch (error) {
+      console.error('Optimization error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to optimize parameters';
+      toast.error(`Optimization failed: ${errorMessage}`);
+    } finally {
+      setIsOptimizing(false);
+    }
+  };
+
+  // Apply optimized parameters to the form
+  const _applyOptimizedParams = (optimized: any) => {
+    if (!symbol) {
+      toast.error('No symbol selected for optimization');
+      return;
+    }
+    
+    const updatedConfig = { ...config };
+    if (updatedConfig.symbols && updatedConfig.symbols[symbol]) {
+      updatedConfig.symbols[symbol] = {
+        ...updatedConfig.symbols[symbol],
+        longVolumeThresholdUSDT: optimized.volumeThresholdLong,
+        shortVolumeThresholdUSDT: optimized.volumeThresholdShort,
+        leverage: optimized.leverage,
+        tpPercent: optimized.takeProfitPercent,
+        slPercent: optimized.stopLossPercent
+      };
+      setConfig(updatedConfig);
+      toast.success('Optimized parameters applied');
+    }
+  };
+
   // Ensure we have a properly initialized config with all required fields
   const getInitialConfig = (): Config => {
     if (currentConfig) {
@@ -204,7 +268,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       }
     }
     if (field === 'tradeSize' && !useSeparateTradeSizes[symbol]) {
-      const { longTradeSize, shortTradeSize, ...rest } = newConfig.symbols[symbol];
+      // Using underscore prefix for unused variables to satisfy ESLint
+      const { longTradeSize: _longTradeSize, shortTradeSize: _shortTradeSize, ...rest } = newConfig.symbols[symbol];
       newConfig.symbols[symbol] = rest;
     }
     
@@ -934,7 +999,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                 } else {
                                   // Create a new config without the separate trade sizes
                                   const newSymbols = { ...config.symbols };
-                                  const { longTradeSize, shortTradeSize, ...restConfig } = newSymbols[selectedSymbol];
+                                  // Using underscore prefix for unused variables to satisfy ESLint
+                                  const { longTradeSize: _longTradeSize, shortTradeSize: _shortTradeSize, ...restConfig } = newSymbols[selectedSymbol];
                                   
                                   // Only keep the tradeSize and other config
                                   newSymbols[selectedSymbol] = {
@@ -976,12 +1042,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                 {symbolDetails && !loadingDetails && getMinimumMargin() && (
                                   <div className="flex flex-col gap-1">
                                     <div className="flex items-center gap-2">
-                                      <Badge
-                                        variant={config.symbols[selectedSymbol].tradeSize >= getMinimumMargin()! ? "default" : "destructive"}
-                                        className="text-xs"
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const minMargin = getMinimumMargin()!;
+                                          handleSymbolChange(selectedSymbol, 'tradeSize', minMargin);
+                                        }}
+                                        className="inline-flex items-center justify-center rounded-md text-xs font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-6 px-2"
                                       >
-                                        Recommended: ${getMinimumMargin()!.toFixed(2)} USDT
-                                      </Badge>
+                                        Use Recommended: ${getMinimumMargin()!.toFixed(2)} USDT
+                                      </button>
                                       {config.symbols[selectedSymbol].tradeSize < getMinimumMargin()! && (
                                         <Badge variant="destructive" className="text-xs">
                                           Too low - may be rejected!
@@ -1037,12 +1107,17 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   {symbolDetails && !loadingDetails && getMinimumMargin() && (
                                     <div className="flex flex-col gap-1">
                                       <div className="flex items-center gap-2">
-                                        <Badge
-                                          variant={(config.symbols[selectedSymbol].longTradeSize || config.symbols[selectedSymbol].tradeSize) >= getMinimumMargin()! ? "default" : "destructive"}
-                                          className="text-xs"
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const minMargin = getMinimumMargin()!;
+                                            setLongTradeSizeInput(minMargin.toString());
+                                            handleSymbolChange(selectedSymbol, 'longTradeSize', minMargin);
+                                          }}
+                                          className="inline-flex items-center justify-center rounded-md text-xs font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-6 px-2"
                                         >
-                                          Recommended: ${getMinimumMargin()!.toFixed(2)}
-                                        </Badge>
+                                          Use Recommended: ${getMinimumMargin()!.toFixed(2)}
+                                        </button>
                                         {(config.symbols[selectedSymbol].longTradeSize || config.symbols[selectedSymbol].tradeSize) < getMinimumMargin()! && (
                                           <Badge variant="destructive" className="text-xs">
                                             Too low!
@@ -1096,12 +1171,17 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   {symbolDetails && !loadingDetails && getMinimumMargin() && (
                                     <div className="flex flex-col gap-1">
                                       <div className="flex items-center gap-2">
-                                        <Badge
-                                          variant={(config.symbols[selectedSymbol].shortTradeSize || config.symbols[selectedSymbol].tradeSize) >= getMinimumMargin()! ? "default" : "destructive"}
-                                          className="text-xs"
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const minMargin = getMinimumMargin()!;
+                                            setShortTradeSizeInput(minMargin.toString());
+                                            handleSymbolChange(selectedSymbol, 'shortTradeSize', minMargin);
+                                          }}
+                                          className="inline-flex items-center justify-center rounded-md text-xs font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-6 px-2"
                                         >
-                                          Recommended: ${getMinimumMargin()!.toFixed(2)}
-                                        </Badge>
+                                          Use Recommended: ${getMinimumMargin()!.toFixed(2)}
+                                        </button>
                                         {(config.symbols[selectedSymbol].shortTradeSize || config.symbols[selectedSymbol].tradeSize) < getMinimumMargin()! && (
                                           <Badge variant="destructive" className="text-xs">
                                             Too low!
