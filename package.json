@@ -25,7 +25,8 @@
     "test:ws": "tsx tests/core/websocket.test.ts",
     "test:errors": "tsx tests/core/error-logging.test.ts",
     "test:integration": "tsx tests/integration/trading-flow.test.ts",
-    "test:watch": "tsx watch tests/**/*.test.ts"
+    "test:watch": "tsx watch tests/**/*.test.ts",
+    "optimize:ui": "node optimize-config.js"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -43,6 +44,7 @@
     "@types/sqlite3": "^5.1.0",
     "@types/uuid": "^11.0.0",
     "axios": "^1.12.2",
+    "better-sqlite3": "^12.4.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "ethers": "^6.15.0",
@@ -54,6 +56,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "recharts": "^2.15.4",
+    "server-only": "^0.0.1",
     "sonner": "^2.0.7",
     "sqlite3": "^5.1.7",
     "tailwind-merge": "^3.3.1",
