@@ -33,12 +33,15 @@ export function VersionChecker() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1">
           <GitBranch className="h-3 w-3" />
-          <span>Version</span>
           {versionInfo && (
-            <span className="font-mono text-muted-foreground/70">
-              {versionInfo.currentCommitShort}
-            </span>
+            <>
+              <span className="font-medium">{versionInfo.currentBranch}</span>
+              <span className="font-mono text-muted-foreground/70">
+                {versionInfo.currentCommitShort}
+              </span>
+            </>
           )}
+          {!versionInfo && <span>Version</span>}
         </div>
         <div className="flex items-center gap-1">
           {isLoading ? (

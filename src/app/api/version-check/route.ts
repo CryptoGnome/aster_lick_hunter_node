@@ -7,6 +7,7 @@ const execAsync = promisify(exec);
 interface VersionInfo {
   currentCommit: string;
   currentCommitShort: string;
+  currentBranch: string;
   isUpToDate: boolean;
   commitsBehind: number;
   latestCommit: string;
@@ -23,15 +24,19 @@ interface VersionInfo {
 
 export async function GET() {
   try {
-    // Fetch latest changes from remote
-    await execAsync('git fetch origin main');
+    // Get current branch
+    const { stdout: currentBranch } = await execAsync('git branch --show-current');
+    const branch = currentBranch.trim();
+
+    // Fetch latest changes from remote for the current branch
+    await execAsync(`git fetch origin ${branch}`);
 
     // Get current commit hash
     const { stdout: currentCommit } = await execAsync('git rev-parse HEAD');
     const currentCommitShort = currentCommit.trim().substring(0, 7);
 
-    // Get latest commit on origin/main
-    const { stdout: latestCommit } = await execAsync('git rev-parse origin/main');
+    // Get latest commit on origin/{currentBranch}
+    const { stdout: latestCommit } = await execAsync(`git rev-parse origin/${branch}`);
     const latestCommitShort = latestCommit.trim().substring(0, 7);
 
     // Check if we're up to date
@@ -48,8 +53,8 @@ export async function GET() {
     }> = [];
 
     if (!isUpToDate) {
-      // Get commits between current and origin/main
-      const { stdout: commitsOutput } = await execAsync('git log --oneline --format="%H|%h|%s|%an|%ad" --date=short HEAD..origin/main');
+      // Get commits between current and origin/{currentBranch}
+      const { stdout: commitsOutput } = await execAsync(`git log --oneline --format="%H|%h|%s|%an|%ad" --date=short HEAD..origin/${branch}`);
 
       if (commitsOutput.trim()) {
         const commits = commitsOutput.trim().split('\n');
@@ -71,6 +76,7 @@ export async function GET() {
     const versionInfo: VersionInfo = {
       currentCommit: currentCommit.trim(),
       currentCommitShort,
+      currentBranch: branch,
       isUpToDate,
       commitsBehind,
       latestCommit: latestCommit.trim(),

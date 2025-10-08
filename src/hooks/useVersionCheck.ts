@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 interface VersionInfo {
   currentCommit: string;
   currentCommitShort: string;
+  currentBranch: string;
   isUpToDate: boolean;
   commitsBehind: number;
   latestCommit: string;
