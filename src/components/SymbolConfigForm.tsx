@@ -30,73 +30,9 @@ import { toast } from 'sonner';
 interface SymbolConfigFormProps {
   onSave: (config: Config) => void;
   currentConfig?: Config;
-  symbol?: string;
 }
 
-export default function SymbolConfigForm({ onSave, currentConfig, symbol }: SymbolConfigFormProps) {
-  // Marking unused state variables with underscore prefix to satisfy ESLint
-  const [_isOptimizing, setIsOptimizing] = useState(false);
-  const [_optimizationResult, setOptimizationResult] = useState<any>(null);
-  const [_showOptimizationModal, setShowOptimizationModal] = useState(false);
-  
-  // Handle optimization
-  const _handleOptimizeClick = async (_symbolToOptimize: string) => {
-    setIsOptimizing(true);
-    try {
-      const response = await fetch('/api/optimize', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          symbol,
-          exchangeUrl: 'https://fapi.binance.com/fapi/v1'
-        }),
-      });
-
-      const result = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to optimize parameters');
-      }
-
-      setOptimizationResult(result);
-      setShowOptimizationModal(true);
-      
-      // Show success toast
-      toast.success('Optimization completed successfully');
-      
-    } catch (error) {
-      console.error('Optimization error:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to optimize parameters';
-      toast.error(`Optimization failed: ${errorMessage}`);
-    } finally {
-      setIsOptimizing(false);
-    }
-  };
-
-  // Apply optimized parameters to the form
-  const _applyOptimizedParams = (optimized: any) => {
-    if (!symbol) {
-      toast.error('No symbol selected for optimization');
-      return;
-    }
-    
-    const updatedConfig = { ...config };
-    if (updatedConfig.symbols && updatedConfig.symbols[symbol]) {
-      updatedConfig.symbols[symbol] = {
-        ...updatedConfig.symbols[symbol],
-        longVolumeThresholdUSDT: optimized.volumeThresholdLong,
-        shortVolumeThresholdUSDT: optimized.volumeThresholdShort,
-        leverage: optimized.leverage,
-        tpPercent: optimized.takeProfitPercent,
-        slPercent: optimized.stopLossPercent
-      };
-      setConfig(updatedConfig);
-      toast.success('Optimized parameters applied');
-    }
-  };
-
+export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfigFormProps) {
   // Ensure we have a properly initialized config with all required fields
   const getInitialConfig = (): Config => {
     if (currentConfig) {
