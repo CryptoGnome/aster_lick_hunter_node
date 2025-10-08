@@ -126,8 +126,8 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
           <CardTitle>Per-Symbol Optimization Details</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          <div className="rounded-md border max-h-[420px] overflow-y-auto">
-            <Table className="min-w-[960px]">
+          <div className="rounded-md border max-h-[600px] overflow-y-auto">
+            <Table className="min-w-[1200px]">
               <TableHeader className="sticky top-0 bg-background">
                 <TableRow>
                   <TableHead>Symbol</TableHead>
@@ -152,11 +152,15 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
                   const longThresholdDelta = rec.thresholds.optimized.long - rec.thresholds.current.long;
                   const shortThresholdDelta = rec.thresholds.optimized.short - rec.thresholds.current.short;
                   const tradeSizeDelta = rec.settings.optimized.tradeSize - rec.settings.current.tradeSize;
+                  const marginCurrent = rec.settings.current.maxPositionMarginUSDT ?? rec.settings.current.margin ?? 0;
+                  const marginOptimized = rec.settings.optimized.maxPositionMarginUSDT ?? rec.settings.optimized.margin ?? marginCurrent;
+                  const marginDelta = marginOptimized - marginCurrent;
                   const leverageDelta = rec.settings.optimized.leverage - rec.settings.current.leverage;
 
                   const longThresholdPercent = computePercentChange(rec.thresholds.optimized.long, rec.thresholds.current.long);
                   const shortThresholdPercent = computePercentChange(rec.thresholds.optimized.short, rec.thresholds.current.short);
                   const tradeSizePercent = computePercentChange(rec.settings.optimized.tradeSize, rec.settings.current.tradeSize);
+                  const marginPercent = computePercentChange(marginOptimized, marginCurrent);
                   const leveragePercent = computePercentChange(rec.settings.optimized.leverage, rec.settings.current.leverage);
                   const windowPercent = computePercentChange(optimizedWindowSec, currentWindowSec);
                   const cooldownPercent = computePercentChange(optimizedCooldownSec, currentCooldownSec);
@@ -164,7 +168,7 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
                   return (
                     <React.Fragment key={rec.symbol}>
                       <TableRow className="bg-muted/50">
-                        <TableCell rowSpan={8} className="font-medium align-top">
+                        <TableCell rowSpan={rec.tierWarning?.hasWarning ? 10 : 9} className="font-medium align-top">
                           {rec.symbol}
                           {rec.improvement.total > 0 && (
                             <Badge variant="secondary" className="ml-2">
@@ -193,6 +197,14 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
                         <TableCell className="text-right">{formatNumber(rec.settings.optimized.tradeSize)}</TableCell>
                         <TableCell className={`text-right ${getChangeColor(tradeSizeDelta)}`}>
                           {formatPercent(tradeSizePercent)}
+                        </TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="text-muted-foreground">Margin / Side</TableCell>
+                        <TableCell className="text-right">{formatNumber(marginCurrent)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(marginOptimized)}</TableCell>
+                        <TableCell className={`text-right ${getChangeColor(marginDelta)}`}>
+                          {marginCurrent > 0 ? formatPercent(marginPercent) : 'n/a'}
                         </TableCell>
                       </TableRow>
                       <TableRow>
@@ -229,6 +241,25 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
                         </TableCell>
                         <TableCell className="text-right text-muted-foreground">-</TableCell>
                       </TableRow>
+                      {rec.tierWarning?.hasWarning && (
+                        <TableRow className="bg-yellow-50 dark:bg-yellow-950/20">
+                          <TableCell className="text-yellow-700 dark:text-yellow-400" colSpan={4}>
+                            <div className="flex items-start gap-2">
+                              <span className="text-lg">⚠️</span>
+                              <div className="flex-1">
+                                <div className="font-medium">Leverage Tier Limit Restriction</div>
+                                <div className="text-sm mt-1">
+                                  Max DCA positions: <strong>{rec.tierWarning.maxLongPositions}L / {rec.tierWarning.maxShortPositions}S</strong>
+                                  {' '}(wanted {rec.tierWarning.wantedLongPositions}L / {rec.tierWarning.wantedShortPositions}S)
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-1">
+                                  Consider reducing leverage or trade size for more DCA room
+                                </div>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
                       <TableRow>
                         <TableCell className="text-muted-foreground">Daily PnL</TableCell>
                         <TableCell className="text-right">

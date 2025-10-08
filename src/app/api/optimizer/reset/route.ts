@@ -19,11 +19,15 @@ export const dynamic = 'force-dynamic';
  */
 export const POST = withAuth(async () => {
   try {
-    resetOptimizerState();
+    const outcome = resetOptimizerState();
 
     return NextResponse.json({
       success: true,
       message: 'Optimizer state reset successfully',
+      cancelledJobCount: outcome.cancelledJobCount,
+      clearedJobCount: outcome.clearedJobCount,
+      jobsFileRemoved: outcome.jobsFileRemoved,
+      resultsFileRemoved: outcome.resultsFileRemoved,
     });
   } catch (error) {
     console.error('Error resetting optimizer state:', error);

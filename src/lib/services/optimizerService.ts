@@ -34,6 +34,7 @@ interface OptimizationConfig {
   };
   capitalAllocation?: number;
   symbols?: string[];
+  mode?: 'quick' | 'thorough';
 }
 interface OptimizationResults {
   timestamp: string;
@@ -51,6 +52,14 @@ interface OptimizationResults {
 }
 interface SymbolRecommendation {
   symbol: string;
+  tierWarning?: {
+    hasWarning: boolean;
+    maxLongPositions?: number;
+    wantedLongPositions?: number;
+    maxShortPositions?: number;
+    wantedShortPositions?: number;
+    message?: string;
+  };
   thresholds: {
     current: { long: number; short: number };
     optimized: { long: number; short: number };
@@ -135,6 +144,7 @@ export async function startOptimization(
 ): Promise<string> {
   console.log(`[optimizer] startOptimization request (cached jobs: ${jobs.size})`);
   const jobId = generateJobId();
+  const mode: 'quick' | 'thorough' = config.mode === 'thorough' ? 'thorough' : 'quick';
   // Validate weights
   const totalWeight = config.weights.pnl + config.weights.sharpe + config.weights.drawdown;
   if (Math.abs(totalWeight - 100) > 0.01) {
@@ -147,7 +157,10 @@ export async function startOptimization(
     progress: 0,
     currentStage: 'Initializing...',
     startTime: Date.now(),
-    config,
+    config: {
+      ...config,
+      mode,
+    },
   };
   jobs.set(jobId, job);
   persistJobsToDisk();
@@ -260,11 +273,12 @@ async function runOptimization(jobId: string): Promise<void> {
       ...process.env,
       FORCE_OPTIMIZER_OVERWRITE: '0',  // Don't auto-apply in subprocess
       FORCE_OPTIMIZER_CONFIRM: '0'
-    };
+    } as NodeJS.ProcessEnv & Record<string, string>;
     const { pnl: weightPnl, sharpe: weightSharpe, drawdown: weightDrawdown } = job.config.weights;
     env.OPTIMIZER_WEIGHT_PNL = String(weightPnl);
     env.OPTIMIZER_WEIGHT_SHARPE = String(weightSharpe);
     env.OPTIMIZER_WEIGHT_DRAWDOWN = String(weightDrawdown);
+    env.OPTIMIZER_MODE = job.config.mode ?? 'quick';
     const optimizerScriptPath = path.join(process.cwd(), 'optimize-config.js');
     if (!fs.existsSync(optimizerScriptPath)) {
       throw new Error(`Optimizer script not found at ${optimizerScriptPath}`);
@@ -281,31 +295,44 @@ async function runOptimization(jobId: string): Promise<void> {
     // Parse output to track progress
     optimizerProcess.stdout.on('data', (data: Buffer) => {
       const output = data.toString();
-      // Parse for progress indicators
-      // Look for "Analyzing X (Y/Z)" pattern
-      const symbolMatch = output.match(/Analyzing (\w+) \((\d+)\/(\d+)\)/i);
-      if (symbolMatch) {
-        const symbolName = symbolMatch[1];
-        currentSymbolIndex = parseInt(symbolMatch[2]);
-        const total = parseInt(symbolMatch[3]);
-        
-        // Progress: 15% start + 70% for symbols + 15% finalization
-        const symbolProgress = 15 + (currentSymbolIndex / total) * 70;
-        
-        // Estimate remaining time
-        const elapsed = Date.now() - job.startTime;
-        const estimated = (elapsed / symbolProgress) * (100 - symbolProgress);
-        
-        updateJobProgress(
-          jobId,
-          symbolProgress,
-          `Analyzing ${symbolName} (${currentSymbolIndex}/${total})...`,
-          estimated
-        );
-      }
-      // Look for completion indicators
-      if (output.includes('Optimization complete') || output.includes('Results saved')) {
-        updateJobProgress(jobId, 95, 'Finalizing results...');
+      const lines = output.split(/\r?\n/);
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+          continue;
+        }
+
+        const progressMatch = line.match(/\[\[PROGRESS:([0-9]+(?:\.[0-9]+)?)\]\]\s*(.*)/i);
+        if (progressMatch) {
+          const percent = parseFloat(progressMatch[1]);
+          const stageLabel = progressMatch[2]?.trim() || 'Working...';
+          updateJobProgress(jobId, percent, stageLabel);
+          continue;
+        }
+
+        const symbolMatch = line.match(/Analyzing (\w+) \((\d+)\/(\d+)\)/i);
+        if (symbolMatch) {
+          const symbolName = symbolMatch[1];
+          currentSymbolIndex = parseInt(symbolMatch[2]);
+          const total = parseInt(symbolMatch[3]);
+          const currentJob = jobs.get(jobId);
+          const existingProgress = currentJob ? currentJob.progress : 0;
+          updateJobProgress(jobId, existingProgress, `Analyzing ${symbolName} (${currentSymbolIndex}/${total})...`);
+          continue;
+        }
+
+        if (line.includes('Results saved')) {
+          const currentJob = jobs.get(jobId);
+          const existingProgress = currentJob ? currentJob.progress : 0;
+          const progress = Math.max(existingProgress, 95);
+          updateJobProgress(jobId, progress, 'Finalizing results...');
+          continue;
+        }
+
+        if (line.includes('Optimization analysis complete') || line.includes('Optimization complete')) {
+          updateJobProgress(jobId, 100, 'Optimization complete!');
+        }
       }
     });
     optimizerProcess.stderr.on('data', (data: Buffer) => {
@@ -411,20 +438,33 @@ export function cleanupOldJobs(maxAgeMs: number = 24 * 60 * 60 * 1000): number {
   }
   return cleaned;
 }
-export function resetOptimizerState(): void {
+export function resetOptimizerState(): {
+  cancelledJobCount: number;
+  clearedJobCount: number;
+  jobsFileRemoved: boolean;
+  resultsFileRemoved: boolean;
+} {
+  let cancelledJobCount = 0;
+  const clearedJobCount = jobs.size;
+
   for (const job of jobs.values()) {
-    if (job.status === 'running') {
+    if (job.status === 'running' || job.status === 'queued') {
       job.status = 'cancelled';
       job.currentStage = 'Reset by user';
       job.error = 'Optimization reset by user';
+      cancelledJobCount++;
     }
   }
 
   jobs.clear();
 
+  let jobsFileRemoved = false;
+  let resultsFileRemoved = false;
+
   try {
     if (fs.existsSync(JOBS_STATE_PATH)) {
       fs.unlinkSync(JOBS_STATE_PATH);
+      jobsFileRemoved = true;
     }
   } catch (error) {
     console.error('Failed to remove optimizer jobs cache', error);
@@ -433,10 +473,18 @@ export function resetOptimizerState(): void {
   try {
     if (fs.existsSync(OPTIMIZATION_RESULTS_PATH)) {
       fs.unlinkSync(OPTIMIZATION_RESULTS_PATH);
+      resultsFileRemoved = true;
     }
   } catch (error) {
     console.error('Failed to remove optimization results file', error);
   }
+
+  return {
+    cancelledJobCount,
+    clearedJobCount,
+    jobsFileRemoved,
+    resultsFileRemoved,
+  };
 }
 
 // Export types for API routes

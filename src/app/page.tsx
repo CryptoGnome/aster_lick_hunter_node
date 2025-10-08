@@ -27,6 +27,7 @@ import { useWebSocketUrl } from '@/hooks/useWebSocketUrl';
 import { RateLimitToastListener } from '@/hooks/useRateLimitToasts';
 import dataStore, { AccountInfo, Position } from '@/lib/services/dataStore';
 import { signOut } from 'next-auth/react';
+import { OptimizerButton } from '@/components/optimizer/OptimizerButton';
 
 interface BalanceStatus {
   source?: string;
@@ -351,33 +352,38 @@ export default function DashboardPage() {
 
             <div className="w-px h-8 bg-border" />
 
-            {/* Active Trading Symbols */}
-            <div className="flex items-center gap-2">
-              <Target className="h-4 w-4 text-muted-foreground" />
-              <div className="flex flex-col">
-                <span className="text-xs text-muted-foreground">Active Symbols</span>
-                <div className="flex items-center gap-1">
-                  {config?.symbols && Object.keys(config.symbols).length > 0 ? (
-                    <>
-                      <span className="text-lg font-semibold">{Object.keys(config.symbols).length}</span>
-                      <div className="flex gap-1 max-w-[200px] overflow-hidden">
-                        {Object.keys(config.symbols).slice(0, 3).map((symbol, _index) => (
-                          <Badge key={symbol} variant="outline" className="h-4 text-[10px] px-1">
-                            {symbol.replace('USDT', '')}
-                          </Badge>
-                        ))}
-                        {Object.keys(config.symbols).length > 3 && (
-                          <Badge variant="outline" className="h-4 text-[10px] px-1">
-                            +{Object.keys(config.symbols).length - 3}
-                          </Badge>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <span className="text-lg font-semibold text-muted-foreground">0</span>
-                  )}
+            {/* Active Trading Symbols + Optimizer Button */}
+            <div className="flex items-center justify-between gap-4 flex-1">
+              <div className="flex items-center gap-2">
+                <Target className="h-4 w-4 text-muted-foreground" />
+                <div className="flex flex-col">
+                  <span className="text-xs text-muted-foreground">Active Symbols</span>
+                  <div className="flex items-center gap-1">
+                    {config?.symbols && Object.keys(config.symbols).length > 0 ? (
+                      <>
+                        <span className="text-lg font-semibold">{Object.keys(config.symbols).length}</span>
+                        <div className="flex gap-1 max-w-[200px] overflow-hidden">
+                          {Object.keys(config.symbols).slice(0, 3).map((symbol, _index) => (
+                            <Badge key={symbol} variant="outline" className="h-4 text-[10px] px-1">
+                              {symbol.replace('USDT', '')}
+                            </Badge>
+                          ))}
+                          {Object.keys(config.symbols).length > 3 && (
+                            <Badge variant="outline" className="h-4 text-[10px] px-1">
+                              +{Object.keys(config.symbols).length - 3}
+                            </Badge>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-lg font-semibold text-muted-foreground">0</span>
+                    )}
+                  </div>
                 </div>
               </div>
+              
+              {/* Optimizer Button */}
+              <OptimizerButton />
             </div>
           </div>
 

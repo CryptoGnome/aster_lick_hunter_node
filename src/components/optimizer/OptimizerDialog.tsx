@@ -11,11 +11,12 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Zap, Settings, BarChart3, CheckCircle2, Download } from 'lucide-react';
+import { Zap, Settings, BarChart3, CheckCircle2, Download, Info } from 'lucide-react';
 import { OptimizerWeightSliders } from './OptimizerWeightSliders';
 import { OptimizerProgressBar } from './OptimizerProgressBar';
 import { OptimizerResults } from './OptimizerResults';
 import { OptimizerInfoTooltip } from './OptimizerInfoTooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useConfig } from '@/components/ConfigProvider';
 
 interface OptimizerDialogProps {
@@ -56,6 +57,7 @@ export function OptimizerDialog({
   const [pnlWeight, setPnlWeight] = useState(50);
   const [sharpeWeight, setSharpeWeight] = useState(30);
   const [drawdownWeight, setDrawdownWeight] = useState(20);
+  const [mode, setMode] = useState<'quick' | 'thorough'>('quick');
 
   const [isStarting, setIsStarting] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
@@ -101,6 +103,7 @@ export function OptimizerDialog({
             sharpe: sharpeWeight,
             drawdown: drawdownWeight,
           },
+          mode,
         }),
       });
 
@@ -111,6 +114,9 @@ export function OptimizerDialog({
       }
 
       onJobIdChange(data.jobId);
+      if (typeof data.mode === 'string') {
+        setMode(data.mode === 'thorough' ? 'thorough' : 'quick');
+      }
       setActiveTab('progress');
 
       toast.success('Optimization Started', {
@@ -215,7 +221,7 @@ export function OptimizerDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-6xl w-[90vw] max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[98vw] max-w-[98vw] sm:max-w-[1200px] lg:max-w-[1400px] max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -259,6 +265,69 @@ export function OptimizerDialog({
                 />
               </div>
 
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-semibold">Run Mode</h3>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground"
+                        disabled={isStarting || !!jobId}
+                      >
+                        <Info className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      <div className="max-w-xs space-y-1 text-left">
+                        <p className="font-semibold">Quick</p>
+                        <p className="text-muted-foreground">Trims the search grid for a fast 10–20 minute sweep. Ideal for daily tuning.</p>
+                        <p className="font-semibold pt-2">Thorough</p>
+                        <p className="text-muted-foreground">Runs the full search space with deeper combos (30–60 minutes) for exhaustive analysis.</p>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <span className="text-sm text-muted-foreground">
+                  {mode === 'thorough' ? 'Best accuracy, longer runtime' : 'Balanced accuracy with fast runtime'}
+                </span>
+              </div>
+
+              <div className="flex gap-3">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={mode === 'quick' ? 'default' : 'outline'}
+                      onClick={() => setMode('quick')}
+                      disabled={isStarting || !!jobId}
+                      className="flex-1"
+                    >
+                      Quick
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Use a trimmed candidate grid to finish in roughly 10–20 minutes.</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={mode === 'thorough' ? 'default' : 'outline'}
+                      onClick={() => setMode('thorough')}
+                      disabled={isStarting || !!jobId}
+                      className="flex-1"
+                    >
+                      Thorough
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Explore the full grid for maximum accuracy (30–60 minute runs).</TooltipContent>
+                </Tooltip>
+              </div>
+            </div>
+
               <div className="flex justify-end pt-4">
                 <Button
                   onClick={handleStartOptimization}
@@ -281,6 +350,12 @@ export function OptimizerDialog({
             <TabsContent value="progress" className="mt-0">
               {jobId && (
                 <div className="space-y-4">
+                  <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+                    <span className="font-medium">Run Mode</span>
+                    <span className="text-muted-foreground">
+                      {mode === 'thorough' ? 'Thorough • exhaustive search' : 'Quick • fast sweep'}
+                    </span>
+                  </div>
                   <div className="rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
                     💡 <strong>Tip:</strong> You can safely close this dialog while the optimizer runs. Progress will continue to be visible next to the &ldquo;Optimize Config&rdquo; button on the main dashboard.
                   </div>
@@ -289,6 +364,7 @@ export function OptimizerDialog({
                     onComplete={handleOptimizationComplete}
                     onCancel={handleCancel}
                     onError={handleOptimizationError}
+                    onModeUpdate={(jobMode) => setMode(jobMode)}
                   />
                 </div>
               )}

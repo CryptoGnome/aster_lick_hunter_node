@@ -94,12 +94,34 @@ export function OptimizerButton() {
         method: 'POST',
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to reset optimizer');
+      const data = await response.json();
+
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || 'Failed to reset optimizer');
+      }
+
+      const details: string[] = [];
+
+      if (typeof data.cancelledJobCount === 'number' && data.cancelledJobCount > 0) {
+        details.push(`Cancelled ${data.cancelledJobCount} in-flight job${data.cancelledJobCount === 1 ? '' : 's'}`);
+      }
+
+      if (typeof data.clearedJobCount === 'number' && data.clearedJobCount > 0) {
+        details.push(`Cleared ${data.clearedJobCount} cached job${data.clearedJobCount === 1 ? '' : 's'}`);
+      }
+
+      if (data.jobsFileRemoved) {
+        details.push('Removed job cache file');
+      }
+
+      if (data.resultsFileRemoved) {
+        details.push('Removed previous results');
       }
 
       toast.success('Optimizer reset', {
-        description: 'All cached results cleared. Ready for a fresh optimization.',
+        description: details.length
+          ? details.join(' • ')
+          : 'All cached results cleared. Ready for a fresh optimization.',
       });
     } catch (error) {
       toast.error('Reset failed', {
@@ -199,3 +221,4 @@ export function OptimizerButton() {
     </>
   );
 }
+

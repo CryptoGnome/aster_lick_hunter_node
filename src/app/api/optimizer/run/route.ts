@@ -15,6 +15,7 @@ export const dynamic = 'force-dynamic';
  *   weights: { pnl: 50, sharpe: 30, drawdown: 20 },
  *   capitalAllocation?: number,
  *   symbols?: string[]
+ *   mode?: "quick" | "thorough"
  * }
  * 
  * Response:
@@ -80,18 +81,24 @@ export const POST = withAuth(async (request: NextRequest) => {
       );
     }
 
+    const mode: 'quick' | 'thorough' = body.mode === 'thorough' ? 'thorough' : 'quick';
+
     // Start optimization job
     const jobId = await startOptimization({
       weights: { pnl, sharpe, drawdown },
       capitalAllocation: body.capitalAllocation,
       symbols: body.symbols,
+      mode,
     });
+
+    const estimatedDuration = mode === 'thorough' ? '30-60 minutes' : '10-20 minutes';
 
     return NextResponse.json({
       success: true,
       jobId,
-      estimatedDuration: '10-30 minutes',
-      message: 'Optimization started successfully',
+      estimatedDuration,
+      mode,
+      message: `Optimization started in ${mode === 'thorough' ? 'Thorough' : 'Quick'} mode`,
     });
   } catch (error) {
     console.error('Error starting optimization:', error);

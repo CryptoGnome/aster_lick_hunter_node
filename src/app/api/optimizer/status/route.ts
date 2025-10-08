@@ -59,6 +59,7 @@ export const GET = withAuth(async (request: NextRequest) => {
         startTime: job.startTime,
         elapsedTime,
         estimatedTimeRemaining: job.estimatedTimeRemaining,
+        mode: job.config.mode ?? 'quick',
         error: job.error,
         // Only include results if job is completed
         results: job.status === 'completed' ? job.results : undefined,

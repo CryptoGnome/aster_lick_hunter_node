@@ -150,6 +150,33 @@ async function getAccountBalance(credentials) {
   }
 }
 
+async function getLeverageBrackets(credentials) {
+  try {
+    const queryString = buildSignedQuery({}, credentials);
+    const response = await axios.get(
+      `https://fapi.asterdex.com/fapi/v1/leverageBracket?${queryString}`,
+      {
+        headers: { 'X-MBX-APIKEY': credentials.apiKey },
+        timeout: API_TIMEOUT_MS
+      }
+    );
+
+    // Convert to a lookup map: { 'BTCUSDT': [...brackets], 'ETHUSDT': [...brackets] }
+    const bracketsMap = {};
+    if (Array.isArray(response.data)) {
+      for (const item of response.data) {
+        if (item.symbol && Array.isArray(item.brackets)) {
+          bracketsMap[item.symbol] = item.brackets;
+        }
+      }
+    }
+    return bracketsMap;
+  } catch (error) {
+    console.error('⚠️ Failed to fetch leverage brackets:', error.response?.data || error.message);
+    return {};
+  }
+}
+
 async function getAccountInfo(credentials) {
   try {
     const queryString = buildSignedQuery({}, credentials);
@@ -165,6 +192,70 @@ async function getAccountInfo(credentials) {
     console.error('??? Failed to fetch account info:', error.response?.data || error.message);
     return null;
   }
+}
+
+// Leverage tier validation helpers
+function getMaxLeverageForNotional(symbol, notionalValue, leverageBrackets) {
+  const brackets = leverageBrackets[symbol];
+  if (!brackets || !Array.isArray(brackets)) {
+    // No tier data available - return conservative default
+    return 10;
+  }
+
+  // Find the bracket that this notional value falls into
+  for (const bracket of brackets) {
+    const floor = bracket.notionalFloor || 0;
+    const cap = bracket.notionalCap || Infinity;
+
+    if (notionalValue >= floor && notionalValue < cap) {
+      return bracket.initialLeverage || 10;
+    }
+  }
+
+  // If notional exceeds all brackets, use the last bracket's leverage
+  if (brackets.length > 0) {
+    return brackets[brackets.length - 1].initialLeverage || 1;
+  }
+
+  return 10; // Fallback default
+}
+
+function isLeverageValidForNotional(symbol, leverage, notionalValue, leverageBrackets) {
+  const maxAllowed = getMaxLeverageForNotional(symbol, notionalValue, leverageBrackets);
+  return leverage <= maxAllowed;
+}
+
+function calculateMaxPositionsForLeverage(symbol, tradeSize, leverage, maxMargin, leverageBrackets) {
+  const brackets = leverageBrackets[symbol];
+  if (!brackets || !Array.isArray(brackets)) {
+    // No tier data - use simple calculation
+    return Math.floor(maxMargin / tradeSize);
+  }
+
+  let totalPositions = 0;
+  let remainingMargin = maxMargin;
+  let cumulativeNotional = 0;
+
+  // Simulate adding positions until we hit a tier limit or run out of margin
+  for (let i = 0; i < 1000; i++) { // Safety limit
+    const nextNotional = cumulativeNotional + (tradeSize * leverage);
+
+    if (!isLeverageValidForNotional(symbol, leverage, nextNotional, leverageBrackets)) {
+      // Hit tier limit
+      break;
+    }
+
+    if (remainingMargin < tradeSize) {
+      // Out of margin
+      break;
+    }
+
+    totalPositions++;
+    cumulativeNotional = nextNotional;
+    remainingMargin -= tradeSize;
+  }
+
+  return totalPositions;
 }
 
 async function getUserTrades(credentials, symbol, limit = 100, startTime = null, endTime = null) {
@@ -417,43 +508,192 @@ const DEFAULT_THRESHOLD_WINDOW_MS = 60 * 1000;
 const DEFAULT_THRESHOLD_COOLDOWN_MS = 30 * 1000;
 const HUNTER_COOLDOWN_MS = 2 * 60 * 1000;
 
-function generateTimeWindowCandidates(currentMs) {
-  const seconds = Math.max(10, Math.round((currentMs || DEFAULT_THRESHOLD_WINDOW_MS) / 1000));
-  const base = [20, 30, 45, 60, 75, 90, 120, 150, 180, 240];
-  const dynamic = [
-    seconds,
-    Math.max(10, Math.round(seconds * 0.5)),
-    Math.max(10, Math.round(seconds * 0.75)),
-    Math.round(seconds * 1.25),
-    Math.round(seconds * 1.5),
-    Math.round(seconds * 2)
-  ];
+const optimizerModeRaw = process.env.OPTIMIZER_MODE ?? 'quick';
+const OPTIMIZER_MODE = typeof optimizerModeRaw === 'string'
+  ? optimizerModeRaw.trim().toLowerCase()
+  : 'quick';
+const MODE_SETTINGS = {
+  quick: {
+    thresholdMax: 12,
+    tpMax: 5,
+    slMax: 5,
+    leverageMax: 5,
+    marginMax: 4,
+    windowMax: 4,
+    cooldownMax: 4,
+  },
+  thorough: {
+    thresholdMax: 48,
+    tpMax: 24,
+    slMax: 24,
+    leverageMax: 10,
+    marginMax: 10,
+    windowMax: 12,
+    cooldownMax: 12,
+  }
+};
 
-  const candidates = new Set([...base, ...dynamic]);
-  const filtered = [...candidates]
-    .filter((sec) => Number.isFinite(sec) && sec >= 10 && sec <= 300)
-    .sort((a, b) => a - b);
+const modeSettings = MODE_SETTINGS[OPTIMIZER_MODE] || MODE_SETTINGS.quick;
+const IS_THOROUGH_MODE = OPTIMIZER_MODE === 'thorough';
 
-  return filtered.map((sec) => sec * 1000);
+if (!MODE_SETTINGS[OPTIMIZER_MODE]) {
+  console.log(`⚙️  Optimizer mode '${OPTIMIZER_MODE}' not recognized. Falling back to 'quick'.`);
 }
 
-function generateCooldownCandidates(currentMs) {
-  const seconds = Math.max(5, Math.round((currentMs || DEFAULT_THRESHOLD_COOLDOWN_MS) / 1000));
-  const base = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180];
-  const dynamic = [
-    seconds,
-    Math.max(5, Math.round(seconds * 0.5)),
-    Math.max(5, Math.round(seconds * 0.75)),
-    Math.round(seconds * 1.25),
-    Math.round(seconds * 1.5)
-  ];
+function emitProgress(percent, stage) {
+  if (!Number.isFinite(percent)) {
+    return;
+  }
 
-  const candidates = new Set([...base, ...dynamic]);
-  const filtered = [...candidates]
-    .filter((sec) => Number.isFinite(sec) && sec >= 5 && sec <= 240)
-    .sort((a, b) => a - b);
+  const clamped = Math.min(100, Math.max(0, percent));
+  const label = typeof stage === 'string' && stage.trim().length > 0
+    ? stage.trim()
+    : 'Working...';
 
-  return filtered.map((sec) => sec * 1000);
+  console.log(`[[PROGRESS:${clamped.toFixed(2)}]] ${label}`);
+}
+
+const MIN_THRESHOLD_PERCENTILE = (() => {
+  const raw = parseFloat(process.env.OPTIMIZER_MIN_THRESHOLD_PCTL || '0.35');
+  if (!Number.isFinite(raw)) return 0.35;
+  const clamped = Math.min(Math.max(raw, 0.15), 0.6);
+  return parseFloat(clamped.toFixed(4));
+})();
+
+const symbolGapCache = new Map();
+
+function getSymbolGapStats(symbol) {
+  if (symbolGapCache.has(symbol)) {
+    return symbolGapCache.get(symbol);
+  }
+
+  const rows = db.prepare(`
+    SELECT event_time
+    FROM liquidations
+    WHERE symbol = ?
+    ORDER BY event_time
+  `).all(symbol);
+
+  const gaps = [];
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1]?.event_time;
+    const curr = rows[i]?.event_time;
+    const diff = Number.isFinite(curr) && Number.isFinite(prev)
+      ? (curr - prev) / 1000
+      : null;
+
+    if (Number.isFinite(diff) && diff >= 0.5) {
+      // Ignore extremely long gaps (> 12h) which likely represent downtime
+      if (diff <= 12 * 60 * 60) {
+        gaps.push(diff);
+      }
+    }
+  }
+
+  const avgGapSec = gaps.length
+    ? gaps.reduce((sum, val) => sum + val, 0) / gaps.length
+    : 60;
+
+  const percentileValues = gaps.length
+    ? computePercentiles(gaps, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98])
+    : {};
+
+  const stats = { gaps, avgGapSec, percentiles: percentileValues };
+  symbolGapCache.set(symbol, stats);
+  return stats;
+}
+
+function generateTimeWindowCandidates(symbol, currentMs, volStats) {
+  const { gaps, avgGapSec, percentiles } = getSymbolGapStats(symbol);
+  const baseDefaults = [20, 30, 45, 60, 75, 90, 120, 150, 180, 240, 300];
+  const candidates = new Set(baseDefaults);
+
+  if (gaps.length) {
+    Object.values(percentiles).forEach((sec) => {
+      if (Number.isFinite(sec)) {
+        const clamped = Math.max(10, Math.min(Math.round(sec), 600));
+        candidates.add(clamped);
+      }
+    });
+
+    const avgBased = [0.5, 0.75, 1, 1.25, 1.5, 2, 3].map(mult => avgGapSec * mult);
+    avgBased.forEach((sec) => {
+      if (Number.isFinite(sec)) {
+        const clamped = Math.max(10, Math.min(Math.round(sec), 600));
+        candidates.add(clamped);
+      }
+    });
+  }
+
+  if (volStats?.perc95 && volStats.perc95 > 0) {
+    if (volStats.perc95 >= 3) {
+      [15, 20, 25, 30].forEach(sec => candidates.add(sec));
+    } else if (volStats.perc95 <= 1) {
+      [150, 180, 210, 240, 300, 360].forEach(sec => candidates.add(sec));
+    }
+  }
+
+  if (Number.isFinite(currentMs) && currentMs > 0) {
+    candidates.add(Math.max(10, Math.round(currentMs / 1000)));
+  }
+
+  const filteredSeconds = dedupeAndSort([...candidates]).filter(sec => sec >= 10 && sec <= 600);
+  const sampledSeconds = sampleCandidates(filteredSeconds, modeSettings.windowMax);
+  return sampledSeconds.map(sec => sec * 1000);
+}
+
+function generateCooldownCandidates(symbol, currentMs, windowCandidatesMs = [], volStats) {
+  const { gaps, avgGapSec, percentiles } = getSymbolGapStats(symbol);
+  const baseDefaults = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 420, 600];
+  const candidates = new Set(baseDefaults);
+
+  if (gaps.length) {
+    Object.values(percentiles).forEach((sec) => {
+      if (Number.isFinite(sec)) {
+        const clamped = Math.max(5, Math.min(Math.round(sec), 900));
+        candidates.add(clamped);
+      }
+    });
+
+    const avgBased = [1, 1.25, 1.5, 2, 3, 4].map(mult => avgGapSec * mult);
+    avgBased.forEach((sec) => {
+      if (Number.isFinite(sec)) {
+        const clamped = Math.max(5, Math.min(Math.round(sec), 900));
+        candidates.add(clamped);
+      }
+    });
+  }
+
+  if (volStats?.perc95 && volStats.perc95 > 0) {
+    if (volStats.perc95 >= 3) {
+      [5, 10, 15, 20, 25].forEach(sec => candidates.add(sec));
+    } else if (volStats.perc95 <= 1) {
+      [120, 180, 240, 300, 360, 420].forEach(sec => candidates.add(sec));
+    }
+  }
+
+  const windowSeconds = windowCandidatesMs
+    .map((ms) => Math.max(5, Math.round(ms / 1000)))
+    .filter((sec) => Number.isFinite(sec));
+
+  if (windowSeconds.length) {
+    const maxWindow = Math.max(...windowSeconds);
+    const minWindow = Math.min(...windowSeconds);
+    [0.5, 0.75, 1, 1.5, 2, 3].forEach(mult => {
+      const sec = Math.round(maxWindow * mult);
+      if (Number.isFinite(sec)) {
+        candidates.add(Math.max(minWindow, Math.min(sec, 900)));
+      }
+    });
+  }
+
+  if (Number.isFinite(currentMs) && currentMs > 0) {
+    candidates.add(Math.max(5, Math.round(currentMs / 1000)));
+  }
+
+  const filteredSeconds = dedupeAndSort([...candidates]).filter(sec => sec >= 5 && sec <= 900);
+  const sampledSeconds = sampleCandidates(filteredSeconds, modeSettings.cooldownMax);
+  return sampledSeconds.map(sec => sec * 1000);
 }
 
 function calculateCombinationScore(longResult, shortResult) {
@@ -477,6 +717,7 @@ function calculateCombinationScore(longResult, shortResult) {
     combinedPnl,
     combinedSharpe,
     drawdownScore,
+    combinedDrawdown,
   };
 }
 const symbolSpanCache = new Map();
@@ -488,7 +729,11 @@ function dedupeAndSort(values) {
 
 function sampleCandidates(values, maxCount) {
   const sorted = dedupeAndSort(values);
-  if (sorted.length <= maxCount) {
+  if (!Number.isFinite(maxCount) || maxCount <= 0) {
+    return sorted;
+  }
+
+  if (OPTIMIZER_MODE === 'thorough' || sorted.length <= maxCount) {
     return sorted;
   }
 
@@ -539,29 +784,118 @@ function getLiquidationVolumes(symbol, side) {
   return rows.map(row => parseFloat(row.volume_usdt) || 0).filter(v => v > 0);
 }
 
-function generateThresholdCandidates(symbol, side, currentThreshold) {
+function generateThresholdCandidates(symbol, side, currentThreshold, maxCount = modeSettings.thresholdMax) {
   const volumes = getLiquidationVolumes(symbol, side);
   if (volumes.length === 0) {
-    return currentThreshold ? [currentThreshold] : [];
+    return {
+      candidates: currentThreshold ? [currentThreshold] : [],
+      minAllowed: currentThreshold || 0
+    };
   }
 
-  const percentiles = computePercentiles(volumes, [0.5, 0.65, 0.75, 0.85, 0.9, 0.95, 0.98]);
-  const candidates = [currentThreshold];
-  Object.values(percentiles).forEach(value => {
-    if (value && value > 0) {
-      // Round to nearest 10 for stability
+  // NEW APPROACH: Generate candidates based on LIQUIDATION DATA, not user's current setting
+  // This ensures we explore the full realistic range regardless of user's initial config
+
+  const candidates = [];
+
+  // Sample across the full distribution of liquidation sizes
+  // Use more granular percentiles to get better coverage
+  const percentileTargets = [
+    0.10, 0.15, 0.20, 0.25, 0.30,
+    0.35, 0.40, 0.45, 0.50, 0.55,
+    0.60, 0.65, 0.70, 0.75, 0.80,
+    0.85, 0.90, 0.93, 0.95, 0.97,
+    0.98, 0.99
+  ];
+
+  if (!percentileTargets.some(p => Math.abs(p - MIN_THRESHOLD_PERCENTILE) < 1e-6)) {
+    percentileTargets.push(MIN_THRESHOLD_PERCENTILE);
+  }
+
+  percentileTargets.sort((a, b) => a - b);
+
+  const percentiles = computePercentiles(volumes, percentileTargets);
+
+  percentileTargets.forEach((p) => {
+    const value = percentiles[p];
+    if (Number.isFinite(value) && value > 0) {
       candidates.push(Math.round(value / 10) * 10);
     }
   });
 
-  if (currentThreshold) {
-    candidates.push(currentThreshold * 0.75);
-    candidates.push(currentThreshold * 0.5);
-    candidates.push(currentThreshold * 1.25);
-    candidates.push(currentThreshold * 1.5);
+  const tenthPercentile = percentiles[0.10];
+  const minThreshold = Number.isFinite(tenthPercentile)
+    ? Math.round(tenthPercentile / 10) * 10
+    : 0;
+  if (minThreshold > 0) {
+    candidates.push(minThreshold);
   }
 
-  return dedupeAndSort(candidates);
+  // Include current threshold only for comparison, not as an anchor
+  if (currentThreshold && currentThreshold > 0) {
+    candidates.push(currentThreshold);
+  }
+
+  const floorPriority = [
+    MIN_THRESHOLD_PERCENTILE,
+    0.5,
+    0.45,
+    0.40,
+    0.35,
+    0.30,
+    0.25
+  ];
+
+  let minAllowedRaw = null;
+  for (const key of floorPriority) {
+    const value = percentiles[key];
+    if (Number.isFinite(value) && value > 0) {
+      minAllowedRaw = value;
+      break;
+    }
+  }
+
+  if (!Number.isFinite(minAllowedRaw) || minAllowedRaw <= 0) {
+    minAllowedRaw = minThreshold || currentThreshold || 0;
+  }
+
+  const minAllowed = Math.max(
+    Math.round((minAllowedRaw || 0) / 10) * 10,
+    minThreshold > 0 ? minThreshold : 0
+  );
+
+  // Add intermediate values to fill gaps between percentiles
+  const sorted = dedupeAndSort(candidates);
+  const withIntermediates = [...sorted];
+
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const current = sorted[i];
+    const next = sorted[i + 1];
+    const gap = next - current;
+
+    // If gap is large (> 50% of current value), add midpoint
+    if (gap > current * 0.5 && gap > 100) {
+      const midpoint = Math.round((current + next) / 2 / 10) * 10;
+      if (midpoint > current && midpoint < next) {
+        withIntermediates.push(midpoint);
+      }
+    }
+  }
+
+  let sampled = sampleCandidates(withIntermediates, maxCount);
+  if (!IS_THOROUGH_MODE) {
+    sampled = sampled.filter(value => value >= minAllowed);
+  }
+
+  if (!sampled.length) {
+    const fallback = minAllowed || currentThreshold || minThreshold || 0;
+    sampled = [fallback].filter(Boolean);
+  }
+
+  return {
+    candidates: sampled,
+    minAllowed: minAllowed || 0
+  };
 }
 
 function computePriceVolatility(priceData) {
@@ -603,6 +937,103 @@ function computePriceVolatility(priceData) {
   };
 }
 
+function computePriceRangeStats(priceData, windowSize = 60) {
+  if (!Array.isArray(priceData) || priceData.length === 0) {
+    return {
+      medianRange: 0,
+      range80: 0,
+      range90: 0,
+      range95: 0,
+      range98: 0
+    };
+  }
+
+  const ranges = [];
+  const window = Math.max(1, Math.round(windowSize));
+
+  for (let i = 0; i < priceData.length; i++) {
+    const start = Math.max(0, i - window + 1);
+    let maxHigh = -Infinity;
+    let minLow = Infinity;
+
+    for (let j = start; j <= i; j++) {
+      const candle = priceData[j];
+      if (!candle) continue;
+      const high = Number.isFinite(candle.high) ? candle.high : candle.close;
+      const low = Number.isFinite(candle.low) ? candle.low : candle.close;
+      if (!Number.isFinite(high) || !Number.isFinite(low) || low <= 0) continue;
+      if (high > maxHigh) maxHigh = high;
+      if (low < minLow) minLow = low;
+    }
+
+    if (!Number.isFinite(maxHigh) || !Number.isFinite(minLow) || minLow <= 0) {
+      continue;
+    }
+
+    const rangePercent = ((maxHigh - minLow) / minLow) * 100;
+    if (Number.isFinite(rangePercent)) {
+      ranges.push(rangePercent);
+    }
+  }
+
+  if (!ranges.length) {
+    return {
+      medianRange: 0,
+      range80: 0,
+      range90: 0,
+      range95: 0,
+      range98: 0
+    };
+  }
+
+  const percentileValues = computePercentiles(ranges, [0.5, 0.8, 0.9, 0.95, 0.98]);
+
+  return {
+    medianRange: percentileValues[0.5] || 0,
+    range80: percentileValues[0.8] || percentileValues[0.5] || 0,
+    range90: percentileValues[0.9] || percentileValues[0.8] || 0,
+    range95: percentileValues[0.95] || percentileValues[0.9] || 0,
+    range98: percentileValues[0.98] || percentileValues[0.95] || 0
+  };
+}
+
+function determineMinDcaSlots(range95) {
+  if (!Number.isFinite(range95) || range95 <= 0) {
+    return 6;
+  }
+  if (range95 >= 8) return 24;
+  if (range95 >= 6) return 18;
+  if (range95 >= 4) return 12;
+  if (range95 >= 2) return 8;
+  return 6;
+}
+
+function computeVolatilityPenalty(rangeStats, combinedDrawdown, margin, combinedPnl) {
+  if (!rangeStats || !Number.isFinite(rangeStats.range95)) {
+    return 0;
+  }
+  if (!Number.isFinite(combinedDrawdown) || !Number.isFinite(margin) || !Number.isFinite(combinedPnl)) {
+    return 0;
+  }
+  if (margin <= 0 || combinedDrawdown <= 0) {
+    return 0;
+  }
+
+  const volatilityExcess = Math.max(0, rangeStats.range95 - 4);
+  if (volatilityExcess <= 0) {
+    return 0;
+  }
+
+  const drawdownRatio = combinedDrawdown / margin;
+  const penaltyFactor = Math.max(0, drawdownRatio - 0.75);
+  if (penaltyFactor <= 0) {
+    return 0;
+  }
+
+  const base = Math.max(combinedPnl, margin);
+  return volatilityExcess * penaltyFactor * (base * 0.1);
+}
+
 function generateTpCandidates(volStats, currentTp) {
   const base = Math.max(volStats.avgAbsReturn || 0.3, 0.1);
   const highVol = Math.max(volStats.perc95 || base * 2, base);
@@ -629,7 +1060,7 @@ function generateTpCandidates(volStats, currentTp) {
     .map(val => Number.isFinite(val) ? parseFloat(val.toFixed(2)) : null)
     .filter(val => typeof val === 'number' && val > 0.05 && val <= 40);
 
-  const candidates = sampleCandidates(rawCandidates, 15)
+  const candidates = sampleCandidates(rawCandidates, modeSettings.tpMax)
     .filter(val => val >= 0.1 && val <= 30);  // Basic sanity bounds only
 
   return candidates;
@@ -657,25 +1088,32 @@ function generateSlCandidates(volStats, currentSl) {
     .map(val => Number.isFinite(val) ? parseFloat(val.toFixed(2)) : null)
     .filter(val => typeof val === 'number' && val > 0.1 && val <= 80);
 
-  const candidates = sampleCandidates(rawCandidates, 15)
+  const candidates = sampleCandidates(rawCandidates, modeSettings.slMax)
     .filter(val => val >= 0.1 && val <= 40);  // Basic sanity bounds only
 
   return candidates;
 }
 
 function generateLeverageCandidates(currentLeverage) {
-  const baseCandidates = [currentLeverage, 5, 7.5, 10, 12.5, 15, 20, 25];
-  return dedupeAndSort(baseCandidates).filter(val => val > 0 && val <= 25);
+  const baseCandidates = [currentLeverage, 5, 7.5, 10, 12.5, 15, 17.5, 20, 25];
+  const filtered = dedupeAndSort(baseCandidates).filter(val => val > 0 && val <= 25);
+  return sampleCandidates(filtered, modeSettings.leverageMax);
 }
 
-function generateMarginCandidates(capitalBudget, currentMargin) {
+function generateMarginCandidates(capitalBudget, currentMargin, minMargin = 0) {
   const base = currentMargin > 0 ? currentMargin : capitalBudget * 0.5;
   const candidates = [currentMargin, base * 0.75, base, base * 1.25, capitalBudget * 0.5, capitalBudget * 0.75, capitalBudget];
-  const sanitized = dedupeAndSort(candidates).map(val => Math.min(val, capitalBudget));
-  return sanitized.filter(val => val > 0);
+  const clampedMin = Math.max(0, Math.min(capitalBudget, minMargin || 0));
+  const sanitized = dedupeAndSort(candidates)
+    .map(val => {
+      const elevated = Math.max(val, clampedMin);
+      return Math.min(elevated, capitalBudget);
+    })
+    .filter(val => val > 0);
+  return sampleCandidates(sanitized, modeSettings.marginMax);
 }
 
-async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spanDays) {
+async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spanDays, leverageBrackets = {}) {
   const cloneConfig = { ...symbolConfig };
 
   const baseLongTradeSize = symbolConfig.longTradeSize ?? symbolConfig.tradeSize ?? 20;
@@ -688,24 +1126,51 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
   const currentTp = symbolConfig.tpPercent || 1;
   const currentSl = symbolConfig.slPercent || 5;
   const thresholdEnabled = symbolConfig.useThreshold !== false;
-  const currentTimeWindowMs = symbolConfig.thresholdTimeWindow || DEFAULT_THRESHOLD_WINDOW_MS;
-  const currentCooldownMs = symbolConfig.thresholdCooldown || DEFAULT_THRESHOLD_COOLDOWN_MS;
-  const timeWindowCandidates = thresholdEnabled
-    ? generateTimeWindowCandidates(currentTimeWindowMs)
-    : [currentTimeWindowMs];
-  const cooldownCandidates = thresholdEnabled
-    ? generateCooldownCandidates(currentCooldownMs)
-    : [currentCooldownMs];
-
   const longBasePositions = Math.max(1, Math.floor(currentMargin / (baseTradeSize || 1)) || 1);
   const shortBasePositions = Math.max(1, Math.floor(currentMargin / (baseShortTradeSize || 1)) || 1);
 
   // Preload price data for volatility estimation
   const priceData = await getCachedHistoricalPrices(symbol, '1m', 10080);
   const volStats = computePriceVolatility(priceData);
+  const rangeStats = computePriceRangeStats(priceData, 60);
+  const minSlotsFromVolatility = determineMinDcaSlots(rangeStats.range95);
+  const enforceVolatilityConstraints = !IS_THOROUGH_MODE;
+  const requiredLongSlots = enforceVolatilityConstraints
+    ? Math.max(longBasePositions, minSlotsFromVolatility)
+    : longBasePositions;
+  const requiredShortSlots = enforceVolatilityConstraints
+    ? Math.max(shortBasePositions, minSlotsFromVolatility)
+    : shortBasePositions;
+  const baseSlotMargin = Math.max(longBasePositions * baseTradeSize, shortBasePositions * baseShortTradeSize);
+  const minRequiredMargin = enforceVolatilityConstraints
+    ? Math.max(requiredLongSlots * baseTradeSize, requiredShortSlots * baseShortTradeSize)
+    : baseSlotMargin;
+  if (enforceVolatilityConstraints && capitalBudget < minRequiredMargin) {
+    console.log(`⚠️  ${symbol}: Available capital (${formatNumber(capitalBudget)}) is below volatility-driven minimum margin requirement (${formatNumber(minRequiredMargin)}). Optimization will be constrained.`);
+  }
+  const applyVolatilityPenalty = !IS_THOROUGH_MODE;
 
-  const longThresholdCandidates = generateThresholdCandidates(symbol, 'SELL', currentLongThreshold || 1000);
-  const shortThresholdCandidates = generateThresholdCandidates(symbol, 'BUY', currentShortThreshold || 1000);
+  const currentTimeWindowMs = symbolConfig.thresholdTimeWindow || DEFAULT_THRESHOLD_WINDOW_MS;
+  const currentCooldownMs = symbolConfig.thresholdCooldown || DEFAULT_THRESHOLD_COOLDOWN_MS;
+  const timeWindowCandidates = thresholdEnabled
+    ? generateTimeWindowCandidates(symbol, currentTimeWindowMs, volStats)
+    : [currentTimeWindowMs];
+  const cooldownCandidates = thresholdEnabled
+    ? generateCooldownCandidates(symbol, currentCooldownMs, timeWindowCandidates, volStats)
+    : [currentCooldownMs];
+
+  const longThresholdData = generateThresholdCandidates(symbol, 'SELL', currentLongThreshold || 1000);
+  const shortThresholdData = generateThresholdCandidates(symbol, 'BUY', currentShortThreshold || 1000);
+  const longThresholdCandidates = longThresholdData.candidates;
+  const shortThresholdCandidates = shortThresholdData.candidates;
+  const minLongThresholdAllowed = longThresholdData.minAllowed || 0;
+  const minShortThresholdAllowed = shortThresholdData.minAllowed || 0;
+  if (!longThresholdCandidates.length) {
+    longThresholdCandidates.push(Math.max(minLongThresholdAllowed, currentLongThreshold || 10));
+  }
+  if (!shortThresholdCandidates.length) {
+    shortThresholdCandidates.push(Math.max(minShortThresholdAllowed, currentShortThreshold || 10));
+  }
 
   const tpCandidatesFull = generateTpCandidates(volStats, currentTp);
   const slCandidatesFull = generateSlCandidates(volStats, currentSl);
@@ -715,8 +1180,18 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
   const slCandidates = slCandidatesFull.length > 10
     ? [...slCandidatesFull.slice(0, 5), ...slCandidatesFull.slice(-5)]
     : slCandidatesFull;
-  const leverageCandidates = generateLeverageCandidates(leverageCurrent);  // Test all leverage values
-  const marginCandidates = generateMarginCandidates(capitalBudget, currentMargin).slice(-6); // focus on higher budgets
+  const leverageCandidates = generateLeverageCandidates(leverageCurrent);
+  if (!leverageCandidates.length) {
+    leverageCandidates.push(leverageCurrent);
+  }
+
+  const marginMinConstraint = enforceVolatilityConstraints
+    ? Math.min(capitalBudget, Math.max(minRequiredMargin, currentMargin))
+    : Math.min(capitalBudget, Math.max(currentMargin || 0, baseSlotMargin));
+  const marginCandidates = generateMarginCandidates(capitalBudget, currentMargin, marginMinConstraint);
+  if (!marginCandidates.length) {
+    marginCandidates.push(marginMinConstraint > 0 ? marginMinConstraint : Math.max(currentMargin, 1));
+  }
 
   const backtestCache = new Map();
   const defaultCooldownMs = Math.max(0, currentCooldownMs);
@@ -774,14 +1249,22 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
   const currentSharpe = (cappedCurrentLongSharpe + cappedCurrentShortSharpe) / 2;
   const currentDrawdown = Math.max(currentLongBacktest.maxDrawdown || 1, currentShortBacktest.maxDrawdown || 1);
   const currentDrawdownScore = currentTotalPnl / (currentDrawdown + 1);
-// Tri-factor scoring weights are configurable via optimizer UI (defaults: 50% PnL / 30% Sharpe / 20% Drawdown)
-  const currentFinalScore = (currentTotalPnl * 0.5) + (currentSharpe * 0.3) + (currentDrawdownScore * 0.2);
+  const currentScoreRaw = (
+    (currentTotalPnl * normalizedScoringWeights.pnl) +
+    (currentSharpe * normalizedScoringWeights.sharpe) +
+    (currentDrawdownScore * normalizedScoringWeights.drawdown)
+  );
+  const currentVolatilityPenalty = computeVolatilityPenalty(rangeStats, currentDrawdown, currentMargin, currentTotalPnl);
+  const currentFinalScore = applyVolatilityPenalty
+    ? currentScoreRaw - currentVolatilityPenalty
+    : currentScoreRaw;
 
   let bestCombination = {
     totalPnl: currentTotalPnl,
     finalScore: currentFinalScore,
     sharpeRatio: currentSharpe,
     drawdownScore: currentDrawdownScore,
+    volatilityPenalty: currentVolatilityPenalty,
     leverage: leverageCurrent,
     margin: currentMargin,
     tp: currentTp,
@@ -804,37 +1287,54 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
     for (const margin of marginCandidates) {
       if (!Number.isFinite(margin) || margin <= 0) continue;
 
-      const longTradeSize = margin / longBasePositions;
-      const shortTradeSize = margin / shortBasePositions;
+      const longTradeSize = baseTradeSize;
+      const shortTradeSize = baseShortTradeSize;
+
       if (!Number.isFinite(longTradeSize) || longTradeSize <= 0) continue;
       if (!Number.isFinite(shortTradeSize) || shortTradeSize <= 0) continue;
+
+      const longMaxPositions = Math.max(1, Math.floor(margin / longTradeSize));
+      const shortMaxPositions = Math.max(1, Math.floor(margin / shortTradeSize));
+
+      if (enforceVolatilityConstraints && (longMaxPositions < requiredLongSlots || shortMaxPositions < requiredShortSlots)) {
+        continue;
+      }
+
+      if (!Number.isFinite(longMaxPositions) || longMaxPositions <= 0) continue;
+      if (!Number.isFinite(shortMaxPositions) || shortMaxPositions <= 0) continue;
 
       for (const tp of tpCandidates) {
         for (const sl of slCandidates) {
           let bestLongSide = null;
           for (const threshold of longThresholdCandidates) {
+            if (!IS_THOROUGH_MODE && threshold < minLongThresholdAllowed) {
+              continue;
+            }
             const candidateThreshold = Math.max(1, threshold);
-            const result = await runBacktest('SELL', candidateThreshold, longBasePositions, longTradeSize, leverage, tp, sl);
+            const result = await runBacktest('SELL', candidateThreshold, longMaxPositions, longTradeSize, leverage, tp, sl);
             if (!bestLongSide || result.totalPnl > bestLongSide.result.totalPnl) {
               bestLongSide = {
                 threshold: candidateThreshold,
                 result,
                 tradeSize: longTradeSize,
-                maxPositions: longBasePositions
+                maxPositions: longMaxPositions
               };
             }
           }
 
           let bestShortSide = null;
           for (const threshold of shortThresholdCandidates) {
+            if (!IS_THOROUGH_MODE && threshold < minShortThresholdAllowed) {
+              continue;
+            }
             const candidateThreshold = Math.max(1, threshold);
-            const result = await runBacktest('BUY', candidateThreshold, shortBasePositions, shortTradeSize, leverage, tp, sl);
+            const result = await runBacktest('BUY', candidateThreshold, shortMaxPositions, shortTradeSize, leverage, tp, sl);
             if (!bestShortSide || result.totalPnl > bestShortSide.result.totalPnl) {
               bestShortSide = {
                 threshold: candidateThreshold,
                 result,
                 tradeSize: shortTradeSize,
-                maxPositions: shortBasePositions
+                maxPositions: shortMaxPositions
               };
             }
           }
@@ -905,12 +1405,19 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
             continue;
           }
 
-          if (finalScore > bestCombination.finalScore) {
+          const volatilityPenalty = computeVolatilityPenalty(rangeStats, combinedDrawdown, margin, combinedPnl);
+          const adjustedScore = applyVolatilityPenalty ? (finalScore - volatilityPenalty) : finalScore;
+          if (!Number.isFinite(adjustedScore)) {
+            continue;
+          }
+
+          if (adjustedScore > bestCombination.finalScore) {
             bestCombination = {
               totalPnl: combinedPnl,
-              finalScore: finalScore,
+              finalScore: adjustedScore,
               sharpeRatio: combinedSharpe,
               drawdownScore: drawdownScore,
+              volatilityPenalty,
               leverage,
               margin,
               tp,
@@ -956,9 +1463,11 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
         );
 
         const metrics = calculateCombinationScore(longResult, shortResult);
+        const metricsPenalty = computeVolatilityPenalty(rangeStats, metrics.combinedDrawdown, bestCombination.margin, metrics.combinedPnl);
+        const metricsScore = applyVolatilityPenalty ? (metrics.finalScore - metricsPenalty) : metrics.finalScore;
 
-        if (metrics.finalScore > cachedBestScore + 1e-6) {
-          cachedBestScore = metrics.finalScore;
+        if (metricsScore > cachedBestScore + 1e-6) {
+          cachedBestScore = metricsScore;
           cachedBestLongResult = longResult;
           cachedBestShortResult = shortResult;
           bestWindowMs = windowMs;
@@ -966,6 +1475,7 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
           bestCombination.totalPnl = metrics.combinedPnl;
           bestCombination.sharpeRatio = metrics.combinedSharpe;
           bestCombination.drawdownScore = metrics.drawdownScore;
+          bestCombination.volatilityPenalty = metricsPenalty;
         }
       }
     }
@@ -978,10 +1488,13 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
   bestCombination.cooldownMs = bestCooldownMs;
 
   const finalMetrics = calculateCombinationScore(bestCombination.long.result, bestCombination.short.result);
+  const finalPenalty = computeVolatilityPenalty(rangeStats, finalMetrics.combinedDrawdown, bestCombination.margin, finalMetrics.combinedPnl);
+  const finalScoreWithPenalty = applyVolatilityPenalty ? (finalMetrics.finalScore - finalPenalty) : finalMetrics.finalScore;
   bestCombination.totalPnl = finalMetrics.combinedPnl;
   bestCombination.sharpeRatio = finalMetrics.combinedSharpe;
   bestCombination.drawdownScore = finalMetrics.drawdownScore;
-  bestCombination.finalScore = Math.max(bestCombination.finalScore, finalMetrics.finalScore);
+  bestCombination.finalScore = Math.max(bestCombination.finalScore, finalScoreWithPenalty);
+  bestCombination.volatilityPenalty = finalPenalty;
 
   const optimizedDailyPnl = bestCombination.totalPnl * dailyFactor;
 
@@ -1011,8 +1524,44 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
     thresholdCooldown: Math.round(bestCombination.cooldownMs || currentCooldownMs)
   };
 
+  // Calculate and display max DCA positions based on leverage tiers
+  const desiredLongPositions = Math.max(requiredLongSlots, minSlotsFromVolatility);
+  const desiredShortPositions = Math.max(requiredShortSlots, minSlotsFromVolatility);
+
+  const maxLongPositions = calculateMaxPositionsForLeverage(
+    symbol,
+    bestCombination.long.tradeSize,
+    bestCombination.leverage,
+    bestCombination.margin,
+    leverageBrackets
+  );
+  const maxShortPositions = calculateMaxPositionsForLeverage(
+    symbol,
+    bestCombination.short.tradeSize,
+    bestCombination.leverage,
+    bestCombination.margin,
+    leverageBrackets
+  );
+
+  // Warn if tier limits would restrict DCA capacity
+  const tierWarning = (leverageBrackets[symbol] && (maxLongPositions < desiredLongPositions || maxShortPositions < desiredShortPositions))
+    ? {
+        hasWarning: true,
+        maxLongPositions,
+        wantedLongPositions: desiredLongPositions,
+        maxShortPositions,
+        wantedShortPositions: desiredShortPositions,
+        message: `Leverage tier limits will restrict DCA positions. Max LONG: ${maxLongPositions} (wanted ${desiredLongPositions}), Max SHORT: ${maxShortPositions} (wanted ${desiredShortPositions}). Consider reducing leverage or trade size for more DCA room.`
+      }
+    : { hasWarning: false };
+
+  if (tierWarning.hasWarning) {
+    console.log(`⚠️  ${symbol}: ${tierWarning.message}\n`);
+  }
+
   return {
     symbol,
+    tierWarning,
     current: {
       longThreshold: Math.max(1, currentLongThreshold),
       shortThreshold: Math.max(1, currentShortThreshold),
@@ -1047,7 +1596,8 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
       dailyPnl: optimizedDailyPnl,
       finalScore: bestCombination.finalScore,
       sharpeRatio: bestCombination.sharpeRatio,
-      drawdownScore: bestCombination.drawdownScore
+      drawdownScore: bestCombination.drawdownScore,
+      volatilityPenalty: bestCombination.volatilityPenalty
     },
     improvements: {
       long: longImprovement,
@@ -1659,9 +2209,12 @@ async function backtestSymbol(symbol, side, threshold, maxPositions, tradeSize, 
 }
 
 // 4. Generate REALISTIC Backtest Optimization Recommendations
-async function generateRecommendations(deployableCapital) {
+async function generateRecommendations(deployableCapital, leverageBrackets = {}, progressBounds = {}) {
   console.log('REALISTIC BACKTEST OPTIMIZATION');
   console.log('===================================\n');
+
+  const { start = 55, end = 90 } = progressBounds;
+  const progressSpan = Math.max(0, end - start);
 
   const recommendations = [];
   const optimizedConfig = JSON.parse(JSON.stringify(config));
@@ -1669,6 +2222,9 @@ async function generateRecommendations(deployableCapital) {
 
   const symbolEntries = Object.entries(config.symbols);
   if (symbolEntries.length === 0) {
+    if (progressSpan > 0) {
+      emitProgress(end, 'No symbols configured for optimization');
+    }
     return { recommendations, optimizedConfig, recommendedGlobalMax: 0 };
   }
 
@@ -1682,13 +2238,22 @@ async function generateRecommendations(deployableCapital) {
     ? Math.max(0.25, Math.min(2.5, sanitizedCapital / baselineTotalMargin))
     : 1;
 
+  const totalSymbols = symbolEntries.length;
+  let processedSymbols = 0;
+
   for (const [symbol, symbolConfig] of symbolEntries) {
+    processedSymbols += 1;
+    if (progressSpan > 0) {
+      const symbolProgress = start + (processedSymbols / totalSymbols) * progressSpan;
+      emitProgress(symbolProgress, `Optimizing ${symbol} (${processedSymbols}/${totalSymbols})`);
+    }
+    console.log(`Analyzing ${symbol} (${processedSymbols}/${totalSymbols})`);
     const spanDays = getSymbolDataSpanDays(symbol);
     const fallbackMargin = (symbolConfig.tradeSize || 20) * 5;
     const baseMargin = symbolConfig.maxPositionMarginUSDT || fallbackMargin;
     const capitalBudget = Math.max(5, Math.min(sanitizedCapital || baseMargin, baseMargin * scaleFactor));
 
-    const optimization = await optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spanDays);
+    const optimization = await optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spanDays, leverageBrackets);
 
     const currentDaily = optimization.current.performance.dailyPnl;
     const optimizedDaily = optimization.optimized.dailyPnl;
@@ -1699,6 +2264,7 @@ async function generateRecommendations(deployableCapital) {
 
     recommendations.push({
       symbol,
+      tierWarning: optimization.tierWarning,
       currentLong: optimization.current.longThreshold,
       currentShort: optimization.current.shortThreshold,
       optimizedLong: optimization.optimized.config.longVolumeThresholdUSDT,
@@ -1748,6 +2314,10 @@ async function generateRecommendations(deployableCapital) {
       ...optimizedConfig.symbols[symbol],
       ...optimization.optimized.config
     };
+  }
+
+  if (progressSpan > 0) {
+    emitProgress(end, 'Per-symbol optimization complete');
   }
 
   console.log('KEY BACKTEST INSIGHTS:');
@@ -2334,39 +2904,73 @@ async function maybeApplyOptimizedConfig(originalConfig, optimizedConfig, summar
 
 async function main() {
   try {
+    emitProgress(0, 'Initializing optimizer');
+    const modeLabel = MODE_SETTINGS[OPTIMIZER_MODE] ? OPTIMIZER_MODE : 'quick';
+    console.log(`⚙️  Optimizer run mode: ${modeLabel === 'quick' ? 'Quick (fast sweep)' : 'Thorough (expanded search)'}\n`);
+
     const weightSummary = `${formatWeightPercent(scoringWeights.percent.pnl)} / ${formatWeightPercent(scoringWeights.percent.sharpe)} / ${formatWeightPercent(scoringWeights.percent.drawdown)}`;
     const weightLabel = scoringWeights.isDefault ? ' (default)' : '';
     console.log(`???? Using scoring weights (PnL / Sharpe / Drawdown): ${weightSummary}${weightLabel}\n`);
 
     console.log('???? Fetching complete account snapshot...\n');
-    const [balance, accountInfo, positions] = await Promise.all([
+    emitProgress(5, 'Fetching account snapshot');
+    const [balance, accountInfo, positions, leverageBrackets] = await Promise.all([
       getAccountBalance(config.api),
       getAccountInfo(config.api),
-      getCurrentPositions(config.api)
+      getCurrentPositions(config.api),
+      getLeverageBrackets(config.api)
     ]);
+    emitProgress(10, 'Account snapshot loaded');
+
+    // Display leverage tier info for key symbols
+    if (Object.keys(leverageBrackets).length > 0) {
+      console.log('📈 Leverage tiers loaded for', Object.keys(leverageBrackets).length, 'symbols\n');
+    } else {
+      console.log('⚠️  Warning: Could not fetch leverage tiers - using conservative defaults\n');
+    }
 
     // Core analyses
     const _avgGap = analyzePriceDataCoverage();
+    emitProgress(18, 'Price data coverage analyzed');
+
     const capitalInfo = analyzeCapitalAllocation(balance, accountInfo, positions);
+    emitProgress(24, 'Account snapshot analyzed');
+
     analyzeLiquidationCascades();
+    emitProgress(28, 'Cascade patterns analyzed');
+
     analyzeCurrentConfig();
+    emitProgress(32, 'Current configuration performance analyzed');
+
     await analyzeRealTradingHistory(config.api);
+    emitProgress(36, 'Real trading history analyzed');
+
     optimizeThresholds();
+    emitProgress(40, 'Threshold sweeps completed');
+
     rankSymbolProfitability();
+    emitProgress(45, 'Symbol profitability ranked');
 
     // Generate recommendations with backtest
     // Use CALCULATED TOTAL for optimal capital allocation
+    emitProgress(50, 'Starting per-symbol optimization');
     const deployableCapital = capitalInfo.calculatedTotal || parseFloat(accountInfo?.totalWalletBalance ?? 0);
-    const { recommendations, optimizedConfig, recommendedGlobalMax } = await generateRecommendations(deployableCapital);
+    const { recommendations, optimizedConfig, recommendedGlobalMax } = await generateRecommendations(deployableCapital, leverageBrackets, { start: 55, end: 88 });
+    emitProgress(90, 'Per-symbol optimization complete');
 
     // Optimize capital allocation
     const capitalOptimization = optimizeCapitalAllocation(accountInfo, recommendations, optimizedConfig.symbols);
+    emitProgress(94, 'Capital allocation optimized');
 
     // Generate final summary
     const optimizationResults = generateOptimizationSummary(recommendations, capitalOptimization, optimizedConfig, recommendedGlobalMax);
+    emitProgress(97, 'Optimization summary prepared');
 
+    emitProgress(98, 'Preparing configuration updates');
     await maybeApplyOptimizedConfig(config, optimizedConfig, optimizationResults.summary);
+    emitProgress(99, 'Finalizing optimizer run');
 
+    emitProgress(100, 'Optimization complete');
     console.log('???? Optimization analysis complete!');
     const totalValue = parseFloat(accountInfo?.totalMarginBalance || balance.totalWalletBalance || 0);
     console.log(`???? Total account value: $${formatLargeNumber(totalValue)}`);

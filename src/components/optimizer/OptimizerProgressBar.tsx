@@ -12,6 +12,7 @@ interface OptimizerProgressBarProps {
   onError: (error: string) => void;
   variant?: 'full' | 'inline';
   onProgressUpdate?: (progress: number) => void;
+  onModeUpdate?: (mode: 'quick' | 'thorough') => void;
 }
 
 /**
@@ -27,6 +28,7 @@ export function OptimizerProgressBar({
   onError,
   variant = 'full',
   onProgressUpdate,
+  onModeUpdate,
 }: OptimizerProgressBarProps) {
   const [progress, setProgress] = useState(0);
   const [currentStage, setCurrentStage] = useState('Initializing...');
@@ -35,8 +37,18 @@ export function OptimizerProgressBar({
   const [isCancelling, setIsCancelling] = useState(false);
   const [isErrored, setIsErrored] = useState(false);
 
+  const formatProgressPercent = (value: number) => {
+    if (!Number.isFinite(value)) {
+      return '0';
+    }
+
+    const clamped = Math.min(100, Math.max(0, value));
+    const fixed = clamped.toFixed(1);
+    return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
+  };
+
   useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
     let stopped = false;
 
     const stopPolling = () => {
@@ -71,11 +83,15 @@ export function OptimizerProgressBar({
         }
 
         const job = data.job;
+        const jobMode: 'quick' | 'thorough' = job.mode === 'thorough' ? 'thorough' : 'quick';
 
         setProgress(job.progress);
         setCurrentStage(job.currentStage);
         setElapsedTime(job.elapsedTime);
         setEstimatedTimeRemaining(job.estimatedTimeRemaining);
+        if (onModeUpdate) {
+          onModeUpdate(jobMode);
+        }
 
         // Notify parent of progress update
         if (onProgressUpdate) {
@@ -104,12 +120,12 @@ export function OptimizerProgressBar({
     };
 
     pollStatus();
-    intervalId = setInterval(pollStatus, 5000);
+    intervalId = setInterval(pollStatus, 2000);
 
     return () => {
       stopPolling();
     };
-  }, [jobId, onComplete, onCancel, onError, onProgressUpdate]);
+  }, [jobId, onComplete, onCancel, onError, onProgressUpdate, onModeUpdate]);
 
   const handleCancel = async () => {
     setIsCancelling(true);
@@ -156,7 +172,7 @@ export function OptimizerProgressBar({
                 <X className="h-3.5 w-3.5 text-destructive" />
                 <span>Optimization unavailable</span>
               </>
-            ) : progress >= 100 ? (
+            ) : progress >= 99.9 ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 text-primary" />
                 <span>Optimization complete</span>
@@ -168,7 +184,7 @@ export function OptimizerProgressBar({
               </>
             )}
           </span>
-          <span>{progress.toFixed(0)}%</span>
+          <span>{formatProgressPercent(progress)}%</span>
         </div>
         <Progress value={progress} className="mt-2 h-1.5" />
         <div className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
@@ -177,16 +193,16 @@ export function OptimizerProgressBar({
             {`Elapsed ${formatTime(elapsedTime)}`}
             {estimatedTimeRemaining !== null && estimatedTimeRemaining > 0
               ? ` | ETA ${formatTime(estimatedTimeRemaining)}`
-              : progress >= 100
+              : progress >= 99.9
               ? ' | Ready to review'
               : ''}
           </span>
         </div>
-        {!isErrored && progress < 100 && (
+        {!isErrored && progress < 99.9 && (
           <div className="mt-2 flex justify-end">
             <Button
               variant="ghost"
-              size="xs"
+              size="sm"
               onClick={handleCancel}
               disabled={isCancelling}
               className="gap-1 text-xs"
@@ -215,7 +231,7 @@ export function OptimizerProgressBar({
       <div className="space-y-2">
         <div className="flex items-center justify-between text-sm">
           <span className="font-medium">Overall Progress</span>
-          <span className="text-muted-foreground">{progress.toFixed(0)}%</span>
+          <span className="text-muted-foreground">{formatProgressPercent(progress)}%</span>
         </div>
         <Progress value={progress} className="h-2" />
       </div>
@@ -246,7 +262,7 @@ export function OptimizerProgressBar({
       </div>
 
       {/* Cancel Button */}
-      {!isErrored && (
+      {!isErrored && progress < 99.9 && (
         <div className="flex justify-center pt-2">
           <Button
             variant="outline"
