@@ -167,49 +167,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
   };
 
   const handleSymbolChange = (symbol: string, field: string, value: any) => {
-    const newConfig = JSON.parse(JSON.stringify(config)); // Deep clone to avoid reference issues
-    
-    // If we're setting to undefined, remove the field entirely
-    if (value === undefined) {
-      if (field in newConfig.symbols[symbol]) {
-        delete newConfig.symbols[symbol][field];
-        
-        // If we're removing a trade size field, also update the separate trade sizes state
-        if (field === 'longTradeSize' || field === 'shortTradeSize') {
-          const otherField = field === 'longTradeSize' ? 'shortTradeSize' : 'longTradeSize';
-          const hasOtherField = otherField in newConfig.symbols[symbol];
-          
-          // If the other trade size field doesn't exist, turn off separate trade sizes
-          if (!hasOtherField) {
-            setUseSeparateTradeSizes(prev => ({
-              ...prev,
-              [symbol]: false
-            }));
-          }
-        }
-      }
-    } else {
-      // Otherwise, update the field normally
-      newConfig.symbols[symbol] = {
-        ...newConfig.symbols[symbol],
-        [field]: value,
-      };
-      
-      // If we're setting a trade size field, ensure the separate trade sizes is enabled
-      if (field === 'longTradeSize' || field === 'shortTradeSize') {
-        setUseSeparateTradeSizes(prev => ({
-          ...prev,
-          [symbol]: true
-        }));
-      }
-    }
-    if (field === 'tradeSize' && !useSeparateTradeSizes[symbol]) {
-      // Using underscore prefix for unused variables to satisfy ESLint
-      const { longTradeSize: _longTradeSize, shortTradeSize: _shortTradeSize, ...rest } = newConfig.symbols[symbol];
-      newConfig.symbols[symbol] = rest;
-    }
-    
-    setConfig(newConfig);
+    setConfig({
+      ...config,
+      symbols: {
+        ...config.symbols,
+        [symbol]: {
+          ...config.symbols[symbol],
+          [field]: value,
+        },
+      },
+    });
   };
 
   // Fetch available symbols when the symbols tab is clicked
@@ -337,7 +304,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     setUseSeparateTradeSizes(separateSizes);
   }, [config.symbols]);
 
-  // Calculate minimum margin based on leverage (with 50% buffer for safety and rounded up to nearest dollar)
+  // Calculate minimum margin based on leverage (with 30% buffer for safety)
   const getMinimumMargin = () => {
     if (!symbolDetails || !selectedSymbol || !config.symbols[selectedSymbol]) {
       return null;
@@ -354,9 +321,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     // Use the larger of the two requirements
     const rawMinimum = Math.max(minFromNotional, minFromQuantity);
 
-    // Add 50% buffer (increased from 30%) to avoid rejection due to price movements
-    // and round up to the nearest dollar for cleaner numbers
-    return Math.ceil(rawMinimum * 1.305);
+    // Add 30% buffer to avoid rejection due to price movements
+    return rawMinimum * 1.3;
   };
 
   // Get raw minimum without buffer (for display purposes)
@@ -934,22 +900,15 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   setLongTradeSizeInput(longSize.toString());
                                   setShortTradeSizeInput(shortSize.toString());
                                 } else {
-                                  // Create a new config without the separate trade sizes
-                                  const newSymbols = { ...config.symbols };
-                                  // Using underscore prefix for unused variables to satisfy ESLint
-                                  const { longTradeSize: _longTradeSize, shortTradeSize: _shortTradeSize, ...restConfig } = newSymbols[selectedSymbol];
-                                  
-                                  // Only keep the tradeSize and other config
-                                  newSymbols[selectedSymbol] = {
-                                    ...restConfig,
-                                    tradeSize: config.symbols[selectedSymbol].tradeSize
-                                  };
-                                  
+                                  // Remove separate values when toggling off
+                                  const { longTradeSize: _longTradeSize, shortTradeSize: _shortTradeSize, ...restConfig } = config.symbols[selectedSymbol];
                                   setConfig({
                                     ...config,
-                                    symbols: newSymbols
+                                    symbols: {
+                                      ...config.symbols,
+                                      [selectedSymbol]: restConfig,
+                                    },
                                   });
-                                  
                                   // Reset input fields to tradeSize
                                   const currentTradeSize = config.symbols[selectedSymbol].tradeSize;
                                   setLongTradeSizeInput(currentTradeSize.toString());
@@ -979,16 +938,12 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                 {symbolDetails && !loadingDetails && getMinimumMargin() && (
                                   <div className="flex flex-col gap-1">
                                     <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const minMargin = getMinimumMargin()!;
-                                          handleSymbolChange(selectedSymbol, 'tradeSize', minMargin);
-                                        }}
-                                        className="inline-flex items-center justify-center rounded-md text-xs font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-6 px-2"
+                                      <Badge
+                                        variant={config.symbols[selectedSymbol].tradeSize >= getMinimumMargin()! ? "default" : "destructive"}
+                                        className="text-xs"
                                       >
-                                        Use Recommended: ${getMinimumMargin()!.toFixed(2)} USDT
-                                      </button>
+                                        Recommended: ${getMinimumMargin()!.toFixed(2)} USDT
+                                      </Badge>
                                       {config.symbols[selectedSymbol].tradeSize < getMinimumMargin()! && (
                                         <Badge variant="destructive" className="text-xs">
                                           Too low - may be rejected!
@@ -1044,17 +999,12 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   {symbolDetails && !loadingDetails && getMinimumMargin() && (
                                     <div className="flex flex-col gap-1">
                                       <div className="flex items-center gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            const minMargin = getMinimumMargin()!;
-                                            setLongTradeSizeInput(minMargin.toString());
-                                            handleSymbolChange(selectedSymbol, 'longTradeSize', minMargin);
-                                          }}
-                                          className="inline-flex items-center justify-center rounded-md text-xs font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-6 px-2"
+                                        <Badge
+                                          variant={(config.symbols[selectedSymbol].longTradeSize || config.symbols[selectedSymbol].tradeSize) >= getMinimumMargin()! ? "default" : "destructive"}
+                                          className="text-xs"
                                         >
-                                          Use Recommended: ${getMinimumMargin()!.toFixed(2)}
-                                        </button>
+                                          Recommended: ${getMinimumMargin()!.toFixed(2)}
+                                        </Badge>
                                         {(config.symbols[selectedSymbol].longTradeSize || config.symbols[selectedSymbol].tradeSize) < getMinimumMargin()! && (
                                           <Badge variant="destructive" className="text-xs">
                                             Too low!
@@ -1083,23 +1033,18 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                       if (!isNaN(value)) {
                                         handleSymbolChange(selectedSymbol, 'shortTradeSize', value);
                                       }
-                                    } else {
-                                      // When field is cleared, remove the shortTradeSize
-                                      handleSymbolChange(selectedSymbol, 'shortTradeSize', undefined);
-                                      // Update input to show the fallback value
-                                      const fallbackValue = config.symbols[selectedSymbol].tradeSize;
-                                      setShortTradeSizeInput(fallbackValue.toString());
                                     }
                                   }}
                                   onBlur={(e) => {
+                                    // On blur, if empty, reset to tradeSize
                                     if (e.target.value === '') {
-                                      // When field is cleared and blurred, remove the shortTradeSize
-                                      handleSymbolChange(selectedSymbol, 'shortTradeSize', undefined);
-                                      // Update input to show the fallback value
                                       const fallbackValue = config.symbols[selectedSymbol].tradeSize;
                                       setShortTradeSizeInput(fallbackValue.toString());
+                                      handleSymbolChange(selectedSymbol, 'shortTradeSize', fallbackValue);
                                     }
                                   }}
+                                  min="0"
+                                  step="0.01"
                                 />
                                 <div className="space-y-1">
                                   <p className="text-xs text-muted-foreground">
@@ -1108,17 +1053,12 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   {symbolDetails && !loadingDetails && getMinimumMargin() && (
                                     <div className="flex flex-col gap-1">
                                       <div className="flex items-center gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            const minMargin = getMinimumMargin()!;
-                                            setShortTradeSizeInput(minMargin.toString());
-                                            handleSymbolChange(selectedSymbol, 'shortTradeSize', minMargin);
-                                          }}
-                                          className="inline-flex items-center justify-center rounded-md text-xs font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-6 px-2"
+                                        <Badge
+                                          variant={(config.symbols[selectedSymbol].shortTradeSize || config.symbols[selectedSymbol].tradeSize) >= getMinimumMargin()! ? "default" : "destructive"}
+                                          className="text-xs"
                                         >
-                                          Use Recommended: ${getMinimumMargin()!.toFixed(2)}
-                                        </button>
+                                          Recommended: ${getMinimumMargin()!.toFixed(2)}
+                                        </Badge>
                                         {(config.symbols[selectedSymbol].shortTradeSize || config.symbols[selectedSymbol].tradeSize) < getMinimumMargin()! && (
                                           <Badge variant="destructive" className="text-xs">
                                             Too low!

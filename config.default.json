@@ -8,6 +8,7 @@
       "longVolumeThresholdUSDT": 1000,
       "shortVolumeThresholdUSDT": 2500,
       "tradeSize": 0.69,
+      "shortTradeSize": 0.69,
       "maxPositionMarginUSDT": 200,
       "leverage": 10,
       "tpPercent": 1,
