@@ -1734,7 +1734,6 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
               };
               if (diagnostics) diagnostics.scenariosEvaluated += 1;
               const longScenario = await runBacktest(
-                symbol,
                 'SELL',
                 bestLongSide.threshold,
                 bestLongSide.maxPositions,
@@ -1745,7 +1744,6 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
                 overrides
               );
               const shortScenario = await runBacktest(
-                symbol,
                 'BUY',
                 bestShortSide.threshold,
                 bestShortSide.maxPositions,
@@ -1869,7 +1867,6 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
         ...profile.overrides
       };
       const longScenario = await runBacktest(
-        symbol,
         'SELL',
         bestCombination.long.threshold,
         bestCombination.long.maxPositions,
@@ -1880,7 +1877,6 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
         overrides
       );
       const shortScenario = await runBacktest(
-        symbol,
         'BUY',
         bestCombination.short.threshold,
         bestCombination.short.maxPositions,

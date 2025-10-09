@@ -412,9 +412,6 @@ export class Hunter extends EventEmitter {
       thresholdStatus
     });
 
-    const symbolConfig = this.config.symbols[liquidation.symbol];
-    if (!symbolConfig) return; // Symbol not in config
-
     const volumeUSDT = liquidation.qty * liquidation.price;
 
     // Store liquidation in database (non-blocking)
@@ -433,6 +430,11 @@ export class Hunter extends EventEmitter {
       });
       // Non-critical error, don't broadcast to UI to avoid spam
     });
+
+    const symbolConfig = this.config.symbols[liquidation.symbol];
+    if (!symbolConfig) {
+      return; // We're not trading this symbol, but data has been archived
+    }
 
     // Check if we should use threshold system or instant trigger
     if (useThresholdSystem && thresholdStatus) {
