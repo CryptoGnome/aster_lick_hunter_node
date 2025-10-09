@@ -50,3 +50,7 @@ config.user.json
 config.user.backup*.json
 config.json
 data/optimizer-jobs.json
+
+# claude code local settings and agents
+.claude/settings.local.json
+.claude/agents/
