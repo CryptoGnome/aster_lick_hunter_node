@@ -13,6 +13,7 @@ import {
   HelpCircle,
   RefreshCw,
   Bug,
+  Target,
 } from "lucide-react"
 
 import { RateLimitSidebar } from "@/components/RateLimitSidebar"
@@ -48,6 +49,11 @@ const navigation = [
     title: "Configuration",
     icon: Settings,
     href: "/config",
+  },
+  {
+    title: "Optimizer",
+    icon: Target,
+    href: "/optimizer",
   },
   {
     title: "Wiki & Help",

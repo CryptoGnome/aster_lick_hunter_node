@@ -11,7 +11,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Zap, Settings, BarChart3, CheckCircle2, Download } from 'lucide-react';
+import { Zap, Settings, BarChart3, CheckCircle2, Download, ExternalLink } from 'lucide-react';
+import Link from 'next/link';
 import { OptimizerWeightSliders } from './OptimizerWeightSliders';
 import { OptimizerProgressBar } from './OptimizerProgressBar';
 import { OptimizerResults } from './OptimizerResults';
@@ -224,8 +225,16 @@ export function OptimizerDialog({
             </div>
             <OptimizerInfoTooltip />
           </div>
-          <DialogDescription>
-            Optimize your trading configuration using historical backtest analysis
+          <DialogDescription className="flex items-center justify-between">
+            <span>Optimize your trading configuration using historical backtest analysis</span>
+            <Link
+              href="/optimizer"
+              className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+              onClick={onClose}
+            >
+              Open Full Page View
+              <ExternalLink className="h-3 w-3" />
+            </Link>
           </DialogDescription>
         </DialogHeader>
 

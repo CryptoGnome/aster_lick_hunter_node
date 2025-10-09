@@ -407,39 +407,56 @@ This project follows a **Git Flow Lite** strategy optimized for small teams and 
 
 ### Branch Structure
 ```
-main (production-ready code)
-  └── dev (integration/staging branch)
-         └── feature/feature-name (new features)
-         └── fix/bug-description (bug fixes)
+main (production-ready stable releases only)
+  └── dev (primary integration branch - all work merges here)
+         └── feature/feature-name (temporary feature branches)
+         └── fix/bug-description (temporary bug fix branches)
          └── hotfix/critical-issue (urgent production fixes)
 ```
 
 ### Branch Types and Naming Conventions
 
-1. **main**: Production branch
-   - Always deployable
+1. **main**: Production branch (stable releases only)
+   - Contains only stable, production-ready releases
    - Protected branch - requires PR to merge
    - Never commit directly to main
+   - Only merge from dev when ready for production release
 
-2. **dev**: Development/staging branch
-   - Integration branch for features
-   - Regularly synced with main
-   - Default branch for PRs from feature branches
+2. **dev**: Primary development/integration branch
+   - **All work merges to dev first**
+   - Default branch for all development
+   - All feature branches created from dev
+   - All PRs target dev by default
+   - Regularly tested and kept stable
 
-3. **feature/**: New features
+3. **feature/**: Temporary feature branches
+   - **ALWAYS** create a temporary feature branch for new work
    - Created from: `dev`
-   - Merge back to: `dev`
+   - Merge back to: `dev` (via PR)
    - Naming: `feature/short-description` (e.g., `feature/add-trailing-stop`)
+   - **Delete after merging to dev**
 
-4. **fix/**: Non-critical bug fixes
+4. **fix/**: Temporary bug fix branches
    - Created from: `dev`
-   - Merge back to: `dev`
+   - Merge back to: `dev` (via PR)
    - Naming: `fix/issue-number-description` (e.g., `fix/42-order-validation`)
+   - **Delete after merging to dev**
 
 5. **hotfix/**: Critical production fixes
    - Created from: `main`
    - Merge back to: `main` AND `dev`
    - Naming: `hotfix/critical-issue` (e.g., `hotfix/api-auth-failure`)
+   - **Delete after merging**
+
+### Core Workflow Principles
+
+**IMPORTANT**:
+- ✅ **ALWAYS** create a temporary branch (feature/fix) for any new work
+- ✅ **ALWAYS** merge to dev first (never directly to main)
+- ✅ **ALWAYS** delete temporary branches after merging
+- ✅ Use main **ONLY** for stable production releases
+- ❌ **NEVER** commit directly to dev or main
+- ❌ **NEVER** create PRs from dev to main unless releasing to production
 
 ### Branch Management Commands
 
@@ -455,9 +472,9 @@ git push -u origin dev
 gh repo edit --default-branch dev
 ```
 
-#### Feature Development Workflow
+#### Feature Development Workflow (Standard Process)
 ```bash
-# 1. Start a new feature
+# 1. Start a new feature (ALWAYS create a temp branch)
 git checkout dev
 git pull origin dev
 git checkout -b feature/my-feature
@@ -465,47 +482,44 @@ git checkout -b feature/my-feature
 # 2. Work on the feature
 # ... make changes, commit regularly ...
 
-# 3. Keep feature branch updated
+# 3. Keep feature branch updated with dev
 git fetch origin
 git rebase origin/dev  # or merge if preferred
 
-# 4. Push feature branch
+# 4. Push feature branch to remote
 git push -u origin feature/my-feature
 
-# 5. Create PR to dev
+# 5. Create PR to dev (NOT main)
 gh pr create --base dev --title "feat: add my feature" --body "Description of changes"
 
-# 6. After PR is merged, clean up
+# 6. After PR is merged to dev, clean up the temp branch
 git checkout dev
 git pull origin dev
 git branch -d feature/my-feature
 git push origin --delete feature/my-feature
 ```
 
-#### Syncing dev with main
+#### Releasing to Production (main branch)
 ```bash
-# Regular sync (after main has been updated)
-git checkout main
-git pull origin main
-git checkout dev
-git merge main
-git push origin dev
-```
+# ONLY use main for stable production releases
 
-#### Releasing to Production
-```bash
-# 1. Ensure dev is stable and tested
+# 1. Ensure dev is stable, tested, and ready for production
 git checkout dev
 git pull origin dev
 
-# 2. Create PR from dev to main
+# 2. Create PR from dev to main for the release
 gh pr create --base main --head dev --title "Release: v1.2.0" --body "Release notes..."
 
-# 3. After PR is approved and merged
+# 3. After PR is approved and merged to main
 git checkout main
 git pull origin main
 git tag -a v1.2.0 -m "Release version 1.2.0"
 git push origin v1.2.0
+
+# 4. Sync the release back to dev
+git checkout dev
+git merge main
+git push origin dev
 ```
 
 #### Hotfix Workflow
@@ -587,18 +601,39 @@ git commit -m "docs: update API authentication examples"
 ### Branch Protection Rules
 
 1. **Never delete**: `main`, `dev`
-2. **Require PR reviews**: For merges to `main` and `dev`
-3. **Run tests**: CI/CD should pass before merging
-4. **No force push**: To `main` or `dev`
-5. **Linear history**: Prefer rebase for feature branches, merge for releases
+2. **Always delete**: Temporary feature/fix branches after merging
+3. **Require PR reviews**: For merges to `main` and `dev`
+4. **Run tests**: CI/CD should pass before merging
+5. **No force push**: To `main` or `dev`
+6. **No direct commits**: To `main` or `dev`
+7. **Linear history**: Prefer rebase for feature branches, merge for releases
 
 ### Important Notes for Claude Code
 
-When working with branches:
-1. Always check current branch before making changes: `git branch --show-current`
-2. Never force push to main or dev branches
-3. Always create feature branches from dev, not main
-4. Keep feature branches small and focused
-5. Regularly sync feature branches with dev to avoid conflicts
-6. Clean up merged branches to keep the repository tidy
-7. Use descriptive branch names that indicate the purpose
+**Critical Workflow Rules**:
+1. ✅ **ALWAYS** create a temporary branch for any new feature or fix
+2. ✅ **ALWAYS** pull latest dev before creating a new branch: `git pull origin dev`
+3. ✅ **ALWAYS** merge temp branches to dev first (never to main)
+4. ✅ **ALWAYS** delete temp branches after merging to dev
+5. ✅ Use main **ONLY** for stable production releases
+6. ❌ **NEVER** commit directly to dev or main
+7. ❌ **NEVER** push directly to dev without a PR
+8. ❌ **NEVER** work directly on dev or main branches
+
+**Before Starting Any Work**:
+```bash
+# Check current branch
+git branch --show-current
+
+# If on dev or main, create a temp branch first!
+git checkout dev
+git pull origin dev
+git checkout -b feature/my-new-work
+```
+
+**General Guidelines**:
+- Keep feature branches small and focused
+- Regularly sync feature branches with dev to avoid conflicts
+- Use descriptive branch names that indicate the purpose
+- Delete merged branches immediately to keep the repository clean
+- Tag all production releases on main with version numbers

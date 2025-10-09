@@ -256,15 +256,15 @@ async function runOptimization(jobId: string): Promise<void> {
     const _symbolsToOptimize = job.config.symbols || Object.keys(currentConfig.symbols || {});
     updateJobProgress(jobId, 10, 'Starting optimization engine...');
     // Set environment variables for auto-confirm
+    const { pnl: weightPnl, sharpe: weightSharpe, drawdown: weightDrawdown } = job.config.weights;
     const env = {
       ...process.env,
       FORCE_OPTIMIZER_OVERWRITE: '0',  // Don't auto-apply in subprocess
-      FORCE_OPTIMIZER_CONFIRM: '0'
+      FORCE_OPTIMIZER_CONFIRM: '0',
+      OPTIMIZER_WEIGHT_PNL: String(weightPnl),
+      OPTIMIZER_WEIGHT_SHARPE: String(weightSharpe),
+      OPTIMIZER_WEIGHT_DRAWDOWN: String(weightDrawdown)
     };
-    const { pnl: weightPnl, sharpe: weightSharpe, drawdown: weightDrawdown } = job.config.weights;
-    env.OPTIMIZER_WEIGHT_PNL = String(weightPnl);
-    env.OPTIMIZER_WEIGHT_SHARPE = String(weightSharpe);
-    env.OPTIMIZER_WEIGHT_DRAWDOWN = String(weightDrawdown);
     const optimizerScriptPath = path.join(process.cwd(), 'optimize-config.js');
     if (!fs.existsSync(optimizerScriptPath)) {
       throw new Error(`Optimizer script not found at ${optimizerScriptPath}`);

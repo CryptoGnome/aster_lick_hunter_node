@@ -186,7 +186,7 @@ export function OptimizerProgressBar({
           <div className="mt-2 flex justify-end">
             <Button
               variant="ghost"
-              size="xs"
+              size="sm"
               onClick={handleCancel}
               disabled={isCancelling}
               className="gap-1 text-xs"
