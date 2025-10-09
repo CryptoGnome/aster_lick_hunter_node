@@ -436,11 +436,22 @@ export class Hunter extends EventEmitter {
 
     // Check if we should use threshold system or instant trigger
     if (useThresholdSystem && thresholdStatus) {
-      // NEW THRESHOLD SYSTEM - Cumulative volume in 60-second window
-      // SELL liquidation means longs are getting liquidated, we might want to BUY
-      // BUY liquidation means shorts are getting liquidated, we might want to SELL
-      const isLongOpportunity = liquidation.side === 'SELL';
-      const isShortOpportunity = liquidation.side === 'BUY';
+      // * NEW THRESHOLD SYSTEM - Cumulative volume in 60-second window
+      // * Determine opportunity direction based on trade_side parameter
+      const tradeDirection = symbolConfig.trade_side || 'OPPOSITE';
+
+      let isLongOpportunity: boolean;
+      let isShortOpportunity: boolean;
+
+      if (tradeDirection === 'OPPOSITE') {
+        // * Contrarian: SELL liquidation → BUY opportunity, BUY liquidation → SELL opportunity
+        isLongOpportunity = liquidation.side === 'SELL';
+        isShortOpportunity = liquidation.side === 'BUY';
+      } else {
+        // * Momentum: SELL liquidation → SELL opportunity, BUY liquidation → BUY opportunity
+        isLongOpportunity = liquidation.side === 'BUY';
+        isShortOpportunity = liquidation.side === 'SELL';
+      }
 
       let shouldTrade = false;
       let tradeSide: 'BUY' | 'SELL' | null = null;
@@ -490,17 +501,26 @@ export class Hunter extends EventEmitter {
         await this.analyzeAndTrade(liquidation, symbolConfig, tradeSide);
       }
     } else {
-      // ORIGINAL INSTANT TRIGGER SYSTEM
-      // Check direction-specific volume thresholds
-      // SELL liquidation means longs are getting liquidated, we might want to BUY
-      // BUY liquidation means shorts are getting liquidated, we might want to SELL
-      const thresholdToCheck = liquidation.side === 'SELL'
-        ? (symbolConfig.longVolumeThresholdUSDT ?? symbolConfig.volumeThresholdUSDT ?? 0)
-        : (symbolConfig.shortVolumeThresholdUSDT ?? symbolConfig.volumeThresholdUSDT ?? 0);
+      // * ORIGINAL INSTANT TRIGGER SYSTEM - Check direction-specific volume thresholds
+      // * Determine threshold based on trade_side parameter
+      const tradeDirection = symbolConfig.trade_side || 'OPPOSITE';
+
+      let thresholdToCheck: number;
+      if (tradeDirection === 'OPPOSITE') {
+        // * Contrarian: Use thresholds based on liquidation side
+        thresholdToCheck = liquidation.side === 'SELL'
+          ? (symbolConfig.longVolumeThresholdUSDT ?? symbolConfig.volumeThresholdUSDT ?? 0)
+          : (symbolConfig.shortVolumeThresholdUSDT ?? symbolConfig.volumeThresholdUSDT ?? 0);
+      } else {
+        // * Momentum: Use thresholds based on opposite of liquidation side
+        thresholdToCheck = liquidation.side === 'BUY'
+          ? (symbolConfig.longVolumeThresholdUSDT ?? symbolConfig.volumeThresholdUSDT ?? 0)
+          : (symbolConfig.shortVolumeThresholdUSDT ?? symbolConfig.volumeThresholdUSDT ?? 0);
+      }
 
       if (volumeUSDT < thresholdToCheck) return; // Too small
 
-      console.log(`Hunter: Liquidation detected - ${liquidation.symbol} ${liquidation.side} ${volumeUSDT.toFixed(2)} USDT`);
+      console.log(`Hunter: [${tradeDirection}] Liquidation detected - ${liquidation.symbol} ${liquidation.side} ${volumeUSDT.toFixed(2)} USDT`);
 
       // Analyze and trade with instant trigger
       await this.analyzeAndTrade(liquidation, symbolConfig);
@@ -516,11 +536,24 @@ export class Hunter extends EventEmitter {
 
       const markPrice = parseFloat(markPriceData.markPrice);
 
-      // Simple analysis: If SELL liquidation and price is > 0.99 * mark, buy
-      // If BUY liquidation, sell
+      // Determine trade direction based on trade_side parameter
+      // * OPPOSITE (default): SELL liquidation → BUY, BUY liquidation → SELL (contrarian strategy)
+      // * SAME: SELL liquidation → SELL, BUY liquidation → BUY (momentum strategy)
+      const tradeSide = symbolConfig.trade_side || 'OPPOSITE';
       const priceRatio = liquidation.price / markPrice;
-      const triggerBuy = liquidation.side === 'SELL' && priceRatio < 1.01; // 1% below
-      const triggerSell = liquidation.side === 'BUY' && priceRatio > 0.99;  // 1% above
+
+      let triggerBuy: boolean;
+      let triggerSell: boolean;
+
+      if (tradeSide === 'OPPOSITE') {
+        // * Contrarian: Trade opposite to liquidation direction
+        triggerBuy = liquidation.side === 'SELL' && priceRatio < 1.01; // SELL liquidation → BUY
+        triggerSell = liquidation.side === 'BUY' && priceRatio > 0.99;  // BUY liquidation → SELL
+      } else {
+        // * Momentum: Trade in same direction as liquidation
+        triggerBuy = liquidation.side === 'BUY' && priceRatio > 0.99;   // BUY liquidation → BUY
+        triggerSell = liquidation.side === 'SELL' && priceRatio < 1.01; // SELL liquidation → SELL
+      }
 
       // Check VWAP protection if enabled
       if (symbolConfig.vwapProtection) {
@@ -619,32 +652,48 @@ export class Hunter extends EventEmitter {
       if (triggerBuy) {
         const volumeUSDT = liquidation.qty * liquidation.price;
 
+        // * Generate reason based on trade side mode
+        let reason: string;
+        if (tradeSide === 'OPPOSITE') {
+          reason = `SELL liquidation at ${((1 - priceRatio) * 100).toFixed(2)}% below mark price (contrarian)`;
+        } else {
+          reason = `BUY liquidation at ${((priceRatio - 1) * 100).toFixed(2)}% above mark price (momentum)`;
+        }
+
         // Emit trade opportunity
         this.emit('tradeOpportunity', {
           symbol: liquidation.symbol,
           side: 'BUY',
-          reason: `SELL liquidation at ${((1 - priceRatio) * 100).toFixed(2)}% below mark price`,
+          reason: reason,
           liquidationVolume: volumeUSDT,
-          priceImpact: (1 - priceRatio) * 100,
+          priceImpact: Math.abs((priceRatio - 1) * 100),
           confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10) // Higher confidence for larger volumes
         });
 
-        console.log(`Hunter: Triggering BUY for ${liquidation.symbol} at ${liquidation.price}`);
+        console.log(`Hunter: [${tradeSide}] Triggering BUY for ${liquidation.symbol} at ${liquidation.price}`);
         await this.placeTrade(liquidation.symbol, 'BUY', symbolConfig, liquidation.price);
       } else if (triggerSell) {
         const volumeUSDT = liquidation.qty * liquidation.price;
+
+        // * Generate reason based on trade side mode
+        let reason: string;
+        if (tradeSide === 'OPPOSITE') {
+          reason = `BUY liquidation at ${((priceRatio - 1) * 100).toFixed(2)}% above mark price (contrarian)`;
+        } else {
+          reason = `SELL liquidation at ${((1 - priceRatio) * 100).toFixed(2)}% below mark price (momentum)`;
+        }
 
         // Emit trade opportunity
         this.emit('tradeOpportunity', {
           symbol: liquidation.symbol,
           side: 'SELL',
-          reason: `BUY liquidation at ${((priceRatio - 1) * 100).toFixed(2)}% above mark price`,
+          reason: reason,
           liquidationVolume: volumeUSDT,
-          priceImpact: (priceRatio - 1) * 100,
+          priceImpact: Math.abs((priceRatio - 1) * 100),
           confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10)
         });
 
-        console.log(`Hunter: Triggering SELL for ${liquidation.symbol} at ${liquidation.price}`);
+        console.log(`Hunter: [${tradeSide}] Triggering SELL for ${liquidation.symbol} at ${liquidation.price}`);
         await this.placeTrade(liquidation.symbol, 'SELL', symbolConfig, liquidation.price);
       }
     } catch (error) {

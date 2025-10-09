@@ -153,10 +153,18 @@ export class ThresholdMonitor extends EventEmitter {
 
     const now = Date.now();
 
-    // Determine which side this liquidation affects
-    // SELL liquidation means longs are getting liquidated, we might want to BUY (long)
-    // BUY liquidation means shorts are getting liquidated, we might want to SELL (short)
-    const isLongOpportunity = liquidation.side === 'SELL';
+    // * Determine which side this liquidation affects based on trade_side parameter
+    const symbolConfigForTradeSide = this.config.symbols[liquidation.symbol];
+    const tradeSide = symbolConfigForTradeSide?.trade_side || 'OPPOSITE';
+
+    let isLongOpportunity: boolean;
+    if (tradeSide === 'OPPOSITE') {
+      // * Contrarian: SELL liquidation → BUY opportunity, BUY liquidation → SELL opportunity
+      isLongOpportunity = liquidation.side === 'SELL';
+    } else {
+      // * Momentum: SELL liquidation → SELL opportunity, BUY liquidation → BUY opportunity
+      isLongOpportunity = liquidation.side === 'BUY';
+    }
 
     if (isLongOpportunity) {
       status.recentLiquidations.long.push(liquidation);
