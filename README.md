@@ -106,6 +106,78 @@ npm run dev
 
 **Note**: The `npm install` step is crucial as dependencies may have changed between versions.
 
+## 🧪 Testing Beta Features (Dev Branch)
+
+Want to try the latest features before they're officially released? You can switch to the `dev` branch to access beta features and improvements.
+
+### What is the Dev Branch?
+
+- **main branch**: Stable, production-ready releases only
+- **dev branch**: Latest features, improvements, and bug fixes (beta testing)
+
+The dev branch contains cutting-edge features that are being tested before official release. While generally stable, it may occasionally have minor issues.
+
+### Switching to Dev Branch
+
+```bash
+# 1. Make sure you have the latest code
+git fetch origin
+
+# 2. Switch to the dev branch
+git checkout dev
+
+# 3. Pull the latest dev changes
+git pull origin dev
+
+# 4. Install any new dependencies
+npm install
+
+# 5. Build and run
+npm run build
+npm run dev
+```
+
+### Switching Back to Stable (Main)
+
+If you encounter issues or want to return to the stable release:
+
+```bash
+# 1. Switch back to main branch
+git checkout main
+
+# 2. Pull latest stable release
+git pull origin main
+
+# 3. Reinstall dependencies
+npm install
+
+# 4. Build and run
+npm run build
+npm run dev
+```
+
+### Keeping Dev Branch Updated
+
+When on the dev branch, regularly pull updates to get the latest features:
+
+```bash
+# Quick update command
+git pull origin dev && npm install && npm run build
+```
+
+### Reporting Beta Issues
+
+Found a bug in the dev branch? Help us improve!
+
+1. Check if you're on dev: `git branch --show-current`
+2. [Create an Issue](https://github.com/CryptoGnome/aster_lick_hunter_node/issues/new) with:
+   - Branch name (dev)
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Console logs/screenshots
+
+**Note**: Always start with paper mode when testing new beta features!
+
 ## 🛡️ Safety Features
 
 - Paper mode for testing
