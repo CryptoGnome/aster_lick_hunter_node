@@ -13,6 +13,8 @@ interface OptimizerProgressBarProps {
   variant?: 'full' | 'inline';
   onProgressUpdate?: (progress: number) => void;
   onModeUpdate?: (mode: 'quick' | 'thorough') => void;
+  onDiagnosticsUpdate?: (diagnostics: boolean) => void;
+  onSymbolsUpdate?: (symbols: string[] | null) => void;
 }
 
 /**
@@ -29,6 +31,8 @@ export function OptimizerProgressBar({
   variant = 'full',
   onProgressUpdate,
   onModeUpdate,
+  onDiagnosticsUpdate,
+  onSymbolsUpdate,
 }: OptimizerProgressBarProps) {
   const [progress, setProgress] = useState(0);
   const [currentStage, setCurrentStage] = useState('Initializing...');
@@ -84,6 +88,10 @@ export function OptimizerProgressBar({
 
         const job = data.job;
         const jobMode: 'quick' | 'thorough' = job.mode === 'thorough' ? 'thorough' : 'quick';
+        const jobDiagnostics = Boolean(job.diagnostics);
+        const jobSymbols: string[] | null = Array.isArray(job.symbols) && job.symbols.length > 0
+          ? job.symbols
+          : null;
 
         setProgress(job.progress);
         setCurrentStage(job.currentStage);
@@ -91,6 +99,12 @@ export function OptimizerProgressBar({
         setEstimatedTimeRemaining(job.estimatedTimeRemaining);
         if (onModeUpdate) {
           onModeUpdate(jobMode);
+        }
+        if (onDiagnosticsUpdate) {
+          onDiagnosticsUpdate(jobDiagnostics);
+        }
+        if (onSymbolsUpdate) {
+          onSymbolsUpdate(jobSymbols);
         }
 
         // Notify parent of progress update
@@ -125,7 +139,7 @@ export function OptimizerProgressBar({
     return () => {
       stopPolling();
     };
-  }, [jobId, onComplete, onCancel, onError, onProgressUpdate, onModeUpdate]);
+  }, [jobId, onComplete, onCancel, onError, onProgressUpdate, onModeUpdate, onDiagnosticsUpdate, onSymbolsUpdate]);
 
   const handleCancel = async () => {
     setIsCancelling(true);

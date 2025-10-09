@@ -203,6 +203,9 @@ export function OptimizerButton() {
             onCancel={handleOptimizationCancel}
             onError={handleOptimizationError}
             onProgressUpdate={setProgress}
+            onModeUpdate={() => {}}
+            onDiagnosticsUpdate={() => {}}
+            onSymbolsUpdate={() => {}}
           />
         </div>
       )}

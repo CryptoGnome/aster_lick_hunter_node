@@ -14,6 +14,7 @@ import { spawn } from 'child_process';
 const JOBS_STATE_PATH = path.join(process.cwd(), 'data', 'optimizer-jobs.json');
 const OPTIMIZATION_RESULTS_PATH = path.join(process.cwd(), 'optimization-results.json');
 import { errorLogger } from '@/lib/services/errorLogger';
+import type { OptimizationResults, SymbolRecommendation } from '@/types/optimizer';
 // Job state management
 interface OptimizationJob {
   jobId: string;
@@ -35,46 +36,7 @@ interface OptimizationConfig {
   capitalAllocation?: number;
   symbols?: string[];
   mode?: 'quick' | 'thorough';
-}
-interface OptimizationResults {
-  timestamp: string;
-  summary: {
-    currentDailyPnl: number;
-    optimizedDailyPnl: number;
-    dailyImprovement: number;
-    monthlyImprovement: number;
-    improvementPercent: number | null;
-    recommendedMaxOpenPositions: number;
-  };
-  recommendations: SymbolRecommendation[];
-  capitalAllocation: any;
-  optimizedConfig: any;
-}
-interface SymbolRecommendation {
-  symbol: string;
-  tierWarning?: {
-    hasWarning: boolean;
-    maxLongPositions?: number;
-    wantedLongPositions?: number;
-    maxShortPositions?: number;
-    wantedShortPositions?: number;
-    message?: string;
-  };
-  thresholds: {
-    current: { long: number; short: number };
-    optimized: { long: number; short: number };
-  };
-  settings: {
-    current: any;
-    optimized: any;
-  };
-  improvement: {
-    long: number;
-    short: number;
-    total: number;
-  };
-  performance: any;
-  scoring: any;
+  diagnostics?: boolean;
 }
 // In-memory job storage (use Redis for production multi-instance)
 // Persist map on globalThis so route handlers share state during dev
@@ -92,6 +54,7 @@ function hydrateJobsFromDisk(): void {
     }
     const parsed = JSON.parse(raw) as OptimizationJob[];
     for (const job of parsed) {
+      job.config.symbols = sanitizeSymbolsList(job.config.symbols);
       jobs.set(job.jobId, job);
     }
   } catch (error) {
@@ -111,6 +74,22 @@ function persistJobsToDisk(): void {
   }
 }
 const OPTIMIZER_TIMEOUT = 60 * 60 * 1000; // 1 hour
+
+function sanitizeSymbolsList(symbols?: string[]): string[] | undefined {
+  if (!Array.isArray(symbols)) {
+    return undefined;
+  }
+
+  const sanitized = symbols
+    .map(symbol => (typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''))
+    .filter(Boolean);
+
+  if (sanitized.length === 0) {
+    return undefined;
+  }
+
+  return Array.from(new Set(sanitized));
+}
 /**
  * Generate unique job ID
  */
@@ -145,6 +124,8 @@ export async function startOptimization(
   console.log(`[optimizer] startOptimization request (cached jobs: ${jobs.size})`);
   const jobId = generateJobId();
   const mode: 'quick' | 'thorough' = config.mode === 'thorough' ? 'thorough' : 'quick';
+  const diagnostics = config.diagnostics === true;
+  const sanitizedSymbols = sanitizeSymbolsList(config.symbols);
   // Validate weights
   const totalWeight = config.weights.pnl + config.weights.sharpe + config.weights.drawdown;
   if (Math.abs(totalWeight - 100) > 0.01) {
@@ -160,6 +141,8 @@ export async function startOptimization(
     config: {
       ...config,
       mode,
+      diagnostics,
+      symbols: sanitizedSymbols,
     },
   };
   jobs.set(jobId, job);
@@ -266,7 +249,10 @@ async function runOptimization(jobId: string): Promise<void> {
     // Load current config to get symbol count
     updateJobProgress(jobId, 5, 'Loading configuration...');
     const currentConfig = await loadConfig();
-    const _symbolsToOptimize = job.config.symbols || Object.keys(currentConfig.symbols || {});
+    const allConfigSymbols = Object.keys(currentConfig.symbols || {});
+    const symbolsToOptimize = job.config.symbols && job.config.symbols.length > 0
+      ? job.config.symbols
+      : allConfigSymbols;
     updateJobProgress(jobId, 10, 'Starting optimization engine...');
     // Set environment variables for auto-confirm
     const env = {
@@ -279,6 +265,12 @@ async function runOptimization(jobId: string): Promise<void> {
     env.OPTIMIZER_WEIGHT_SHARPE = String(weightSharpe);
     env.OPTIMIZER_WEIGHT_DRAWDOWN = String(weightDrawdown);
     env.OPTIMIZER_MODE = job.config.mode ?? 'quick';
+    env.OPTIMIZER_DIAGNOSTICS = job.config.diagnostics ? '1' : '0';
+    if (symbolsToOptimize.length > 0 && symbolsToOptimize.length < allConfigSymbols.length) {
+      env.OPTIMIZER_SYMBOLS = symbolsToOptimize.join(',');
+    } else {
+      delete env.OPTIMIZER_SYMBOLS;
+    }
     const optimizerScriptPath = path.join(process.cwd(), 'optimize-config.js');
     if (!fs.existsSync(optimizerScriptPath)) {
       throw new Error(`Optimizer script not found at ${optimizerScriptPath}`);

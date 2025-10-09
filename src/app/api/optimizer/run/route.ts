@@ -82,23 +82,33 @@ export const POST = withAuth(async (request: NextRequest) => {
     }
 
     const mode: 'quick' | 'thorough' = body.mode === 'thorough' ? 'thorough' : 'quick';
+    const diagnostics = body.diagnostics === true;
+    const selectedSymbols: string[] | undefined = Array.isArray(body.symbols)
+      ? body.symbols
+          .map((symbol: unknown) => (typeof symbol === 'string' ? symbol.trim().toUpperCase() : ''))
+          .filter(Boolean)
+      : undefined;
 
     // Start optimization job
     const jobId = await startOptimization({
       weights: { pnl, sharpe, drawdown },
       capitalAllocation: body.capitalAllocation,
-      symbols: body.symbols,
+      symbols: selectedSymbols,
       mode,
+      diagnostics,
     });
 
     const estimatedDuration = mode === 'thorough' ? '30-60 minutes' : '10-20 minutes';
+    const symbolSummary = selectedSymbols && selectedSymbols.length > 0
+      ? `Symbols: ${selectedSymbols.join(', ')}`
+      : 'Symbols: all';
 
     return NextResponse.json({
       success: true,
       jobId,
       estimatedDuration,
       mode,
-      message: `Optimization started in ${mode === 'thorough' ? 'Thorough' : 'Quick'} mode`,
+      message: `Optimization started in ${mode === 'thorough' ? 'Thorough' : 'Quick'} mode${diagnostics ? ' with diagnostics' : ''} (${symbolSummary})`,
     });
   } catch (error) {
     console.error('Error starting optimization:', error);

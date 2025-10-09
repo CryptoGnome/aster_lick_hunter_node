@@ -11,10 +11,11 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { TrendingUp, DollarSign, Target } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, Layers, Shield, BarChart3 } from 'lucide-react';
+import type { OptimizationResults, SymbolRecommendation } from '@/types/optimizer';
 
 interface OptimizerResultsProps {
-  results: any; // Will be typed from optimizerService
+  results: OptimizationResults;
 }
 
 /**
@@ -26,40 +27,78 @@ interface OptimizerResultsProps {
 export function OptimizerResults({ results }: OptimizerResultsProps) {
   const { summary, recommendations } = results;
 
-  const formatCurrency = (value: number) => {
+  const formatCurrency = (value: number | null | undefined) => {
+    if (!Number.isFinite(value ?? NaN)) {
+      return '—';
+    }
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
-    }).format(value);
+    }).format(value as number);
   };
 
-  const formatNumber = (value: number, decimals: number = 2) => {
-    return value.toFixed(decimals);
+  const formatNumber = (value: number | null | undefined, decimals: number = 2) => {
+    if (!Number.isFinite(value ?? NaN)) {
+      return '—';
+    }
+    return (value as number).toFixed(decimals);
   };
 
-  const formatPercent = (value: number) => {
-    return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+  const formatPercent = (value: number | null | undefined) => {
+    if (!Number.isFinite(value ?? NaN)) {
+      return '—';
+    }
+    const numeric = value as number;
+    return `${numeric >= 0 ? '+' : ''}${numeric.toFixed(1)}%`;
   };
 
-  const getChangeColor = (value: number) => {
-    if (value > 0) return 'text-green-600 dark:text-green-400';
-    if (value < 0) return 'text-red-600 dark:text-red-400';
+  const getChangeColor = (value: number | null | undefined) => {
+    if (!Number.isFinite(value ?? NaN)) {
+      return 'text-muted-foreground';
+    }
+    if ((value as number) > 0) return 'text-green-600 dark:text-green-400';
+    if ((value as number) < 0) return 'text-red-600 dark:text-red-400';
     return 'text-muted-foreground';
   };
 
-  const computePercentChange = (optimized: number, current: number) => {
-    if (!Number.isFinite(current) || Math.abs(current) < 1e-6) {
-      return 0;
+  const computePercentChange = (optimized: number | null | undefined, current: number | null | undefined) => {
+    if (!Number.isFinite(optimized ?? NaN) || !Number.isFinite(current ?? NaN) || Math.abs(current as number) < 1e-6) {
+      return null;
     }
-    return ((optimized - current) / current) * 100;
+    return (((optimized as number) - (current as number)) / (current as number)) * 100;
   };
+
+  const formatInteger = (value: number | null | undefined) => {
+    if (!Number.isFinite(value ?? NaN)) {
+      return '—';
+    }
+    return Math.round(value as number).toLocaleString();
+  };
+
+  const formatDuration = (ms?: number | null) => {
+    if (!Number.isFinite(ms ?? NaN) || (ms ?? 0) <= 0) {
+      return 'n/a';
+    }
+    if ((ms as number) >= 1000) {
+      return `${((ms as number) / 1000).toFixed(2)}s`;
+    }
+    return `${Math.round(ms as number)}ms`;
+  };
+
+  const formatLabel = (raw: string) =>
+    raw
+      .replace(/([A-Z])/g, ' $1')
+      .replace(/_/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
 
   return (
     <div className="space-y-6">
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
@@ -118,6 +157,18 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
             </p>
           </CardContent>
         </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <Layers className="h-4 w-4" />
+              Recommended Max Positions
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{formatNumber(summary.recommendedMaxOpenPositions, 0)}</p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Per-Symbol Comparison Table */}
@@ -138,7 +189,7 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {recommendations.map((rec: any) => {
+                {recommendations.map((rec: SymbolRecommendation) => {
                   const currentWindowMs = rec.settings.current.thresholdTimeWindow ?? 60000;
                   const optimizedWindowMs = rec.settings.optimized.thresholdTimeWindow ?? rec.settings.current.thresholdTimeWindow ?? 60000;
                   const currentCooldownMs = rec.settings.current.thresholdCooldown ?? 0;
@@ -165,10 +216,25 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
                   const windowPercent = computePercentChange(optimizedWindowSec, currentWindowSec);
                   const cooldownPercent = computePercentChange(optimizedCooldownSec, currentCooldownSec);
 
+                  const risk = rec.risk;
+                  const diagnostics = rec.diagnostics;
+                  const scenarioCount = risk?.scenarios?.length ?? 0;
+                  const summaryParts: string[] = [];
+                  if (scenarioCount > 0) {
+                    summaryParts.push(`${scenarioCount} scenario${scenarioCount === 1 ? '' : 's'}`);
+                  }
+                  if (Number.isFinite(diagnostics?.combinationsEvaluated ?? NaN)) {
+                    summaryParts.push(`${formatInteger(diagnostics?.combinationsEvaluated)} combos`);
+                  }
+                  if (Number.isFinite(diagnostics?.durationMs ?? NaN) && (diagnostics?.durationMs ?? 0) > 0) {
+                    summaryParts.push(`runtime ${formatDuration(diagnostics?.durationMs)}`);
+                  }
+                  const summaryMeta = summaryParts.join(' • ');
+
                   return (
                     <React.Fragment key={rec.symbol}>
                       <TableRow className="bg-muted/50">
-                        <TableCell rowSpan={rec.tierWarning?.hasWarning ? 10 : 9} className="font-medium align-top">
+                        <TableCell rowSpan={rec.tierWarning?.hasWarning ? 11 : 10} className="font-medium align-top">
                           {rec.symbol}
                           {rec.improvement.total > 0 && (
                             <Badge variant="secondary" className="ml-2">
@@ -270,6 +336,203 @@ export function OptimizerResults({ results }: OptimizerResultsProps) {
                         </TableCell>
                         <TableCell className={`text-right ${getChangeColor(rec.improvement.total)}`}>
                           {formatCurrency(rec.improvement.total)}
+                        </TableCell>
+                      </TableRow>
+
+                      <TableRow>
+                        <TableCell colSpan={4} className="p-0">
+                          <details className="border-t border-muted/40 bg-background/80">
+                            <summary className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                              <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                                <Shield className="h-4 w-4" /> {rec.symbol} Risk & Diagnostics
+                              </span>
+                              <span className="text-xs text-muted-foreground md:text-right">
+                                {summaryMeta || 'Expand for scenario outcomes & candidate funnel'}
+                              </span>
+                            </summary>
+                            <div className="px-3 pb-4 pt-2 space-y-4">
+                              {risk && (
+                                <div className="grid gap-4 md:grid-cols-2">
+                                  <div className="rounded-md border p-4">
+                                    <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                                      <Shield className="h-3.5 w-3.5" /> Current Risk
+                                    </h4>
+                                    <dl className="space-y-2 text-sm">
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Volatility Penalty</dt>
+                                        <dd className="font-medium">{formatNumber(risk.current.volatilityPenalty)}</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">CVaR Penalty</dt>
+                                        <dd className="font-medium">{formatNumber(risk.current.cvarPenalty)}</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Tail Loss (CVaR)</dt>
+                                        <dd className="font-medium">{formatCurrency(risk.current.cvar)}</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Scenario Penalty</dt>
+                                        <dd className="font-medium">—</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Payoff Ratio</dt>
+                                        <dd className="font-medium">{formatNumber(risk.current.payoffRatio)}</dd>
+                                      </div>
+                                    </dl>
+                                  </div>
+                                  <div className="rounded-md border p-4">
+                                    <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                                      <Shield className="h-3.5 w-3.5" /> Optimized Risk
+                                    </h4>
+                                    <dl className="space-y-2 text-sm">
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Volatility Penalty</dt>
+                                        <dd className="font-medium">{formatNumber(risk.optimized.volatilityPenalty)}</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">CVaR Penalty</dt>
+                                        <dd className="font-medium">{formatNumber(risk.optimized.cvarPenalty)}</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Scenario Penalty</dt>
+                                        <dd className="font-medium">{formatNumber(risk.optimized.scenarioPenalty)}</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Tail Loss (CVaR)</dt>
+                                        <dd className="font-medium">{formatCurrency(risk.optimized.cvar)}</dd>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <dt className="text-muted-foreground">Payoff Ratio</dt>
+                                        <dd className="font-medium">{formatNumber(risk.optimized.payoffRatio)}</dd>
+                                      </div>
+                                    </dl>
+                                  </div>
+                                </div>
+                              )}
+
+                              {risk?.scenarios && risk.scenarios.length > 0 && (
+                                <div className="rounded-md border p-4">
+                                  <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                                    <BarChart3 className="h-3.5 w-3.5" /> Scenario Outcomes
+                                  </h4>
+                                  <div className="overflow-x-auto">
+                                    <Table>
+                                      <TableHeader>
+                                        <TableRow>
+                                          <TableHead>Scenario</TableHead>
+                                          <TableHead className="text-right">Total PnL</TableHead>
+                                          <TableHead className="text-right">Max Drawdown</TableHead>
+                                          <TableHead className="text-right">Sharpe</TableHead>
+                                        </TableRow>
+                                      </TableHeader>
+                                      <TableBody>
+                                        {risk.scenarios.map((scenario) => (
+                                          <TableRow key={`${rec.symbol}-${scenario.name}`}>
+                                            <TableCell className="font-medium uppercase">{scenario.name}</TableCell>
+                                            <TableCell className="text-right">{formatCurrency(scenario.totalPnl)}</TableCell>
+                                            <TableCell className="text-right">{formatCurrency(scenario.maxDrawdown)}</TableCell>
+                                            <TableCell className="text-right">{formatNumber(scenario.sharpeRatio)}</TableCell>
+                                          </TableRow>
+                                        ))}
+                                      </TableBody>
+                                    </Table>
+                                  </div>
+                                </div>
+                              )}
+
+                              {diagnostics && (
+                                <div className="grid gap-4 md:grid-cols-2">
+                                  <div className="rounded-md border p-4">
+                                    <h4 className="text-sm font-semibold mb-3">Candidate Funnel</h4>
+                                    {diagnostics.candidateCounts && Object.keys(diagnostics.candidateCounts).length > 0 ? (
+                                      <div className="space-y-2 text-sm">
+                                        {Object.entries(diagnostics.candidateCounts)
+                                          .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+                                          .map(([key, value]) => (
+                                            <div className="flex items-center justify-between" key={key}>
+                                              <span className="text-muted-foreground">{formatLabel(key)}</span>
+                                              <span className="font-medium">{formatInteger(value)}</span>
+                                            </div>
+                                          ))}
+                                      </div>
+                                    ) : (
+                                      <p className="text-sm text-muted-foreground">No candidate counts recorded.</p>
+                                    )}
+                                    <div className="mt-3 space-y-1 text-sm">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Combos Evaluated</span>
+                                        <span className="font-medium">{formatInteger(diagnostics.combinationsEvaluated)}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Combos Accepted</span>
+                                        <span className="font-medium">{formatInteger(diagnostics.combinationsAccepted)}</span>
+                                      </div>
+                                      {Number.isFinite(diagnostics.tierAdjustments ?? NaN) && diagnostics.tierAdjustments ? (
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-muted-foreground">Tier Adjustments</span>
+                                          <span className="font-medium">{formatInteger(diagnostics.tierAdjustments)}</span>
+                                        </div>
+                                      ) : null}
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Scenarios Evaluated</span>
+                                        <span className="font-medium">{formatInteger(diagnostics.scenariosEvaluated)}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Runtime</span>
+                                        <span className="font-medium">{formatDuration(diagnostics.durationMs)}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="rounded-md border p-4">
+                                    <h4 className="text-sm font-semibold mb-3">Rejection Breakdown</h4>
+                                    {diagnostics.rejections && Object.values(diagnostics.rejections).some((value) => value > 0) ? (
+                                      <ul className="space-y-1 text-sm">
+                                        {Object.entries(diagnostics.rejections)
+                                          .filter(([, value]) => (value ?? 0) > 0)
+                                          .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+                                          .slice(0, 8)
+                                          .map(([key, value]) => (
+                                            <li className="flex items-center justify-between" key={key}>
+                                              <span className="text-muted-foreground">{formatLabel(key)}</span>
+                                              <span className="font-medium">{formatInteger(value)}</span>
+                                            </li>
+                                          ))}
+                                      </ul>
+                                    ) : (
+                                      <p className="text-sm text-muted-foreground">No rejection categories triggered.</p>
+                                    )}
+                                    <div className="mt-3 space-y-1 text-sm">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Backtests Executed</span>
+                                        <span className="font-medium">{formatInteger(diagnostics.backtests?.executed)}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Cache Hits</span>
+                                        <span className="font-medium">{formatInteger(diagnostics.backtests?.cacheHits)}</span>
+                                      </div>
+                                      {(() => {
+                                        const executed = diagnostics.backtests?.executed ?? 0;
+                                        const cacheHits = diagnostics.backtests?.cacheHits ?? 0;
+                                        const total = executed + cacheHits;
+                                        const hitRate = total > 0 ? (cacheHits / total) * 100 : null;
+                                        return (
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-muted-foreground">Cache Hit Rate</span>
+                                            <span className="font-medium">{formatPercent(hitRate)}</span>
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              {!risk && !diagnostics && (
+                                <p className="text-sm text-muted-foreground">
+                                  No additional diagnostics were captured for this symbol. Enable the diagnostics toggle before running a thorough sweep to record candidate funnels and rejection breakdowns.
+                                </p>
+                              )}
+                            </div>
+                          </details>
                         </TableCell>
                       </TableRow>
                     </React.Fragment>

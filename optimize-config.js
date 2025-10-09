@@ -111,6 +111,45 @@ const db = new Database(dbPath, { readonly: true });
 const configPath = path.join(__dirname, 'config.user.json');
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
+const requestedSymbols = new Set(
+  (process.env.OPTIMIZER_SYMBOLS || '')
+    .split(',')
+    .map(symbol => symbol.trim().toUpperCase())
+    .filter(Boolean)
+);
+
+if (requestedSymbols.size > 0) {
+  console.log(`OPTIMIZER SCOPE: ${Array.from(requestedSymbols).join(', ')}`);
+} else {
+  console.log('OPTIMIZER SCOPE: ALL SYMBOLS');
+}
+
+function shouldIncludeSymbol(symbol) {
+  if (!symbol) {
+    return false;
+  }
+  if (requestedSymbols.size === 0) {
+    return true;
+  }
+  return requestedSymbols.has(symbol.toUpperCase());
+}
+
+function getSelectedSymbolEntries(symbolMap = config.symbols) {
+  const entries = Object.entries(symbolMap || {});
+  if (requestedSymbols.size === 0) {
+    return entries;
+  }
+  return entries.filter(([symbol]) => shouldIncludeSymbol(symbol));
+}
+
+function getSelectedSymbolsList(symbolMap = config.symbols) {
+  return getSelectedSymbolEntries(symbolMap).map(([symbol]) => symbol);
+}
+
+function getSelectedSymbolConfigMap(symbolMap = config.symbols) {
+  return Object.fromEntries(getSelectedSymbolEntries(symbolMap));
+}
+
 // API helper functions for balance fetching
 function buildSignedQuery(params, credentials) {
   const timestamp = Date.now();
@@ -535,6 +574,25 @@ const MODE_SETTINGS = {
 
 const modeSettings = MODE_SETTINGS[OPTIMIZER_MODE] || MODE_SETTINGS.quick;
 const IS_THOROUGH_MODE = OPTIMIZER_MODE === 'thorough';
+const ENABLE_DIAGNOSTICS = process.env.OPTIMIZER_DIAGNOSTICS === '1';
+const VOLATILITY_PENALTY_FACTOR = IS_THOROUGH_MODE ? 0.4 : 1;
+const ENABLE_SCENARIOS = process.env.OPTIMIZER_ENABLE_SCENARIOS === '0' ? false : true;
+const SCENARIO_PENALTY_WEIGHT = (() => {
+  const raw = parseFloat(process.env.OPTIMIZER_SCENARIO_PENALTY || '0.5');
+  if (!Number.isFinite(raw)) return 0.5;
+  return Math.min(Math.max(raw, 0), 2);
+})();
+const CVAR_PENALTY_WEIGHT = (() => {
+  const raw = parseFloat(process.env.OPTIMIZER_CVAR_PENALTY || '0.15');
+  if (!Number.isFinite(raw)) return 0.15;
+  return Math.min(Math.max(raw, 0), 1);
+})();
+
+const diagLog = (...args) => {
+  if (ENABLE_DIAGNOSTICS) {
+    console.log('[DIAG]', ...args);
+  }
+};
 
 if (!MODE_SETTINGS[OPTIMIZER_MODE]) {
   console.log(`⚙️  Optimizer mode '${OPTIMIZER_MODE}' not recognized. Falling back to 'quick'.`);
@@ -799,24 +857,29 @@ function generateThresholdCandidates(symbol, side, currentThreshold, maxCount = 
   const candidates = [];
 
   // Sample across the full distribution of liquidation sizes
-  // Use more granular percentiles to get better coverage
-  const percentileTargets = [
-    0.10, 0.15, 0.20, 0.25, 0.30,
-    0.35, 0.40, 0.45, 0.50, 0.55,
-    0.60, 0.65, 0.70, 0.75, 0.80,
-    0.85, 0.90, 0.93, 0.95, 0.97,
-    0.98, 0.99
-  ];
+  const percentileTargets = new Set();
+  const basePercentiles = volumes.length > 5000
+    ? [0.05, 0.08, 0.1, 0.12, 0.15, 0.18, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.98, 0.99]
+    : volumes.length > 1500
+      ? [0.08, 0.1, 0.12, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.97, 0.99]
+      : [0.1, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98];
 
-  if (!percentileTargets.some(p => Math.abs(p - MIN_THRESHOLD_PERCENTILE) < 1e-6)) {
-    percentileTargets.push(MIN_THRESHOLD_PERCENTILE);
+  basePercentiles.forEach(p => percentileTargets.add(p));
+  percentileTargets.add(Math.min(0.99, Math.max(0.01, MIN_THRESHOLD_PERCENTILE)));
+
+  // log-spaced emphasis near lower tail
+  const bucketCount = 8;
+  for (let i = 1; i <= bucketCount; i++) {
+    const weight = i / (bucketCount + 1);
+    const p = Math.pow(weight, 1.8); // skew to lower percentiles
+    percentileTargets.add(Math.min(0.995, Math.max(0.02, p)));
   }
 
-  percentileTargets.sort((a, b) => a - b);
+  const sortedPercentiles = [...percentileTargets].sort((a, b) => a - b);
 
-  const percentiles = computePercentiles(volumes, percentileTargets);
+  const percentiles = computePercentiles(volumes, sortedPercentiles);
 
-  percentileTargets.forEach((p) => {
+  sortedPercentiles.forEach((p) => {
     const value = percentiles[p];
     if (Number.isFinite(value) && value > 0) {
       candidates.push(Math.round(value / 10) * 10);
@@ -873,19 +936,21 @@ function generateThresholdCandidates(symbol, side, currentThreshold, maxCount = 
     const next = sorted[i + 1];
     const gap = next - current;
 
-    // If gap is large (> 50% of current value), add midpoint
+    // If gap is large (> 50% of smaller value), add midpoint + weighted mid
     if (gap > current * 0.5 && gap > 100) {
       const midpoint = Math.round((current + next) / 2 / 10) * 10;
       if (midpoint > current && midpoint < next) {
         withIntermediates.push(midpoint);
       }
+      const weighted = Math.round((current * 0.7 + next * 0.3) / 10) * 10;
+      if (weighted > current && weighted < next) {
+        withIntermediates.push(weighted);
+      }
     }
   }
 
-  let sampled = sampleCandidates(withIntermediates, maxCount);
-  if (!IS_THOROUGH_MODE) {
-    sampled = sampled.filter(value => value >= minAllowed);
-  }
+  let sampled = sampleCandidates(withIntermediates, maxCount)
+    .filter(value => value >= minAllowed);
 
   if (!sampled.length) {
     const fallback = minAllowed || currentThreshold || minThreshold || 0;
@@ -934,6 +999,66 @@ function computePriceVolatility(priceData) {
     avgAbsReturn,
     perc90: percentileValues[0.9] || avgAbsReturn,
     perc95: percentileValues[0.95] || percentileValues[0.9] || avgAbsReturn
+  };
+}
+
+function computeAtrStats(priceData, period = 14) {
+  if (!Array.isArray(priceData) || priceData.length <= period) {
+    return {
+      atr: 0,
+      atrMedian: 0,
+      atr90: 0,
+      atrMax: 0
+    };
+  }
+
+  const trs = [];
+  for (let i = 1; i < priceData.length; i++) {
+    const prev = priceData[i - 1];
+    const curr = priceData[i];
+    if (!prev || !curr) continue;
+    const high = Number.isFinite(curr.high) ? curr.high : curr.close;
+    const low = Number.isFinite(curr.low) ? curr.low : curr.close;
+    const prevClose = Number.isFinite(prev.close) ? prev.close : prev.open;
+    if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(prevClose)) continue;
+    const tr = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
+    );
+    if (Number.isFinite(tr)) {
+      trs.push(tr);
+    }
+  }
+
+  if (trs.length === 0) {
+    return {
+      atr: 0,
+      atrMedian: 0,
+      atr90: 0,
+      atrMax: 0
+    };
+  }
+
+  const atrSeries = [];
+  let runningAtr = trs.slice(0, period).reduce((sum, val) => sum + val, 0) / period;
+  atrSeries.push(runningAtr);
+  for (let i = period; i < trs.length; i++) {
+    runningAtr = ((runningAtr * (period - 1)) + trs[i]) / period;
+    atrSeries.push(runningAtr);
+  }
+
+  const atrSorted = [...atrSeries].sort((a, b) => a - b);
+  const median = atrSorted[Math.floor(atrSorted.length / 2)] || 0;
+  const p90 = atrSorted[Math.floor(atrSorted.length * 0.9)] || median;
+  const max = atrSorted[atrSorted.length - 1] || p90;
+  const latest = atrSeries[atrSeries.length - 1] || median;
+
+  return {
+    atr: latest,
+    atrMedian: median,
+    atr90: p90,
+    atrMax: max
   };
 }
 
@@ -1034,16 +1159,21 @@ function computeVolatilityPenalty(rangeStats, combinedDrawdown, margin, combined
   return volatilityExcess * penaltyFactor * (base * 0.1);
 }
 
-function generateTpCandidates(volStats, currentTp) {
+function generateTpCandidates(volStats, currentTp, atrPercentStats = null) {
   const base = Math.max(volStats.avgAbsReturn || 0.3, 0.1);
   const highVol = Math.max(volStats.perc95 || base * 2, base);
   const midVol = Math.max(volStats.perc90 || base, base);
+
+  const atrBase = atrPercentStats?.atr || base;
+  const atrMedian = atrPercentStats?.atrMedian || atrBase;
+  const atr90 = atrPercentStats?.atr90 || Math.max(atrMedian * 1.5, atrBase * 1.5);
+  const atrMax = atrPercentStats?.atrMax || Math.max(atr90 * 1.5, atrBase * 2);
 
   const anchors = Number.isFinite(currentTp) && currentTp > 0
     ? [currentTp, currentTp * 0.5, currentTp * 0.75, currentTp * 1.25, currentTp * 1.5, currentTp * 2]
     : [];
 
-  const general = [0.1, 0.15, 0.2, 0.25, 0.35, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10]; // trimmed: 12.5, 15, 20, 25, 30
+  const general = [0.1, 0.15, 0.2, 0.25, 0.35, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10];
   const dynamic = [
     base * 0.5,
     base * 0.75,
@@ -1053,7 +1183,13 @@ function generateTpCandidates(volStats, currentTp) {
     midVol,
     highVol,
     highVol * 1.5,
-    highVol * 2
+    highVol * 2,
+    atrBase,
+    atrMedian,
+    atr90,
+    atrMax,
+    atrMedian * 0.75,
+    atrMax * 1.25
   ];
 
   const rawCandidates = [...general, ...dynamic, ...anchors]
@@ -1066,14 +1202,18 @@ function generateTpCandidates(volStats, currentTp) {
   return candidates;
 }
 
-function generateSlCandidates(volStats, currentSl) {
+function generateSlCandidates(volStats, currentSl, atrPercentStats = null) {
   const base = Math.max(volStats.perc95 || volStats.avgAbsReturn * 2 || currentSl || 1, 0.5);
+  const atrBase = atrPercentStats?.atr || base;
+  const atrMedian = atrPercentStats?.atrMedian || atrBase;
+  const atr90 = atrPercentStats?.atr90 || Math.max(atrMedian * 1.5, base);
+  const atrMax = atrPercentStats?.atrMax || Math.max(atr90 * 1.5, base * 2);
 
   const anchors = Number.isFinite(currentSl) && currentSl > 0
     ? [currentSl, currentSl * 0.5, currentSl * 0.75, currentSl * 1.25, currentSl * 1.5, currentSl * 2, currentSl * 3]
     : [];
 
-  const general = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5]; // trimmed: 10, 12.5, 15, 20, 25, 30, 35, 40
+  const general = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5, 10, 12.5, 15];
   const dynamic = [
     base * 0.5,
     base * 0.75,
@@ -1081,7 +1221,12 @@ function generateSlCandidates(volStats, currentSl) {
     base * 1.25,
     base * 1.5,
     base * 2,
-    base * 3
+    base * 3,
+    atrBase,
+    atrMedian,
+    atr90,
+    atrMax,
+    atrMedian * 0.5
   ];
 
   const rawCandidates = [...general, ...dynamic, ...anchors]
@@ -1100,16 +1245,15 @@ function generateLeverageCandidates(currentLeverage) {
   return sampleCandidates(filtered, modeSettings.leverageMax);
 }
 
-function generateMarginCandidates(capitalBudget, currentMargin, minMargin = 0) {
-  const base = currentMargin > 0 ? currentMargin : capitalBudget * 0.5;
-  const candidates = [currentMargin, base * 0.75, base, base * 1.25, capitalBudget * 0.5, capitalBudget * 0.75, capitalBudget];
+function generateMarginCandidates(capitalBudget, currentMargin, minMargin = 0, minRequired = 0) {
   const clampedMin = Math.max(0, Math.min(capitalBudget, minMargin || 0));
-  const sanitized = dedupeAndSort(candidates)
-    .map(val => {
-      const elevated = Math.max(val, clampedMin);
-      return Math.min(elevated, capitalBudget);
-    })
-    .filter(val => val > 0);
+  const base = Math.max(clampedMin, currentMargin > 0 ? currentMargin : Math.min(capitalBudget, minRequired || capitalBudget * 0.5));
+  const multiples = [0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  const generated = multiples
+    .map(mult => Math.min(capitalBudget, Math.max(clampedMin, base * mult)))
+    .concat([currentMargin, minRequired, capitalBudget * 0.6, capitalBudget * 0.85, capitalBudget]);
+  const sanitized = dedupeAndSort(generated)
+    .filter(val => Number.isFinite(val) && val > 0 && val <= capitalBudget + 1e-6);
   return sampleCandidates(sanitized, modeSettings.marginMax);
 }
 
@@ -1129,26 +1273,77 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
   const longBasePositions = Math.max(1, Math.floor(currentMargin / (baseTradeSize || 1)) || 1);
   const shortBasePositions = Math.max(1, Math.floor(currentMargin / (baseShortTradeSize || 1)) || 1);
 
+  const diagnostics = ENABLE_DIAGNOSTICS
+    ? {
+        symbol,
+        startHrTime: process.hrtime.bigint(),
+        candidateCounts: {},
+        rejections: {
+          invalidMargin: 0,
+          invalidTradeSize: 0,
+          invalidMaxPositions: 0,
+          slotDepth: 0,
+          tierLimit: 0,
+          missingLongSide: 0,
+          missingShortSide: 0,
+          profitFactor: 0,
+          stopRate: 0,
+          liquidationSafety: 0,
+          riskReward: 0,
+          winRate: 0,
+          nonFiniteScore: 0
+        },
+        combinationsEvaluated: 0,
+        combinationsAccepted: 0,
+        backtests: { executed: 0, cacheHits: 0 },
+        scenariosEvaluated: 0,
+        tierAdjustments: 0
+      }
+    : null;
+
+  const scenarioProfiles = ENABLE_SCENARIOS
+    ? [
+        {
+          name: 'stress_high',
+          overrides: {
+            slippageMultiplier: 1.6,
+            limitFillRate: 0.6,
+            marketFallbackRate: 0.22
+          }
+        },
+        {
+          name: 'calm',
+          overrides: {
+            slippageMultiplier: 0.75,
+            limitFillRate: 0.92,
+            marketFallbackRate: 0.05
+          }
+        }
+      ]
+    : [];
+
   // Preload price data for volatility estimation
   const priceData = await getCachedHistoricalPrices(symbol, '1m', 10080);
   const volStats = computePriceVolatility(priceData);
   const rangeStats = computePriceRangeStats(priceData, 60);
+  const atrStatsRaw = computeAtrStats(priceData);
+  const lastClose = priceData?.[priceData.length - 1]?.close || 0;
+  const priceDivisor = lastClose > 0 ? lastClose : 1;
+  const atrPercentStats = {
+    atr: atrStatsRaw.atr > 0 ? (atrStatsRaw.atr / priceDivisor) * 100 : volStats.perc90,
+    atrMedian: atrStatsRaw.atrMedian > 0 ? (atrStatsRaw.atrMedian / priceDivisor) * 100 : volStats.avgAbsReturn,
+    atr90: atrStatsRaw.atr90 > 0 ? (atrStatsRaw.atr90 / priceDivisor) * 100 : volStats.perc95,
+    atrMax: atrStatsRaw.atrMax > 0 ? (atrStatsRaw.atrMax / priceDivisor) * 100 : volStats.perc95 * 1.5
+  };
   const minSlotsFromVolatility = determineMinDcaSlots(rangeStats.range95);
-  const enforceVolatilityConstraints = !IS_THOROUGH_MODE;
-  const requiredLongSlots = enforceVolatilityConstraints
-    ? Math.max(longBasePositions, minSlotsFromVolatility)
-    : longBasePositions;
-  const requiredShortSlots = enforceVolatilityConstraints
-    ? Math.max(shortBasePositions, minSlotsFromVolatility)
-    : shortBasePositions;
+  const requiredLongSlots = Math.max(longBasePositions, minSlotsFromVolatility);
+  const requiredShortSlots = Math.max(shortBasePositions, minSlotsFromVolatility);
   const baseSlotMargin = Math.max(longBasePositions * baseTradeSize, shortBasePositions * baseShortTradeSize);
-  const minRequiredMargin = enforceVolatilityConstraints
-    ? Math.max(requiredLongSlots * baseTradeSize, requiredShortSlots * baseShortTradeSize)
-    : baseSlotMargin;
-  if (enforceVolatilityConstraints && capitalBudget < minRequiredMargin) {
+  const minRequiredMargin = Math.max(requiredLongSlots * baseTradeSize, requiredShortSlots * baseShortTradeSize);
+  if (capitalBudget < minRequiredMargin) {
     console.log(`⚠️  ${symbol}: Available capital (${formatNumber(capitalBudget)}) is below volatility-driven minimum margin requirement (${formatNumber(minRequiredMargin)}). Optimization will be constrained.`);
   }
-  const applyVolatilityPenalty = !IS_THOROUGH_MODE;
+  const applyVolatilityPenalty = VOLATILITY_PENALTY_FACTOR > 0;
 
   const currentTimeWindowMs = symbolConfig.thresholdTimeWindow || DEFAULT_THRESHOLD_WINDOW_MS;
   const currentCooldownMs = symbolConfig.thresholdCooldown || DEFAULT_THRESHOLD_COOLDOWN_MS;
@@ -1172,8 +1367,8 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
     shortThresholdCandidates.push(Math.max(minShortThresholdAllowed, currentShortThreshold || 10));
   }
 
-  const tpCandidatesFull = generateTpCandidates(volStats, currentTp);
-  const slCandidatesFull = generateSlCandidates(volStats, currentSl);
+  const tpCandidatesFull = generateTpCandidates(volStats, currentTp, atrPercentStats);
+  const slCandidatesFull = generateSlCandidates(volStats, currentSl, atrPercentStats);
   const tpCandidates = tpCandidatesFull.length > 10
     ? [...tpCandidatesFull.slice(0, 5), ...tpCandidatesFull.slice(-5)]
     : tpCandidatesFull;
@@ -1185,12 +1380,23 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
     leverageCandidates.push(leverageCurrent);
   }
 
-  const marginMinConstraint = enforceVolatilityConstraints
-    ? Math.min(capitalBudget, Math.max(minRequiredMargin, currentMargin))
-    : Math.min(capitalBudget, Math.max(currentMargin || 0, baseSlotMargin));
-  const marginCandidates = generateMarginCandidates(capitalBudget, currentMargin, marginMinConstraint);
+  const marginMinConstraint = Math.min(capitalBudget, Math.max(minRequiredMargin, currentMargin, baseSlotMargin));
+  const marginCandidates = generateMarginCandidates(capitalBudget, currentMargin, marginMinConstraint, minRequiredMargin);
   if (!marginCandidates.length) {
     marginCandidates.push(marginMinConstraint > 0 ? marginMinConstraint : Math.max(currentMargin, 1));
+  }
+
+  if (diagnostics) {
+    diagnostics.candidateCounts = {
+      longThreshold: longThresholdCandidates.length,
+      shortThreshold: shortThresholdCandidates.length,
+      tp: tpCandidates.length,
+      sl: slCandidates.length,
+      leverage: leverageCandidates.length,
+      margin: marginCandidates.length,
+      timeWindow: thresholdEnabled ? timeWindowCandidates.length : 1,
+      cooldown: thresholdEnabled ? cooldownCandidates.length : 1
+    };
   }
 
   const backtestCache = new Map();
@@ -1210,7 +1416,14 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
       .join('|');
 
     if (backtestCache.has(key)) {
+      if (diagnostics) {
+        diagnostics.backtests.cacheHits += 1;
+      }
       return backtestCache.get(key);
+    }
+
+    if (diagnostics) {
+      diagnostics.backtests.executed += 1;
     }
 
     const result = await backtestSymbol(
@@ -1254,14 +1467,50 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
     (currentSharpe * normalizedScoringWeights.sharpe) +
     (currentDrawdownScore * normalizedScoringWeights.drawdown)
   );
-  const currentVolatilityPenalty = computeVolatilityPenalty(rangeStats, currentDrawdown, currentMargin, currentTotalPnl);
+  const currentVolatilityPenaltyRaw = computeVolatilityPenalty(rangeStats, currentDrawdown, currentMargin, currentTotalPnl);
+  const currentVolatilityPenalty = currentVolatilityPenaltyRaw * VOLATILITY_PENALTY_FACTOR;
   const currentFinalScore = applyVolatilityPenalty
     ? currentScoreRaw - currentVolatilityPenalty
     : currentScoreRaw;
+  const currentCvar = Math.abs(((currentLongBacktest.cvar || 0) + (currentShortBacktest.cvar || 0)) / 2);
+  const currentCvarPenalty = currentCvar * CVAR_PENALTY_WEIGHT;
+  const currentFinalScoreAdjusted = currentFinalScore - currentCvarPenalty;
+  const currentPayoff = ((currentLongBacktest.payoffRatio || 0) + (currentShortBacktest.payoffRatio || 0)) / 2;
+
+  const baselineLongMaxPositions = Math.max(1, Math.floor(currentMargin / (baseTradeSize || 1)) || 1);
+  const baselineShortMaxPositions = Math.max(1, Math.floor(currentMargin / (baseShortTradeSize || 1)) || 1);
+  const baselineTierLong = calculateMaxPositionsForLeverage(
+    symbol,
+    baseTradeSize,
+    leverageCurrent,
+    currentMargin,
+    leverageBrackets
+  );
+  const baselineTierShort = calculateMaxPositionsForLeverage(
+    symbol,
+    baseShortTradeSize,
+    leverageCurrent,
+    currentMargin,
+    leverageBrackets
+  );
+  const baselineAllowedLongPositions = Math.max(
+    1,
+    Math.min(
+      baselineLongMaxPositions,
+      Number.isFinite(baselineTierLong) && baselineTierLong > 0 ? baselineTierLong : baselineLongMaxPositions
+    )
+  );
+  const baselineAllowedShortPositions = Math.max(
+    1,
+    Math.min(
+      baselineShortMaxPositions,
+      Number.isFinite(baselineTierShort) && baselineTierShort > 0 ? baselineTierShort : baselineShortMaxPositions
+    )
+  );
 
   let bestCombination = {
     totalPnl: currentTotalPnl,
-    finalScore: currentFinalScore,
+    finalScore: currentFinalScoreAdjusted,
     sharpeRatio: currentSharpe,
     drawdownScore: currentDrawdownScore,
     volatilityPenalty: currentVolatilityPenalty,
@@ -1273,35 +1522,76 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
       threshold: Math.max(1, currentLongThreshold),
       result: currentLongBacktest,
       tradeSize: baseTradeSize,
-      maxPositions: longBasePositions
+      maxPositions: baselineAllowedLongPositions
     },
     short: {
       threshold: Math.max(1, currentShortThreshold),
       result: currentShortBacktest,
       tradeSize: baseShortTradeSize,
-      maxPositions: shortBasePositions
-    }
+      maxPositions: baselineAllowedShortPositions
+    },
+    scenarioSummary: [],
+    scenarioPenalty: 0,
+    cvarPenalty: currentCvarPenalty,
+    cvar: currentCvar,
+    payoffRatio: currentPayoff
   };
 
   for (const leverage of leverageCandidates) {
     for (const margin of marginCandidates) {
-      if (!Number.isFinite(margin) || margin <= 0) continue;
+      if (!Number.isFinite(margin) || margin <= 0) {
+        if (diagnostics) diagnostics.rejections.invalidMargin += 1;
+        continue;
+      }
 
       const longTradeSize = baseTradeSize;
       const shortTradeSize = baseShortTradeSize;
 
-      if (!Number.isFinite(longTradeSize) || longTradeSize <= 0) continue;
-      if (!Number.isFinite(shortTradeSize) || shortTradeSize <= 0) continue;
+      if (!Number.isFinite(longTradeSize) || longTradeSize <= 0 || !Number.isFinite(shortTradeSize) || shortTradeSize <= 0) {
+        if (diagnostics) diagnostics.rejections.invalidTradeSize += 1;
+        continue;
+      }
 
       const longMaxPositions = Math.max(1, Math.floor(margin / longTradeSize));
       const shortMaxPositions = Math.max(1, Math.floor(margin / shortTradeSize));
 
-      if (enforceVolatilityConstraints && (longMaxPositions < requiredLongSlots || shortMaxPositions < requiredShortSlots)) {
+      if (!Number.isFinite(longMaxPositions) || longMaxPositions <= 0 || !Number.isFinite(shortMaxPositions) || shortMaxPositions <= 0) {
+        if (diagnostics) diagnostics.rejections.invalidMaxPositions += 1;
         continue;
       }
 
-      if (!Number.isFinite(longMaxPositions) || longMaxPositions <= 0) continue;
-      if (!Number.isFinite(shortMaxPositions) || shortMaxPositions <= 0) continue;
+      const tierMaxLong = calculateMaxPositionsForLeverage(
+        symbol,
+        longTradeSize,
+        leverage,
+        margin,
+        leverageBrackets
+      );
+      const tierMaxShort = calculateMaxPositionsForLeverage(
+        symbol,
+        shortTradeSize,
+        leverage,
+        margin,
+        leverageBrackets
+      );
+
+      if (!Number.isFinite(tierMaxLong) || !Number.isFinite(tierMaxShort) || tierMaxLong <= 0 || tierMaxShort <= 0) {
+        if (diagnostics) diagnostics.rejections.tierLimit += 1;
+        continue;
+      }
+
+      const tierAdjusted = tierMaxLong < requiredLongSlots || tierMaxShort < requiredShortSlots;
+      if (tierAdjusted && diagnostics) diagnostics.tierAdjustments += 1;
+
+      const effectiveLongRequirement = Math.max(1, Math.min(requiredLongSlots, tierMaxLong));
+      const effectiveShortRequirement = Math.max(1, Math.min(requiredShortSlots, tierMaxShort));
+      const allowedLongPositions = Math.max(1, Math.min(longMaxPositions, tierMaxLong));
+      const allowedShortPositions = Math.max(1, Math.min(shortMaxPositions, tierMaxShort));
+
+      if (allowedLongPositions < effectiveLongRequirement || allowedShortPositions < effectiveShortRequirement) {
+        if (diagnostics) diagnostics.rejections.slotDepth += 1;
+        continue;
+      }
 
       for (const tp of tpCandidates) {
         for (const sl of slCandidates) {
@@ -1311,13 +1601,13 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
               continue;
             }
             const candidateThreshold = Math.max(1, threshold);
-            const result = await runBacktest('SELL', candidateThreshold, longMaxPositions, longTradeSize, leverage, tp, sl);
+            const result = await runBacktest('SELL', candidateThreshold, allowedLongPositions, longTradeSize, leverage, tp, sl);
             if (!bestLongSide || result.totalPnl > bestLongSide.result.totalPnl) {
               bestLongSide = {
                 threshold: candidateThreshold,
                 result,
                 tradeSize: longTradeSize,
-                maxPositions: longMaxPositions
+                maxPositions: allowedLongPositions
               };
             }
           }
@@ -1328,18 +1618,24 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
               continue;
             }
             const candidateThreshold = Math.max(1, threshold);
-            const result = await runBacktest('BUY', candidateThreshold, shortMaxPositions, shortTradeSize, leverage, tp, sl);
+            const result = await runBacktest('BUY', candidateThreshold, allowedShortPositions, shortTradeSize, leverage, tp, sl);
             if (!bestShortSide || result.totalPnl > bestShortSide.result.totalPnl) {
               bestShortSide = {
                 threshold: candidateThreshold,
                 result,
                 tradeSize: shortTradeSize,
-                maxPositions: shortMaxPositions
+                maxPositions: allowedShortPositions
               };
             }
           }
 
-          if (!bestLongSide || !bestShortSide) continue;
+          if (!bestLongSide || !bestShortSide) {
+            if (diagnostics) {
+              if (!bestLongSide) diagnostics.rejections.missingLongSide += 1;
+              if (!bestShortSide) diagnostics.rejections.missingShortSide += 1;
+            }
+            continue;
+          }
 
           const combinedPnl = bestLongSide.result.totalPnl + bestShortSide.result.totalPnl;
           const stopExitCount = (bestLongSide.result.exitReasons?.SL || 0) + (bestShortSide.result.exitReasons?.SL || 0);
@@ -1349,6 +1645,10 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
 
           // Skip combinations with poor profit factor or excessive stop rate
           if (combinedProfitFactor < 1.05 || stopRate > 0.65) {
+            if (diagnostics) {
+              if (combinedProfitFactor < 1.05) diagnostics.rejections.profitFactor += 1;
+              if (stopRate > 0.65) diagnostics.rejections.stopRate += 1;
+            }
             continue;
           }
 
@@ -1357,6 +1657,7 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
           // Leave 10% safety margin for fees, funding, and slippage
           const liquidationDistance = (100 / leverage) * 0.9; // 90% of theoretical distance
           if (sl >= liquidationDistance) {
+            if (diagnostics) diagnostics.rejections.liquidationSafety += 1;
             continue;  // SL would never execute - position gets liquidated first!
           }
 
@@ -1364,6 +1665,7 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
           // Reject if TP/SL < 0.33 (worse than 1:3 R:R - requires >75% win rate)
           const riskRewardRatio = tp / sl;
           if (riskRewardRatio < 0.33) {
+            if (diagnostics) diagnostics.rejections.riskReward += 1;
             continue;  // Skip combinations with terrible R:R ratios
           }
 
@@ -1374,6 +1676,7 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
 
           // Skip if backtest win rate is below required (with 5% safety margin)
           if (combinedWinRate < requiredWinRate + 0.05) {
+            if (diagnostics) diagnostics.rejections.winRate += 1;
             continue;  // Not profitable enough even in optimistic backtest
           }
 
@@ -1392,29 +1695,90 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
           // Factor 3: PnL per Drawdown - keeps risk in check
           const combinedDrawdown = Math.max(bestLongSide.result.maxDrawdown || 1, bestShortSide.result.maxDrawdown || 1);
           const drawdownScore = combinedPnl / (combinedDrawdown + 1);  // +1 to avoid division by zero
+          const combinedCvar = Math.abs(((bestLongSide.result.cvar || 0) + (bestShortSide.result.cvar || 0)) / 2);
+          const combinedPayoff = ((bestLongSide.result.payoffRatio || 0) + (bestShortSide.result.payoffRatio || 0)) / 2;
+          const cvarPenalty = Math.max(0, combinedCvar) * CVAR_PENALTY_WEIGHT;
 
           // Calculate weighted final score using normalized weights from the optimizer configuration
           const finalScore = (
             (pnlScore * normalizedScoringWeights.pnl) +
             (combinedSharpe * normalizedScoringWeights.sharpe) +
             (drawdownScore * normalizedScoringWeights.drawdown)
-          );
+          ) - cvarPenalty;
 
           // Sanity check for NaN/Infinity
           if (!Number.isFinite(finalScore)) {
+            if (diagnostics) diagnostics.rejections.nonFiniteScore += 1;
             continue;
           }
 
-          const volatilityPenalty = computeVolatilityPenalty(rangeStats, combinedDrawdown, margin, combinedPnl);
+          const volatilityPenaltyRaw = computeVolatilityPenalty(rangeStats, combinedDrawdown, margin, combinedPnl);
+          const volatilityPenalty = volatilityPenaltyRaw * VOLATILITY_PENALTY_FACTOR;
           const adjustedScore = applyVolatilityPenalty ? (finalScore - volatilityPenalty) : finalScore;
+          if (diagnostics) diagnostics.combinationsEvaluated += 1;
           if (!Number.isFinite(adjustedScore)) {
+            if (diagnostics) diagnostics.rejections.nonFiniteScore += 1;
             continue;
           }
 
-          if (adjustedScore > bestCombination.finalScore) {
+          let scenarioPenalty = 0;
+          let scenarioAdjustedScore = adjustedScore;
+          let scenarioSummary = [];
+
+          if (ENABLE_SCENARIOS && scenarioProfiles.length) {
+            const scenarioResults = [];
+            for (const profile of scenarioProfiles) {
+              const overrides = {
+                suppressLogs: true,
+                ...profile.overrides
+              };
+              if (diagnostics) diagnostics.scenariosEvaluated += 1;
+              const longScenario = await runBacktest(
+                symbol,
+                'SELL',
+                bestLongSide.threshold,
+                bestLongSide.maxPositions,
+                longTradeSize,
+                leverage,
+                tp,
+                sl,
+                overrides
+              );
+              const shortScenario = await runBacktest(
+                symbol,
+                'BUY',
+                bestShortSide.threshold,
+                bestShortSide.maxPositions,
+                shortTradeSize,
+                leverage,
+                tp,
+                sl,
+                overrides
+              );
+              const totalScenarioPnl = longScenario.totalPnl + shortScenario.totalPnl;
+              const scenarioDrawdown = Math.max(longScenario.maxDrawdown || 1, shortScenario.maxDrawdown || 1);
+              const scenarioSharpe = ((longScenario.sharpeRatio || 0) + (shortScenario.sharpeRatio || 0)) / 2;
+              scenarioResults.push({
+                name: profile.name,
+                totalPnl: totalScenarioPnl,
+                maxDrawdown: scenarioDrawdown,
+                sharpeRatio: scenarioSharpe
+              });
+            }
+
+            if (scenarioResults.length) {
+              const worst = scenarioResults.reduce((prev, curr) => curr.totalPnl < prev.totalPnl ? curr : prev, scenarioResults[0]);
+              scenarioPenalty = Math.max(0, (combinedPnl - worst.totalPnl) * SCENARIO_PENALTY_WEIGHT);
+              scenarioAdjustedScore = adjustedScore - scenarioPenalty;
+              scenarioSummary = scenarioResults;
+            }
+          }
+
+          if (scenarioAdjustedScore > bestCombination.finalScore) {
+            if (diagnostics) diagnostics.combinationsAccepted += 1;
             bestCombination = {
               totalPnl: combinedPnl,
-              finalScore: adjustedScore,
+              finalScore: scenarioAdjustedScore,
               sharpeRatio: combinedSharpe,
               drawdownScore: drawdownScore,
               volatilityPenalty,
@@ -1423,7 +1787,12 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
               tp,
               sl,
               long: bestLongSide,
-              short: bestShortSide
+              short: bestShortSide,
+              scenarioPenalty,
+              scenarioSummary,
+              cvarPenalty,
+              cvar: combinedCvar,
+              payoffRatio: combinedPayoff
             };
           }
         }
@@ -1463,7 +1832,8 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
         );
 
         const metrics = calculateCombinationScore(longResult, shortResult);
-        const metricsPenalty = computeVolatilityPenalty(rangeStats, metrics.combinedDrawdown, bestCombination.margin, metrics.combinedPnl);
+        const metricsPenaltyRaw = computeVolatilityPenalty(rangeStats, metrics.combinedDrawdown, bestCombination.margin, metrics.combinedPnl);
+        const metricsPenalty = metricsPenaltyRaw * VOLATILITY_PENALTY_FACTOR;
         const metricsScore = applyVolatilityPenalty ? (metrics.finalScore - metricsPenalty) : metrics.finalScore;
 
         if (metricsScore > cachedBestScore + 1e-6) {
@@ -1488,12 +1858,70 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
   bestCombination.cooldownMs = bestCooldownMs;
 
   const finalMetrics = calculateCombinationScore(bestCombination.long.result, bestCombination.short.result);
-  const finalPenalty = computeVolatilityPenalty(rangeStats, finalMetrics.combinedDrawdown, bestCombination.margin, finalMetrics.combinedPnl);
+
+  if (ENABLE_SCENARIOS && scenarioProfiles.length) {
+    const scenarioResults = [];
+    for (const profile of scenarioProfiles) {
+      const overrides = {
+        suppressLogs: true,
+        windowMs: bestCombination.windowMs,
+        cooldownMs: bestCombination.cooldownMs,
+        ...profile.overrides
+      };
+      const longScenario = await runBacktest(
+        symbol,
+        'SELL',
+        bestCombination.long.threshold,
+        bestCombination.long.maxPositions,
+        bestCombination.long.tradeSize,
+        bestCombination.leverage,
+        bestCombination.tp,
+        bestCombination.sl,
+        overrides
+      );
+      const shortScenario = await runBacktest(
+        symbol,
+        'BUY',
+        bestCombination.short.threshold,
+        bestCombination.short.maxPositions,
+        bestCombination.short.tradeSize,
+        bestCombination.leverage,
+        bestCombination.tp,
+        bestCombination.sl,
+        overrides
+      );
+      const totalScenarioPnl = longScenario.totalPnl + shortScenario.totalPnl;
+      const scenarioDrawdown = Math.max(longScenario.maxDrawdown || 1, shortScenario.maxDrawdown || 1);
+      const scenarioSharpe = ((longScenario.sharpeRatio || 0) + (shortScenario.sharpeRatio || 0)) / 2;
+      scenarioResults.push({
+        name: profile.name,
+        totalPnl: totalScenarioPnl,
+        maxDrawdown: scenarioDrawdown,
+        sharpeRatio: scenarioSharpe
+      });
+    }
+
+    if (scenarioResults.length) {
+      const worst = scenarioResults.reduce((prev, curr) => (curr.totalPnl < prev.totalPnl ? curr : prev), scenarioResults[0]);
+      bestCombination.scenarioPenalty = Math.max(0, (finalMetrics.combinedPnl - worst.totalPnl) * SCENARIO_PENALTY_WEIGHT);
+      bestCombination.scenarioSummary = scenarioResults;
+    }
+  }
+
+  const finalPenaltyRaw = computeVolatilityPenalty(rangeStats, finalMetrics.combinedDrawdown, bestCombination.margin, finalMetrics.combinedPnl);
+  const finalPenalty = finalPenaltyRaw * VOLATILITY_PENALTY_FACTOR;
   const finalScoreWithPenalty = applyVolatilityPenalty ? (finalMetrics.finalScore - finalPenalty) : finalMetrics.finalScore;
+  const finalCvar = Math.abs(((bestCombination.long.result.cvar || 0) + (bestCombination.short.result.cvar || 0)) / 2);
+  const finalCvarPenalty = finalCvar * CVAR_PENALTY_WEIGHT;
+  bestCombination.cvarPenalty = finalCvarPenalty;
+  const combinedPayoffRatio = ((bestCombination.long.result.payoffRatio || 0) + (bestCombination.short.result.payoffRatio || 0)) / 2;
+  bestCombination.cvar = finalCvar;
+  bestCombination.payoffRatio = combinedPayoffRatio;
+  const finalScenarioAdjusted = finalScoreWithPenalty - (bestCombination.scenarioPenalty || 0) - finalCvarPenalty;
   bestCombination.totalPnl = finalMetrics.combinedPnl;
   bestCombination.sharpeRatio = finalMetrics.combinedSharpe;
   bestCombination.drawdownScore = finalMetrics.drawdownScore;
-  bestCombination.finalScore = Math.max(bestCombination.finalScore, finalScoreWithPenalty);
+  bestCombination.finalScore = Math.max(bestCombination.finalScore, finalScenarioAdjusted);
   bestCombination.volatilityPenalty = finalPenalty;
 
   const optimizedDailyPnl = bestCombination.totalPnl * dailyFactor;
@@ -1559,6 +1987,40 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
     console.log(`⚠️  ${symbol}: ${tierWarning.message}\n`);
   }
 
+  let diagnosticsSummary = null;
+  if (diagnostics) {
+    const durationMs = Number(process.hrtime.bigint() - diagnostics.startHrTime) / 1e6;
+    const counts = diagnostics.candidateCounts;
+    diagLog(
+      `${symbol} candidate grids -> L-threshold:${counts.longThreshold} | S-threshold:${counts.shortThreshold} | TP:${counts.tp} | SL:${counts.sl} | leverage:${counts.leverage} | margin:${counts.margin} | window:${counts.timeWindow} | cooldown:${counts.cooldown}`
+    );
+    diagLog(
+      `${symbol} combos evaluated:${diagnostics.combinationsEvaluated} accepted:${diagnostics.combinationsAccepted} backtests(executed:${diagnostics.backtests.executed}, cacheHits:${diagnostics.backtests.cacheHits}) scenarios:${diagnostics.scenariosEvaluated} duration:${durationMs.toFixed(1)}ms`
+    );
+    if (diagnostics.tierAdjustments) {
+      diagLog(
+        `${symbol} tier adjustments -> ${diagnostics.tierAdjustments} combos clipped to leverage-tier limits`
+      );
+    }
+    const rejectionEntries = Object.entries(diagnostics.rejections)
+      .filter(([, value]) => value > 0)
+      .map(([key, value]) => `${key}=${value}`);
+    diagLog(
+      `${symbol} rejection summary -> ${rejectionEntries.length ? rejectionEntries.join(', ') : 'none'}`
+    );
+
+    diagnosticsSummary = {
+      candidateCounts: diagnostics.candidateCounts,
+      rejections: diagnostics.rejections,
+      backtests: diagnostics.backtests,
+      combinationsEvaluated: diagnostics.combinationsEvaluated,
+      combinationsAccepted: diagnostics.combinationsAccepted,
+      scenariosEvaluated: diagnostics.scenariosEvaluated,
+      durationMs: Number.isFinite(durationMs) ? durationMs : null,
+      tierAdjustments: diagnostics.tierAdjustments
+    };
+  }
+
   return {
     symbol,
     tierWarning,
@@ -1572,8 +2034,8 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
       leverage: leverageCurrent,
       tp: currentTp,
       sl: currentSl,
-      longMaxPositions: longBasePositions,
-      shortMaxPositions: shortBasePositions,
+      longMaxPositions: baselineAllowedLongPositions,
+      shortMaxPositions: baselineAllowedShortPositions,
       thresholdTimeWindow: currentTimeWindowMs,
       thresholdCooldown: currentCooldownMs,
       performance: {
@@ -1581,7 +2043,11 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
         short: currentShortBacktest,
         totalPnl: currentTotalPnl,
         dailyPnl: currentDailyPnl
-      }
+      },
+      volatilityPenalty: currentVolatilityPenalty,
+      cvarPenalty: currentCvarPenalty,
+      cvar: currentCvar,
+      payoffRatio: currentPayoff
     },
     optimized: {
       config: optimizedSymbolConfig,
@@ -1597,7 +2063,12 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
       finalScore: bestCombination.finalScore,
       sharpeRatio: bestCombination.sharpeRatio,
       drawdownScore: bestCombination.drawdownScore,
-      volatilityPenalty: bestCombination.volatilityPenalty
+      volatilityPenalty: bestCombination.volatilityPenalty,
+      cvarPenalty: bestCombination.cvarPenalty || 0,
+      cvar: bestCombination.cvar || 0,
+      payoffRatio: bestCombination.payoffRatio || 0,
+      scenarioPenalty: bestCombination.scenarioPenalty || 0,
+      scenarios: bestCombination.scenarioSummary || []
     },
     improvements: {
       long: longImprovement,
@@ -1605,7 +2076,8 @@ async function optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spa
       totalDaily: optimizedDailyPnl - currentDailyPnl
     },
     spanDays,
-    capitalBudget
+    capitalBudget,
+    diagnostics: diagnosticsSummary
   };
 }
 
@@ -1696,7 +2168,7 @@ function analyzeCurrentConfig() {
   console.log('???? ROLLING 60-SECOND WINDOW ANALYSIS');
   console.log('=====================================\n');
 
-  for (const [symbol, symbolConfig] of Object.entries(config.symbols)) {
+  for (const [symbol, symbolConfig] of getSelectedSymbolEntries()) {
     console.log(`???? ${symbol} Analysis:`);
 
     const timeWindowMs = symbolConfig.thresholdTimeWindow || DEFAULT_THRESHOLD_WINDOW_MS;
@@ -1736,10 +2208,12 @@ function optimizeThresholds() {
   console.log('???? ROLLING WINDOW THRESHOLD OPTIMIZATION');
   console.log('========================================\n');
 
-  // Focus on most active symbols
-  const topSymbols = ['ASTERUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+  const defaultSymbols = ['ASTERUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+  const focusSymbols = requestedSymbols.size === 0
+    ? defaultSymbols.filter(symbol => config.symbols[symbol])
+    : getSelectedSymbolsList();
 
-  topSymbols.forEach(symbol => {
+  focusSymbols.forEach(symbol => {
     if (!config.symbols[symbol]) return;
 
     console.log(`???? ${symbol} Rolling Window Optimization:`);
@@ -1791,7 +2265,7 @@ function rankSymbolProfitability() {
 
   const symbolStats = [];
 
-  for (const [symbol, symbolConfig] of Object.entries(config.symbols)) {
+  for (const [symbol, symbolConfig] of getSelectedSymbolEntries()) {
     const tradeSize = symbolConfig.tradeSize || 20;
     const leverage = symbolConfig.leverage || 10;
     const tpPercent = symbolConfig.tpPercent || 1;
@@ -1852,7 +2326,7 @@ function rankSymbolProfitability() {
 // Helper function to calculate risk metrics
 function calculateRiskMetrics(trades) {
   if (trades.length === 0) {
-    return { sharpeRatio: 0, maxDrawdown: 0, maxDrawdownPercent: 0, profitFactor: 0 };
+    return { sharpeRatio: 0, maxDrawdown: 0, maxDrawdownPercent: 0, profitFactor: 0, cvar: 0, payoffRatio: 0 };
   }
 
   // Calculate returns for each trade
@@ -1889,7 +2363,13 @@ function calculateRiskMetrics(trades) {
   const totalLosses = Math.abs(trades.filter(t => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0));
   const profitFactor = totalLosses > 0 ? totalWins / totalLosses : (totalWins > 0 ? Infinity : 0);
 
-  return { sharpeRatio, maxDrawdown, maxDrawdownPercent, profitFactor };
+  const sortedReturns = [...returns].sort((a, b) => a - b);
+  const tailCount = Math.max(1, Math.floor(sortedReturns.length * 0.05));
+  const tailLosses = sortedReturns.slice(0, tailCount);
+  const cvar = tailLosses.length ? tailLosses.reduce((sum, val) => sum + val, 0) / tailLosses.length : 0;
+  const payoffRatio = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0;
+
+  return { sharpeRatio, maxDrawdown, maxDrawdownPercent, profitFactor, cvar, payoffRatio };
 }
 
 // REALISTIC BACKTEST ENGINE with Historical Price Integration
@@ -1898,6 +2378,17 @@ async function backtestSymbol(symbol, side, threshold, maxPositions, tradeSize, 
   const cooldownMs = Number.isFinite(options.cooldownMs) ? Math.max(0, options.cooldownMs) : 0;
   const hunterCooldownMs = Number.isFinite(options.hunterCooldownMs) ? Math.max(0, options.hunterCooldownMs) : HUNTER_COOLDOWN_MS;
   const windowMs = Number.isFinite(options.windowMs) ? Math.max(1_000, options.windowMs) : DEFAULT_THRESHOLD_WINDOW_MS;
+  const timeRange = options.timeRange || null;
+  const priceDataOverride = Array.isArray(options.priceDataOverride) ? options.priceDataOverride : null;
+  const slippageMultiplier = Number.isFinite(options.slippageMultiplier) ? Math.max(0.25, options.slippageMultiplier) : 1;
+  const limitFillRate = Number.isFinite(options.limitFillRate) ? Math.min(Math.max(options.limitFillRate, 0.1), 0.99) : LIMIT_FILL_RATE;
+  const marketFallbackRate = Number.isFinite(options.marketFallbackRate) ? Math.min(Math.max(options.marketFallbackRate, 0), 0.5) : MARKET_FALLBACK_RATE;
+  const entryMarketSlippage = EXIT_SLIPPAGE.ENTRY_MARKET * slippageMultiplier;
+  const exitSlippageCfg = {
+    TP: EXIT_SLIPPAGE.TP * slippageMultiplier,
+    SL: EXIT_SLIPPAGE.SL * slippageMultiplier,
+    SL_VOLATILE: EXIT_SLIPPAGE.SL_VOLATILE * slippageMultiplier
+  };
   const log = (...args) => {
     if (!suppressLogs) {
       console.log(...args);
@@ -1907,33 +2398,46 @@ async function backtestSymbol(symbol, side, threshold, maxPositions, tradeSize, 
   log(`???? Backtesting ${symbol} ${side === 'SELL' ? 'LONG' : 'SHORT'} with $${threshold} threshold...`);
 
   // Get liquidations ordered by time
-  const liquidations = db.prepare(`
+  let liquidations = db.prepare(`
     SELECT event_time, volume_usdt, price
     FROM liquidations
     WHERE symbol = ? AND side = ?
     ORDER BY event_time
   `).all(symbol, side);
 
+  if (timeRange && Number.isFinite(timeRange.start) && Number.isFinite(timeRange.end) && timeRange.end > timeRange.start) {
+    liquidations = liquidations.filter(row => row.event_time >= timeRange.start && row.event_time <= timeRange.end);
+  }
+
   if (liquidations.length === 0) {
     return {
       totalTrades: 0, wins: 0, losses: 0, totalPnl: 0, winRate: 0,
       avgWin: 0, avgLoss: 0, avgDuration: 0, activePositions: 0,
-      sharpeRatio: 0, maxDrawdown: 0, maxDrawdownPercent: 0, profitFactor: 0
+      sharpeRatio: 0, maxDrawdown: 0, maxDrawdownPercent: 0,
+      profitFactor: 0, cvar: 0, payoffRatio: 0
     };
   }
 
   // Get historical price data from API for accurate TP/SL simulation
   let priceData = [];
-  try {
-    priceData = await getCachedHistoricalPrices(symbol, '1m', 10080); // Last ~7 days at 1-minute resolution
-  } catch (_error) {
-    log(`   ??????  Could not fetch historical prices for ${symbol}, using liquidation prices`);
+  if (priceDataOverride) {
+    priceData = priceDataOverride;
+  } else {
+    try {
+      priceData = await getCachedHistoricalPrices(symbol, '1m', 10080); // Last ~7 days at 1-minute resolution
+    } catch (_error) {
+      log(`   ??????  Could not fetch historical prices for ${symbol}, using liquidation prices`);
+    }
   }
 
   // If we have historical price data, use it; otherwise fall back to liquidation prices
-  const allPrices = priceData.length > 0
+  let allPrices = priceData.length > 0
     ? priceData.map(p => ({ event_time: p.timestamp, price: p.close, high: p.high, low: p.low }))
     : db.prepare(`SELECT event_time, price, price as high, price as low FROM liquidations WHERE symbol = ? ORDER BY event_time`).all(symbol);
+
+  if (timeRange && Number.isFinite(timeRange.start) && Number.isFinite(timeRange.end)) {
+    allPrices = allPrices.filter(row => row.event_time >= timeRange.start && row.event_time <= timeRange.end);
+  }
 
   let activePositions = [];
   let completedTrades = [];
@@ -1978,11 +2482,11 @@ async function backtestSymbol(symbol, side, threshold, maxPositions, tradeSize, 
     if (exitReason === 'TP') {
       // TAKE_PROFIT_MARKET: fills slightly worse than trigger price
       actualExitPrice = pos.isLong
-        ? exitPrice * (1 - EXIT_SLIPPAGE.TP)  // LONG TP: sell fills lower
-        : exitPrice * (1 + EXIT_SLIPPAGE.TP); // SHORT TP: buy fills higher
+        ? exitPrice * (1 - exitSlippageCfg.TP)
+        : exitPrice * (1 + exitSlippageCfg.TP);
     } else if (exitReason === 'SL') {
       // STOP_MARKET: worse slippage, especially in volatile conditions
-      const slippageRate = volatilityFactor > 1.5 ? EXIT_SLIPPAGE.SL_VOLATILE : EXIT_SLIPPAGE.SL;
+      const slippageRate = volatilityFactor > 1.5 ? exitSlippageCfg.SL_VOLATILE : exitSlippageCfg.SL;
       actualExitPrice = pos.isLong
         ? exitPrice * (1 - slippageRate)  // LONG SL: sell fills even lower
         : exitPrice * (1 + slippageRate); // SHORT SL: buy fills even higher
@@ -2116,23 +2620,19 @@ async function backtestSymbol(symbol, side, threshold, maxPositions, tradeSize, 
     const cooldownElapsed = currentTime - lastEntryTime >= cooldownMs;
     const hunterCooldownElapsed = currentTime - lastHunterEntryTime >= hunterCooldownMs;
     if (windowVolume >= threshold && activePositions.length < maxPositions && cooldownElapsed && hunterCooldownElapsed) {
-      // Simulate LIMIT order non-fill probability (15% of orders don't fill)
-      if (Math.random() > LIMIT_FILL_RATE) {
-        // LIMIT order placed but never filled - skip this entry
-        if (!suppressLogs && Math.random() < 0.1) {  // Log 10% of non-fills to avoid spam
+      if (Math.random() > limitFillRate) {
+        if (!suppressLogs && Math.random() < 0.1) {
           log(`   ???? LIMIT order did not fill (non-fill simulation)`);
         }
-        continue;  // Skip to next liquidation event
+        continue;
       }
 
-      // Simulate entry slippage (10% use MARKET fallback with slippage)
       let entryPrice = currentEvent.price;
-      if (Math.random() < MARKET_FALLBACK_RATE) {
-        // MARKET order fallback - apply entry slippage
+      if (Math.random() < marketFallbackRate) {
         const isLong = side === 'SELL';
         entryPrice = isLong
-          ? entryPrice * (1 + EXIT_SLIPPAGE.ENTRY_MARKET)  // BUY market: fills higher
-          : entryPrice * (1 - EXIT_SLIPPAGE.ENTRY_MARKET); // SELL market: fills lower
+          ? entryPrice * (1 + entryMarketSlippage)
+          : entryPrice * (1 - entryMarketSlippage);
       }
 
       const isLong = side === 'SELL'; // Buy on SELL liquidations, Sell on BUY liquidations
@@ -2220,7 +2720,7 @@ async function generateRecommendations(deployableCapital, leverageBrackets = {},
   const optimizedConfig = JSON.parse(JSON.stringify(config));
   const sanitizedCapital = Number.isFinite(deployableCapital) && deployableCapital > 0 ? deployableCapital : 0;
 
-  const symbolEntries = Object.entries(config.symbols);
+  const symbolEntries = getSelectedSymbolEntries();
   if (symbolEntries.length === 0) {
     if (progressSpan > 0) {
       emitProgress(end, 'No symbols configured for optimization');
@@ -2294,6 +2794,10 @@ async function generateRecommendations(deployableCapital, leverageBrackets = {},
       longImprovement: optimization.improvements.long,
       shortImprovement: optimization.improvements.short,
       totalDailyImprovement: optimization.improvements.totalDaily,
+      currentVolatilityPenalty: optimization.current.volatilityPenalty,
+      currentCvarPenalty: optimization.current.cvarPenalty,
+      currentCvar: optimization.current.cvar,
+      currentPayoffRatio: optimization.current.payoffRatio,
       currentPerformance: optimization.current.performance,
       optimizedPerformance: {
         long: optimization.optimized.long.result,
@@ -2304,7 +2808,14 @@ async function generateRecommendations(deployableCapital, leverageBrackets = {},
       optimizedScore: optimization.optimized.finalScore,
       optimizedSharpe: optimization.optimized.sharpeRatio,
       optimizedDrawdownScore: optimization.optimized.drawdownScore,
+      optimizedVolatilityPenalty: optimization.optimized.volatilityPenalty,
+      optimizedCvarPenalty: optimization.optimized.cvarPenalty,
+      optimizedScenarioPenalty: optimization.optimized.scenarioPenalty,
+      optimizedCvar: optimization.optimized.cvar,
+      optimizedPayoffRatio: optimization.optimized.payoffRatio,
+      optimizedScenarios: optimization.optimized.scenarios,
       optimizedConfig: optimization.optimized.config,
+      diagnostics: optimization.diagnostics,
       spanDays: optimization.spanDays
     });
 
@@ -2429,7 +2940,7 @@ function analyzeCapitalAllocation(balance, accountInfo, positions) {
   console.log(`Symbol      | Trade Size | Max Margin/Side | Max Positions | Strategy`);
   console.log(`------------|------------|------------------|---------------|----------`);
 
-  for (const [symbol, symbolConfig] of Object.entries(config.symbols)) {
+  for (const [symbol, symbolConfig] of getSelectedSymbolEntries()) {
     const tradeSize = symbolConfig.tradeSize || 20;
     const shortTradeSize = symbolConfig.shortTradeSize || tradeSize;
     const maxMarginPerSide = symbolConfig.maxPositionMarginUSDT || 100;
@@ -2494,7 +3005,7 @@ function analyzeLiquidationCascades() {
   console.log('------------|----------------|----------------|--------------------');
 
   for (const [symbol, cascades] of Object.entries(cascadesBySymbol)) {
-    if (!config.symbols[symbol]) continue;
+    if (!config.symbols[symbol] || !shouldIncludeSymbol(symbol)) continue;
 
     const avgVolume = cascades.reduce((sum, c) => sum + c.total_volume, 0) / cascades.length;
     const maxLiqs = Math.max(...cascades.map(c => c.liquidation_count));
@@ -2509,7 +3020,10 @@ async function analyzeRealTradingHistory(credentials) {
   console.log('???? REAL TRADING HISTORY ANALYSIS');
   console.log('=================================\n');
 
-  const symbols = ['ASTERUSDT'];
+  const defaultSymbols = ['ASTERUSDT'];
+  const symbols = requestedSymbols.size === 0
+    ? defaultSymbols.filter(symbol => config.symbols[symbol])
+    : getSelectedSymbolsList();
   const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
 
   for (const symbol of symbols) {
@@ -2610,11 +3124,12 @@ function optimizeCapitalAllocation(accountInfo, recommendations, symbolConfigs =
 
   // Calculate total required allocation with current config
   let currentTotalAllocation = 0;
-  for (const [_symbol, symbolConfig] of Object.entries(symbolConfigs)) {
+  for (const [_symbol, symbolConfig] of getSelectedSymbolEntries(symbolConfigs)) {
     currentTotalAllocation += symbolConfig.maxPositionMarginUSDT || 100;
   }
 
-  console.log(`???? Current Total Allocation: $${formatLargeNumber(currentTotalAllocation)} (${(currentTotalAllocation / totalWalletBalance * 100).toFixed(1)}% of total balance)`);
+  const balanceRatio = totalWalletBalance > 0 ? (currentTotalAllocation / totalWalletBalance * 100) : 0;
+  console.log(`???? Current Total Allocation: $${formatLargeNumber(currentTotalAllocation)} (${balanceRatio.toFixed(1)}% of total balance)`);
 
   if (currentTotalAllocation > maxAllocation) {
     console.log(`??????  OVERALLOCATED by $${formatLargeNumber(currentTotalAllocation - maxAllocation)}`);
@@ -2653,7 +3168,8 @@ function optimizeCapitalAllocation(accountInfo, recommendations, symbolConfigs =
   // Suggest allocation rebalancing
   if (currentTotalAllocation > maxAllocation) {
     console.log('???? REBALANCING RECOMMENDATIONS:');
-    const allocationPerSymbol = Math.floor(maxAllocation / Object.keys(config.symbols).length);
+    const symbolCount = Math.max(Object.keys(symbolConfigs).length, 1);
+    const allocationPerSymbol = Math.floor(maxAllocation / symbolCount);
 
     console.log(`   Option 1: Equal allocation of $${formatLargeNumber(allocationPerSymbol)} per symbol`);
     console.log(`   Option 2: Weighted by expected profitability (top performers get more)`);
@@ -2741,6 +3257,7 @@ function generateOptimizationSummary(recommendations, capitalOptimization, optim
     },
     recommendations: recommendations.map(_rec => ({
       symbol: _rec.symbol,
+      tierWarning: _rec.tierWarning,
       thresholds: {
         current: { long: _rec.currentLong, short: _rec.currentShort },
         optimized: { long: _rec.optimizedLong, short: _rec.optimizedShort }
@@ -2774,6 +3291,23 @@ function generateOptimizationSummary(recommendations, capitalOptimization, optim
           vwapProtection: _rec.optimizedConfig?.vwapProtection
         }
       },
+      risk: {
+        current: {
+          volatilityPenalty: _rec.currentVolatilityPenalty,
+          cvarPenalty: _rec.currentCvarPenalty,
+          cvar: _rec.currentCvar,
+          payoffRatio: _rec.currentPayoffRatio
+        },
+        optimized: {
+          volatilityPenalty: _rec.optimizedVolatilityPenalty,
+          cvarPenalty: _rec.optimizedCvarPenalty,
+          scenarioPenalty: _rec.optimizedScenarioPenalty,
+          cvar: _rec.optimizedCvar,
+          payoffRatio: _rec.optimizedPayoffRatio
+        },
+        scenarios: _rec.optimizedScenarios
+      },
+      diagnostics: _rec.diagnostics,
       improvement: {
         long: _rec.longImprovement,
         short: _rec.shortImprovement,
@@ -2959,7 +3493,8 @@ async function main() {
     emitProgress(90, 'Per-symbol optimization complete');
 
     // Optimize capital allocation
-    const capitalOptimization = optimizeCapitalAllocation(accountInfo, recommendations, optimizedConfig.symbols);
+    const selectedOptimizedConfigs = getSelectedSymbolConfigMap(optimizedConfig.symbols);
+    const capitalOptimization = optimizeCapitalAllocation(accountInfo, recommendations, selectedOptimizedConfigs);
     emitProgress(94, 'Capital allocation optimized');
 
     // Generate final summary

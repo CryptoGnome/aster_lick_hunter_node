@@ -18,6 +18,7 @@ import { OptimizerResults } from './OptimizerResults';
 import { OptimizerInfoTooltip } from './OptimizerInfoTooltip';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useConfig } from '@/components/ConfigProvider';
+import { Switch } from '@/components/ui/switch';
 
 interface OptimizerDialogProps {
   isOpen: boolean;
@@ -50,7 +51,7 @@ export function OptimizerDialog({
   results,
   onResultsChange,
 }: OptimizerDialogProps) {
-  const { reloadConfig } = useConfig();
+  const { config, reloadConfig } = useConfig();
   const [activeTab, setActiveTab] = useState<'config' | 'progress' | 'results'>('config');
 
   // Weight configuration
@@ -58,6 +59,10 @@ export function OptimizerDialog({
   const [sharpeWeight, setSharpeWeight] = useState(30);
   const [drawdownWeight, setDrawdownWeight] = useState(20);
   const [mode, setMode] = useState<'quick' | 'thorough'>('quick');
+  const [enableDiagnostics, setEnableDiagnostics] = useState(false);
+  const [availableSymbols, setAvailableSymbols] = useState<string[]>([]);
+  const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
+  const [progressSymbols, setProgressSymbols] = useState<string[] | null>(null);
 
   const [isStarting, setIsStarting] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
@@ -67,6 +72,7 @@ export function OptimizerDialog({
     if (isOpen && !jobId) {
       setActiveTab('config');
       onResultsChange(null);
+      setProgressSymbols(null);
     }
   }, [isOpen, jobId, onResultsChange]);
 
@@ -75,6 +81,25 @@ export function OptimizerDialog({
       setActiveTab('results');
     }
   }, [isOpen, results]);
+
+  useEffect(() => {
+    if (!config?.symbols) {
+      setAvailableSymbols([]);
+      setSelectedSymbols([]);
+      return;
+    }
+
+    const symbols = Object.keys(config.symbols);
+    setAvailableSymbols(symbols);
+    setSelectedSymbols((prev) => {
+      if (prev.length === 0) {
+        return symbols;
+      }
+
+      const filtered = prev.filter((symbol) => symbols.includes(symbol));
+      return filtered.length > 0 ? filtered : symbols;
+    });
+  }, [config]);
 
   // Prevent closing during optimization
   useEffect(() => {
@@ -104,6 +129,8 @@ export function OptimizerDialog({
             drawdown: drawdownWeight,
           },
           mode,
+          diagnostics: enableDiagnostics,
+          symbols: selectedSymbols,
         }),
       });
 
@@ -117,10 +144,14 @@ export function OptimizerDialog({
       if (typeof data.mode === 'string') {
         setMode(data.mode === 'thorough' ? 'thorough' : 'quick');
       }
+      const allSelected = selectedSymbols.length === availableSymbols.length;
+      setProgressSymbols(allSelected ? null : selectedSymbols);
       setActiveTab('progress');
 
       toast.success('Optimization Started', {
-        description: data.message || 'Your configuration is being optimized...',
+        description:
+          data.message ||
+          `Your configuration is being optimized${enableDiagnostics ? ' with diagnostics enabled' : ''}...`,
       });
     } catch (error) {
       console.error('Error starting optimization:', error);
@@ -136,6 +167,7 @@ export function OptimizerDialog({
   const handleOptimizationComplete = (optimizationResults: any) => {
     onResultsChange(optimizationResults);
     setActiveTab('results');
+    setProgressSymbols(null);
 
     const improvementPercent = optimizationResults.summary.improvementPercent || 0;
     onOptimizationComplete(improvementPercent);
@@ -153,6 +185,7 @@ export function OptimizerDialog({
     onJobIdChange(null);
     onResultsChange(null);
     setActiveTab('config');
+    setProgressSymbols(null);
   };
 
   const handleCancel = () => {
@@ -160,6 +193,7 @@ export function OptimizerDialog({
     onJobIdChange(null);
     onResultsChange(null);
     setActiveTab('config');
+    setProgressSymbols(null);
   };
 
   const handleApplyChanges = async () => {
@@ -217,7 +251,44 @@ export function OptimizerDialog({
   };
 
   const canStartOptimization = 
-    Math.abs(pnlWeight + sharpeWeight + drawdownWeight - 100) < 0.1;
+    Math.abs(pnlWeight + sharpeWeight + drawdownWeight - 100) < 0.1 &&
+    selectedSymbols.length > 0;
+
+  const symbolSelectionDisabled = isStarting || !!jobId;
+  const allSymbolsSelected = selectedSymbols.length === availableSymbols.length && availableSymbols.length > 0;
+
+  const selectionSummary = selectedSymbols.length === 0
+    ? 'Select at least one symbol to start the optimizer.'
+    : `${selectedSymbols.length} of ${availableSymbols.length} symbols selected${allSymbolsSelected ? ' (all)' : ''}.`;
+
+  const progressSymbolLabel = progressSymbols && progressSymbols.length > 0
+    ? (progressSymbols.length > 8
+      ? `${progressSymbols.slice(0, 8).join(', ')}, …`
+      : progressSymbols.join(', '))
+    : 'All symbols';
+
+  const handleSymbolSelectionChange = (symbol: string, checked: boolean) => {
+    setSelectedSymbols((prev) => {
+      const nextSet = new Set(prev);
+      if (checked) {
+        nextSet.add(symbol);
+      } else {
+        nextSet.delete(symbol);
+      }
+      const ordered = availableSymbols.filter((item) => nextSet.has(item));
+      return ordered;
+    });
+  };
+
+  const handleSelectAllSymbols = () => {
+    if (symbolSelectionDisabled) return;
+    setSelectedSymbols([...availableSymbols]);
+  };
+
+  const handleClearAllSymbols = () => {
+    if (symbolSelectionDisabled) return;
+    setSelectedSymbols([]);
+  };
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -264,6 +335,65 @@ export function OptimizerDialog({
                   onDrawdownWeightChange={setDrawdownWeight}
                 />
               </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold">Symbol Scope</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Choose which symbols to include in this optimizer run.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleSelectAllSymbols}
+                    disabled={symbolSelectionDisabled || availableSymbols.length === 0}
+                  >
+                    Select All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClearAllSymbols}
+                    disabled={symbolSelectionDisabled || selectedSymbols.length === 0}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border bg-muted/20 p-3 max-h-56 overflow-y-auto space-y-2">
+                {availableSymbols.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No symbols configured.</p>
+                ) : (
+                  availableSymbols.map((symbol) => {
+                    const checked = selectedSymbols.includes(symbol);
+                    return (
+                      <label
+                        key={symbol}
+                        className="flex items-center justify-between gap-3 rounded-md px-3 py-2 text-sm font-medium bg-background/40"
+                      >
+                        <span>{symbol}</span>
+                        <Switch
+                          checked={checked}
+                          onCheckedChange={(state) => handleSymbolSelectionChange(symbol, state)}
+                          disabled={symbolSelectionDisabled}
+                          aria-label={`Toggle ${symbol}`}
+                        />
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="text-sm text-muted-foreground">
+                {selectionSummary}
+              </div>
+            </div>
 
             <div>
               <div className="flex items-center justify-between mb-4">
@@ -328,6 +458,23 @@ export function OptimizerDialog({
               </div>
             </div>
 
+            <div className="rounded-lg border bg-muted/30 px-4 py-3">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h4 className="text-sm font-semibold">Capture Diagnostics</h4>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Enables per-symbol candidate funnels, rejection breakdowns, backtest cache metrics, and scenario counts in the results. Recommended for thorough runs.
+                  </p>
+                </div>
+                <Switch
+                  checked={enableDiagnostics}
+                  onCheckedChange={setEnableDiagnostics}
+                  disabled={isStarting || !!jobId}
+                  aria-label="Enable optimizer diagnostics"
+                />
+              </div>
+            </div>
+
               <div className="flex justify-end pt-4">
                 <Button
                   onClick={handleStartOptimization}
@@ -356,6 +503,18 @@ export function OptimizerDialog({
                       {mode === 'thorough' ? 'Thorough • exhaustive search' : 'Quick • fast sweep'}
                     </span>
                   </div>
+                  <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+                    <span className="font-medium">Diagnostics</span>
+                    <span className="text-muted-foreground">
+                      {enableDiagnostics ? 'Enabled — exporting rejection & scenario data' : 'Disabled'}
+                    </span>
+                  </div>
+                  <div className="rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+                    <span className="font-medium">Symbol Scope</span>
+                    <div className="mt-1 text-muted-foreground">
+                      {progressSymbolLabel}
+                    </div>
+                  </div>
                   <div className="rounded-lg border bg-muted/50 p-3 text-sm text-muted-foreground">
                     💡 <strong>Tip:</strong> You can safely close this dialog while the optimizer runs. Progress will continue to be visible next to the &ldquo;Optimize Config&rdquo; button on the main dashboard.
                   </div>
@@ -365,6 +524,8 @@ export function OptimizerDialog({
                     onCancel={handleCancel}
                     onError={handleOptimizationError}
                     onModeUpdate={(jobMode) => setMode(jobMode)}
+                    onDiagnosticsUpdate={(flag) => setEnableDiagnostics(flag)}
+                    onSymbolsUpdate={(symbols) => setProgressSymbols(symbols && symbols.length ? symbols : null)}
                   />
                 </div>
               )}
