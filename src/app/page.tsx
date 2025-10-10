@@ -16,6 +16,7 @@ import MinimalBotStatus from '@/components/MinimalBotStatus';
 import LiquidationSidebar from '@/components/LiquidationSidebar';
 import PositionTable from '@/components/PositionTable';
 import PnLChart from '@/components/PnLChart';
+import TokenRealizedPnLSummary from '@/components/TokenRealizedPnLSummary';
 import PerformanceCardInline from '@/components/PerformanceCardInline';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
 import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
@@ -387,8 +388,11 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* PnL Chart */}
-          <PnLChart />
+          {/* PnL & Realized Summary */}
+          <div className="grid gap-4 xl:grid-cols-[2fr_1fr]">
+            <PnLChart />
+            <TokenRealizedPnLSummary />
+          </div>
 
           {/* Positions Table */}
           <PositionTable

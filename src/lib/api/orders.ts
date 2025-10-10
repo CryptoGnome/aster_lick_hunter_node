@@ -4,6 +4,7 @@ import { buildSignedForm, buildSignedQuery } from './auth';
 import { getRateLimitedAxios } from './requestInterceptor';
 import { symbolPrecision } from '../utils/symbolPrecision';
 import { getMarkPrice } from './market';
+import { normalizeLeverage } from '../utils/leverage';
 
 const BASE_URL = 'https://fapi.asterdex.com';
 
@@ -194,9 +195,15 @@ export async function getAllOrders(symbol: string, credentials: ApiCredentials, 
 
 // Change leverage
 export async function setLeverage(symbol: string, leverage: number, credentials: ApiCredentials): Promise<any> {
+  const normalizedLeverage = normalizeLeverage(leverage);
+
+  if (normalizedLeverage !== leverage) {
+    console.warn(`[Orders] Normalizing leverage for ${symbol} from ${leverage}x to ${normalizedLeverage}x (exchange requires whole numbers).`);
+  }
+
   const params = {
     symbol,
-    leverage,
+    leverage: normalizedLeverage,
   };
   const formData = buildSignedForm(params, credentials);
 

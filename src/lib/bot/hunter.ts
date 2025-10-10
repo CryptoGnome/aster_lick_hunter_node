@@ -11,6 +11,7 @@ import { vwapService } from '../services/vwapService';
 import { vwapStreamer } from '../services/vwapStreamer';
 import { thresholdMonitor } from '../services/thresholdMonitor';
 import { symbolPrecision } from '../utils/symbolPrecision';
+import { normalizeLeverage } from '../utils/leverage';
 import {
   parseExchangeError,
   NotionalError,
@@ -35,6 +36,7 @@ export class Hunter extends EventEmitter {
   private cleanupInterval: NodeJS.Timeout | null = null; // Periodic cleanup timer
   private syncInterval: NodeJS.Timeout | null = null; // Position mode sync timer
   private lastModeSync: number = Date.now(); // Track last mode sync time
+  private leverageNormalizationCache: Map<string, number> = new Map();
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -665,6 +667,7 @@ export class Hunter extends EventEmitter {
     let notionalUSDT: number | undefined;  // Don't initialize to 0 - use undefined
     let tradeSizeUSDT: number = symbolConfig.tradeSize; // Default to general tradeSize
     let order: any; // Declare order variable for error handling
+    const leverage = this.getNormalizedLeverage(symbol, symbolConfig.leverage ?? 1);
 
     try {
       // Check position limits before placing trade
@@ -705,13 +708,13 @@ export class Hunter extends EventEmitter {
       }
 
       if (this.config.global.paperMode) {
-        console.log(`Hunter: PAPER MODE - Would place ${side} order for ${symbol}, quantity: ${symbolConfig.tradeSize}, leverage: ${symbolConfig.leverage}`);
+        console.log(`Hunter: PAPER MODE - Would place ${side} order for ${symbol}, quantity: ${symbolConfig.tradeSize}, leverage: ${leverage}`);
         this.emit('positionOpened', {
           symbol,
           side,
           quantity: symbolConfig.tradeSize,
           price: entryPrice,
-          leverage: symbolConfig.leverage,
+          leverage,
           paperMode: true
         });
         return;
@@ -780,7 +783,7 @@ export class Hunter extends EventEmitter {
         ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
         : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
 
-      notionalUSDT = tradeSizeUSDT * symbolConfig.leverage;
+      notionalUSDT = tradeSizeUSDT * leverage;
 
       // Ensure we meet minimum notional requirement
       if (notionalUSDT < minNotional) {
@@ -799,15 +802,15 @@ export class Hunter extends EventEmitter {
 
       if (quantity === 0 || quantity < minQty) {
         // Calculate what the minimum trade size should be
-        const minNotionalForMargin = minNotional / symbolConfig.leverage;
-        const minQtyForMargin = (minQty * currentPrice) / symbolConfig.leverage;
+        const minNotionalForMargin = minNotional / leverage;
+        const minQtyForMargin = (minQty * currentPrice) / leverage;
         const recommendedTradeSize = Math.max(minNotionalForMargin, minQtyForMargin) * 1.3; // 30% buffer
 
         console.error(`Hunter: Trade size too small for ${symbol} - quantity rounds to zero or below minimum`);
         console.error(`  Current trade size: ${tradeSizeUSDT} USDT`);
         console.error(`  Calculated quantity: ${calculatedQuantity.toFixed(8)} -> ${quantity} (after formatting)`);
         console.error(`  Minimum quantity: ${minQty}`);
-        console.error(`  Minimum notional: ${minNotional} USDT (${minNotionalForMargin.toFixed(2)} USDT at ${symbolConfig.leverage}x leverage)`);
+        console.error(`  Minimum notional: ${minNotional} USDT (${minNotionalForMargin.toFixed(2)} USDT at ${leverage}x leverage)`);
         console.error(`  RECOMMENDED: Set trade size to at least ${recommendedTradeSize.toFixed(2)} USDT`);
 
         // Broadcast error to UI
@@ -825,7 +828,7 @@ export class Hunter extends EventEmitter {
                 formattedQuantity: quantity,
                 minQuantity: minQty,
                 currentPrice: currentPrice,
-                leverage: symbolConfig.leverage
+                leverage: leverage
               }
             }
           );
@@ -852,9 +855,9 @@ export class Hunter extends EventEmitter {
       }
 
       // Set leverage if needed
-      await setLeverage(symbol, symbolConfig.leverage, this.config.api);
+      await setLeverage(symbol, leverage, this.config.api);
 
-      console.log(`Hunter: Calculated quantity for ${symbol}: margin=${tradeSizeUSDT} USDT (${side === 'BUY' ? 'long' : 'short'}), leverage=${symbolConfig.leverage}x, price=${currentPrice}, notional=${notionalUSDT} USDT, quantity=${quantity}`);
+      console.log(`Hunter: Calculated quantity for ${symbol}: margin=${tradeSizeUSDT} USDT (${side === 'BUY' ? 'long' : 'short'}), leverage=${leverage}x, price=${currentPrice}, notional=${notionalUSDT} USDT, quantity=${quantity}`);
 
       // Quick sanity check - ensure our mode is still in sync (if last sync was over 1 minute ago)
       if (Date.now() - this.lastModeSync > 60000) {
@@ -998,7 +1001,7 @@ export class Hunter extends EventEmitter {
           quantity,
           price: orderType === 'LIMIT' ? orderPrice : entryPrice,
           orderId: order.orderId,
-          leverage: symbolConfig.leverage,
+          leverage,
           orderType,
           paperMode: false
         });
@@ -1031,7 +1034,7 @@ export class Hunter extends EventEmitter {
         symbol,
         quantity: quantity || 0,  // Use actual quantity if calculated, otherwise 0
         price: currentPrice,
-        leverage: symbolConfig.leverage,
+        leverage,
         positionSide: getPositionSide(this.isHedgeMode, side)
       });
 
@@ -1044,7 +1047,7 @@ export class Hunter extends EventEmitter {
           side,
           quantity: quantity || 0,  // Use actual quantity if calculated, otherwise 0
           price: currentPrice,
-          leverage: symbolConfig.leverage,
+          leverage,
           tradeSizeUSDT,
           notionalUSDT: notionalUSDT || 0,  // Use actual notional if calculated, otherwise 0
           errorCode: tradingError.code,
@@ -1214,7 +1217,7 @@ export class Hunter extends EventEmitter {
         let fallbackPositionSide: 'BOTH' | 'LONG' | 'SHORT' = 'BOTH';
 
         try {
-          await setLeverage(symbol, symbolConfig.leverage, this.config.api);
+          await setLeverage(symbol, leverage, this.config.api);
 
           // Fetch symbol info for precision and filters
           const fallbackSymbolInfo = await getSymbolFilters(symbol);
@@ -1235,7 +1238,7 @@ export class Hunter extends EventEmitter {
           fallbackPrice = symbolPrecision.formatPrice(symbol, rawFallbackPrice);
 
           // Calculate quantity for fallback order
-          let fallbackNotionalUSDT = symbolConfig.tradeSize * symbolConfig.leverage;
+          let fallbackNotionalUSDT = symbolConfig.tradeSize * leverage;
 
           // Ensure we meet minimum notional requirement
           if (fallbackNotionalUSDT < fallbackMinNotional) {
@@ -1249,7 +1252,7 @@ export class Hunter extends EventEmitter {
           // Always use symbolPrecision formatting (which now has defaults)
           fallbackQuantity = symbolPrecision.formatQuantity(symbol, rawFallbackQuantity);
 
-          console.log(`Hunter: Fallback calculation for ${symbol}: margin=${symbolConfig.tradeSize} USDT, leverage=${symbolConfig.leverage}x, price=${fallbackPrice}, notional=${fallbackNotionalUSDT} USDT, quantity=${fallbackQuantity}`);
+          console.log(`Hunter: Fallback calculation for ${symbol}: margin=${symbolConfig.tradeSize} USDT, leverage=${leverage}x, price=${fallbackPrice}, notional=${fallbackNotionalUSDT} USDT, quantity=${fallbackQuantity}`);
 
           fallbackPositionSide = getPositionSide(this.isHedgeMode, side) as 'BOTH' | 'LONG' | 'SHORT';
           console.log(`Hunter: Using position mode: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}, side: ${side}, positionSide: ${fallbackPositionSide}`);
@@ -1291,7 +1294,7 @@ export class Hunter extends EventEmitter {
             quantity: fallbackQuantity,
             price: entryPrice,
             orderId: fallbackOrder.orderId,
-            leverage: symbolConfig.leverage,
+            leverage,
             orderType: 'MARKET',
             paperMode: false
           });
@@ -1308,7 +1311,7 @@ export class Hunter extends EventEmitter {
             symbol,
             quantity: fallbackQuantity,
             price: fallbackPrice,
-            leverage: symbolConfig.leverage,
+            leverage,
             positionSide: fallbackPositionSide
           });
 
@@ -1321,7 +1324,7 @@ export class Hunter extends EventEmitter {
               side,
               quantity: fallbackQuantity,
               price: fallbackPrice,
-              leverage: symbolConfig.leverage,
+              leverage,
               tradeSizeUSDT,
               errorCode: fallbackTradingError.code,
               errorType: fallbackTradingError.constructor.name,
@@ -1447,5 +1450,17 @@ export class Hunter extends EventEmitter {
 
     // Start generating events after 2 seconds
     setTimeout(generateEvent, 2000);
+  }
+
+  private getNormalizedLeverage(symbol: string, configuredLeverage: number): number {
+    const normalized = normalizeLeverage(configuredLeverage);
+    if (normalized !== configuredLeverage) {
+      const lastLogged = this.leverageNormalizationCache.get(symbol);
+      if (lastLogged !== normalized) {
+        console.warn(`Hunter: Normalizing leverage for ${symbol} from ${configuredLeverage}x to ${normalized}x (using whole-number leverage).`);
+        this.leverageNormalizationCache.set(symbol, normalized);
+      }
+    }
+    return normalized;
   }
 }
