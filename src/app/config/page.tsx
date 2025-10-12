@@ -3,17 +3,20 @@
 import React, { useState } from 'react';
 import { DashboardLayout } from '@/components/dashboard-layout';
 import SymbolConfigForm from '@/components/SymbolConfigForm';
+import ShareConfigModal from '@/components/ShareConfigModal';
 import { useConfig } from '@/components/ConfigProvider';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, CheckCircle2, Settings } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { AlertCircle, CheckCircle2, Settings, Share2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { toast } from 'sonner';
 
 export default function ConfigPage() {
   const { config, loading, updateConfig } = useConfig();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   const handleSave = async (newConfig: any) => {
     setSaveStatus('saving');
@@ -82,12 +85,23 @@ export default function ConfigPage() {
                 Configure your API credentials and trading parameters for each symbol
               </p>
             </div>
-            {saveStatus === 'saved' && (
-              <Badge variant="default" className="flex items-center gap-1 h-6 text-xs shrink-0">
-                <CheckCircle2 className="h-3 w-3" />
-                Saved
-              </Badge>
-            )}
+            <div className="flex items-center gap-2">
+              {saveStatus === 'saved' && (
+                <Badge variant="default" className="flex items-center gap-1 h-6 text-xs shrink-0">
+                  <CheckCircle2 className="h-3 w-3" />
+                  Saved
+                </Badge>
+              )}
+              <Button
+                onClick={() => setShareModalOpen(true)}
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+              >
+                <Share2 className="h-4 w-4 mr-2" />
+                Share Settings
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -130,6 +144,15 @@ export default function ConfigPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Share Config Modal */}
+      {config && (
+        <ShareConfigModal
+          isOpen={shareModalOpen}
+          onClose={() => setShareModalOpen(false)}
+          config={config}
+        />
+      )}
     </DashboardLayout>
   );
 }
