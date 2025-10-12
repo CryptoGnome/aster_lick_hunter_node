@@ -90,6 +90,26 @@ function parseScoringWeights() {
 const scoringWeights = parseScoringWeights();
 const normalizedScoringWeights = scoringWeights.normalized;
 
+function parseSelectedSymbols() {
+  const raw = process.env.OPTIMIZER_SELECTED_SYMBOLS;
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((symbol) => typeof symbol === 'string' && symbol.trim().length > 0);
+    }
+  } catch (_error) {
+    console.warn('Warning: Failed to parse OPTIMIZER_SELECTED_SYMBOLS, ignoring value.');
+  }
+
+  return null;
+}
+
+const selectedSymbols = parseSelectedSymbols();
+
 const formatWeightPercent = (value) => {
   if (!Number.isFinite(value)) {
     return '0%';
@@ -1219,7 +1239,9 @@ function optimizeThresholds() {
   console.log('========================================\n');
 
   // Focus on most active symbols
-  const topSymbols = ['ASTERUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+  const topSymbols = selectedSymbols && selectedSymbols.length > 0
+    ? selectedSymbols
+    : ['ASTERUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
 
   topSymbols.forEach(symbol => {
     if (!config.symbols[symbol]) return;
@@ -1763,7 +1785,19 @@ async function generateRecommendations(deployableCapital) {
   const optimizedConfig = JSON.parse(JSON.stringify(config));
   const sanitizedCapital = Number.isFinite(deployableCapital) && deployableCapital > 0 ? deployableCapital : 0;
 
-  const symbolEntries = Object.entries(config.symbols);
+  let symbolEntries = Object.entries(config.symbols);
+
+  if (selectedSymbols && selectedSymbols.length > 0) {
+    symbolEntries = symbolEntries.filter(([symbol]) => selectedSymbols.includes(symbol));
+
+    if (symbolEntries.length === 0) {
+      console.log(`Warning: No matching symbols found for selection ${selectedSymbols.join(', ')}. Falling back to all symbols.`);
+      symbolEntries = Object.entries(config.symbols);
+    } else {
+      console.log(`Optimizing selected symbols: ${symbolEntries.map(([symbol]) => symbol).join(', ')}`);
+    }
+  }
+
   if (symbolEntries.length === 0) {
     return { recommendations, optimizedConfig, recommendedGlobalMax: 0 };
   }
@@ -1778,11 +1812,16 @@ async function generateRecommendations(deployableCapital) {
     ? Math.max(0.25, Math.min(2.5, sanitizedCapital / baselineTotalMargin))
     : 1;
 
-  for (const [symbol, symbolConfig] of symbolEntries) {
+  const totalSymbols = symbolEntries.length;
+
+  for (let index = 0; index < symbolEntries.length; index++) {
+    const [symbol, symbolConfig] = symbolEntries[index];
     const spanDays = getSymbolDataSpanDays(symbol);
     const fallbackMargin = (symbolConfig.tradeSize || 20) * 5;
     const baseMargin = symbolConfig.maxPositionMarginUSDT || fallbackMargin;
     const capitalBudget = Math.max(5, Math.min(sanitizedCapital || baseMargin, baseMargin * scaleFactor));
+
+    console.log(`Analyzing ${symbol} (${index + 1}/${totalSymbols})`);
 
     const optimization = await optimizeSymbolParameters(symbol, symbolConfig, capitalBudget, spanDays);
 
@@ -2035,7 +2074,9 @@ async function analyzeRealTradingHistory(credentials) {
   console.log('???? REAL TRADING HISTORY ANALYSIS');
   console.log('=================================\n');
 
-  const symbols = ['ASTERUSDT'];
+  const symbols = selectedSymbols && selectedSymbols.length > 0
+    ? selectedSymbols
+    : ['ASTERUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
   const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
 
   for (const symbol of symbols) {
@@ -2456,14 +2497,16 @@ async function main() {
     const deployableCapital = capitalInfo.calculatedTotal || parseFloat(accountInfo?.totalWalletBalance ?? 0);
     const { recommendations, optimizedConfig, recommendedGlobalMax } = await generateRecommendations(deployableCapital);
 
-    // Optimize capital allocation
+    console.log('Finalizing results: optimizing capital allocation...');
     const capitalOptimization = optimizeCapitalAllocation(accountInfo, recommendations, optimizedConfig.symbols);
 
-    // Generate final summary
+    console.log('Finalizing results: generating summary...');
     const optimizationResults = generateOptimizationSummary(recommendations, capitalOptimization, optimizedConfig, recommendedGlobalMax);
 
+    console.log('Finalizing results: writing outputs...');
     await maybeApplyOptimizedConfig(config, optimizedConfig, optimizationResults.summary);
 
+    console.log('Optimization complete');
     console.log('???? Optimization analysis complete!');
     const totalValue = parseFloat(accountInfo?.totalMarginBalance || balance.totalWalletBalance || 0);
     console.log(`???? Total account value: $${formatLargeNumber(totalValue)}`);
