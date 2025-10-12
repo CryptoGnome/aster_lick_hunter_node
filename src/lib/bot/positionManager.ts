@@ -867,6 +867,17 @@ logErrorWithTimestamp(`PositionManager: Failed to ensure protection for ${symbol
         }
       });
 
+      // Trigger PnL checks for all active positions after processing update
+      for (const [key, position] of this.currentPositions.entries()) {
+        const activeAmt = parseFloat(position.positionAmt);
+        if (Math.abs(activeAmt) > 0.001) {
+          logWithTimestamp(`PositionManager: Triggering PnL check for ${position.symbol} (${position.positionSide})`);
+          this.checkAndAdjustOrdersForPosition(key).catch(error => {
+            logErrorWithTimestamp(`PositionManager: Failed PnL check for ${position.symbol}:`, error?.response?.data || error?.message || error);
+          });
+        }
+      }
+
       // Check for closed positions (positions that were in our map but aren't in the update)
       // IMPORTANT: ACCOUNT_UPDATE may contain partial updates (only changed positions)
       // We should only consider a position closed if its symbol was included in the update with 0 amount
@@ -1345,9 +1356,27 @@ logWarnWithTimestamp(`PositionManager: No config for symbol ${symbol}`);
     }
 
     const posAmt = parseFloat(position.positionAmt);
+    // Add this check right after parsing posAmt
+    if (Math.abs(posAmt) < 0.001) {  // Using a small epsilon to account for floating point
+      logWithTimestamp(`PositionManager: Position ${symbol} is closed or has zero quantity, skipping TP/SL placement`);
+      return;
+    }
     const entryPrice = parseFloat(position.entryPrice);
     const quantity = Math.abs(posAmt);
     const isLong = posAmt > 0;
+    let leverage = parseFloat(position.leverage);
+    if (!leverage || leverage <= 0 || Number.isNaN(leverage)) {
+      const trackedLeverage = this.symbolLeverage.get(symbol);
+      if (trackedLeverage && trackedLeverage > 0) {
+        leverage = trackedLeverage;
+      } else if (symbolConfig.leverage && symbolConfig.leverage > 0) {
+        leverage = symbolConfig.leverage;
+        logWithTimestamp(`PositionManager: Using configured leverage ${leverage}x for ${symbol} (position leverage unavailable)`);
+      } else {
+        leverage = 1;
+        logWithTimestamp(`PositionManager: Defaulting leverage to 1x for ${symbol} (no leverage data available)`);
+      }
+    }
     const key = this.getPositionKey(symbol, position.positionSide, posAmt);
 
     // Get or create order tracking
@@ -1420,11 +1449,8 @@ logWithTimestamp(`PositionManager: Found existing SL order ${existingSlOrder.ord
 logWithTimestamp(`PositionManager: Found existing TP order ${existingTpOrder.orderId} for ${key}, skipping placement`);
       }
 
-      // Exit early if no orders need to be placed
-      if (!placeSL && !placeTP) {
-logWithTimestamp(`PositionManager: All protective orders already exist for ${key}`);
-        return;
-      }
+      // Note: we no longer return early here; even if protective orders exist we still
+      // perform TP/SL evaluation below to trigger market closes when targets are hit.
     } catch (error: any) {
 logErrorWithTimestamp('PositionManager: Failed to check existing orders, proceeding with placement:', error?.response?.data || error?.message);
       // Log to error database
@@ -1440,106 +1466,129 @@ logErrorWithTimestamp('PositionManager: Failed to check existing orders, proceed
       });
     }
 
+    const noOrdersNeeded = !placeSL && !placeTP;
+
+    let currentPrice: number;
     try {
-      // Use batch orders when placing both SL and TP to save API calls
-      if (placeSL && placeTP) {
-        // Get current market price to validate stop loss placement
-        const ticker = await axios.get(`https://fapi.asterdex.com/fapi/v1/ticker/price?symbol=${symbol}`);
-        const currentPrice = parseFloat(ticker.data.price);
+      const ticker = await axios.get(`https://fapi.asterdex.com/fapi/v1/ticker/price?symbol=${symbol}`);
+      currentPrice = parseFloat(ticker.data.price);
+      if (!Number.isFinite(currentPrice)) {
+logWarnWithTimestamp(`PositionManager: Invalid current price for ${symbol} (${ticker.data.price}), skipping protection update`);
+        return;
+      }
+    } catch (priceError: any) {
+logErrorWithTimestamp(`PositionManager: Failed to fetch current price for ${symbol}:`, priceError?.response?.data || priceError?.message);
+      return;
+    }
 
-        // Calculate SL price
-        const rawSlPrice = isLong
-          ? entryPrice * (1 - symbolConfig.slPercent / 100)
-          : entryPrice * (1 + symbolConfig.slPercent / 100);
+    const rawSlPrice = isLong
+      ? entryPrice * (1 - symbolConfig.slPercent / 100)
+      : entryPrice * (1 + symbolConfig.slPercent / 100);
+    const rawTpPrice = isLong
+      ? entryPrice * (1 + symbolConfig.tpPercent / 100)
+      : entryPrice * (1 - symbolConfig.tpPercent / 100);
 
-        // Check if stop loss would be triggered immediately
-        let adjustedSlPrice = rawSlPrice;
-        if ((isLong && rawSlPrice >= currentPrice) || (!isLong && rawSlPrice <= currentPrice)) {
-          // Position is already at a loss beyond the intended stop
-          const bufferPercent = 0.1; // 0.1% buffer
-          adjustedSlPrice = isLong
-            ? currentPrice * (1 - bufferPercent / 100)
-            : currentPrice * (1 + bufferPercent / 100);
+    const margin = (quantity * entryPrice) / leverage;
+    const pnl = isLong
+      ? (currentPrice - entryPrice) * quantity
+      : (entryPrice - currentPrice) * quantity;
+    const pnlPercent = margin > 0 ? (pnl / Math.abs(margin)) * 100 : 0;
+
+    logWithTimestamp(`PositionManager: [TP Check] ${symbol} | Side: ${isLong ? 'LONG' : 'SHORT'}`);
+    logWithTimestamp(`  Entry: ${entryPrice} | Current: ${currentPrice} | TP%: ${symbolConfig.tpPercent}%`);
+    logWithTimestamp(`  Position: ${quantity} ${symbol.replace('USDT', '')} | Leverage: ${leverage}x | Margin: $${margin.toFixed(2)}`);
+    logWithTimestamp(`  PnL: $${pnl.toFixed(2)} (${pnlPercent > 0 ? '+' : ''}${pnlPercent.toFixed(2)}% ROE) | TP Target: ${symbolConfig.tpPercent}%`);
+    logWithTimestamp(`PositionManager: [PnL Debug] ${symbol} | ` +
+      `Entry: ${entryPrice} | Current: ${currentPrice} | ` +
+      `Qty: ${quantity} | Leverage: ${leverage}x\n` +
+      `  PnL Calc: ${isLong ? `(${currentPrice} - ${entryPrice}) * ${quantity}` : `(${entryPrice} - ${currentPrice}) * ${quantity}`} = $${pnl.toFixed(2)}\n` +
+      `  Margin: (${quantity} * ${entryPrice}) / ${leverage} = $${margin.toFixed(2)}\n` +
+      `  PnL%: (${pnl} / ${Math.abs(margin)}) * 100 = ${pnlPercent.toFixed(2)}%`);
+
+    const pastTP = Math.abs(pnlPercent) >= symbolConfig.tpPercent;
+    logWithTimestamp(`PositionManager: [TP Check] ${symbol} | ` +
+      `Current PnL%: ${Math.abs(pnlPercent).toFixed(2)}% | ` +
+      `TP Target: ${symbolConfig.tpPercent}% | ` +
+      `TP ${pastTP ? 'REACHED' : 'NOT REACHED'}`);
+
+    if (pastTP) {
+      logWithTimestamp(`PositionManager: TP TRIGGERED! ${symbol} at ${pnlPercent.toFixed(2)}% ROE (target: ${symbolConfig.tpPercent}%)`);
+      logWithTimestamp(`  Position details: ${quantity} ${symbol.replace('USDT', '')} @ ${entryPrice} | Current: ${currentPrice}`);
+
+      if (!entryPrice || entryPrice <= 0) {
+        logWithTimestamp(`PositionManager: WARNING - Invalid entry price (${entryPrice}) for ${symbol}`);
+        logWithTimestamp(`PositionManager: Skipping auto-close due to data issue`);
+        return;
+      }
+
+      logWithTimestamp(`PositionManager: Position ${symbol} has exceeded TP target (${pnlPercent.toFixed(2)}% > ${symbolConfig.tpPercent}%)`);
+      logWithTimestamp(`  Entry: ${entryPrice} | Current: ${currentPrice} | Side: ${isLong ? 'LONG' : 'SHORT'}`);
+      logWithTimestamp(`  Position size: ${quantity} ${symbol.replace('USDT', '')} | Leverage: ${leverage}x | Margin: $${margin.toFixed(2)}`);
+      logWithTimestamp(`PositionManager: Closing position at market (ROE-based TP hit)`);
+
+      try {
+        const formattedQuantity = symbolPrecision.formatQuantity(symbol, quantity);
+        const orderPositionSide = position.positionSide || 'BOTH';
+        const side = isLong ? 'SELL' : 'BUY';
+
+        const marketParams: any = {
+          symbol,
+          side: side as 'BUY' | 'SELL',
+          type: 'MARKET',
+          quantity: formattedQuantity,
+          positionSide: orderPositionSide as 'BOTH' | 'LONG' | 'SHORT',
+          newClientOrderId: `al_btc_${symbol}_${Date.now() % 10000000000}`,
+        };
+
+        if (orderPositionSide === 'BOTH') {
+          marketParams.reduceOnly = true;
+        }
+
+        const marketOrder = await placeOrder(marketParams, this.config.api);
+        logWithTimestamp(`PositionManager: Position closed at market! Order ID: ${marketOrder.orderId}, PnL: ~${pnlPercent.toFixed(2)}%`);
+
+        if (this.statusBroadcaster) {
+          this.statusBroadcaster.broadcastPositionClosed({
+            symbol,
+            side: isLong ? 'LONG' : 'SHORT',
+            quantity,
+            pnl: pnlPercent * quantity * currentPrice / 100,
+            reason: 'Auto-closed at market (exceeded TP target)',
+          });
+        }
+
+        if (placeSL) {
+logWithTimestamp(`PositionManager: Position closed, skipping SL placement`);
+        }
+        return;
+      } catch (marketError: any) {
+logErrorWithTimestamp(`PositionManager: Failed to close at market: ${marketError.response?.data?.msg || marketError.message}`);
+        logWithTimestamp(`PositionManager: Skipping TP placement since position is past target`);
+        placeTP = false;
+      }
+    }
+
+    let adjustedSlPrice = rawSlPrice;
+    if (placeSL) {
+      if ((isLong && rawSlPrice >= currentPrice) || (!isLong && rawSlPrice <= currentPrice)) {
+        const bufferPercent = 0.1;
+        adjustedSlPrice = isLong
+          ? currentPrice * (1 - bufferPercent / 100)
+          : currentPrice * (1 + bufferPercent / 100);
 
 logWithTimestamp(`PositionManager: Position ${symbol} is underwater. Adjusting SL from ${rawSlPrice.toFixed(4)} to ${adjustedSlPrice.toFixed(4)} (current: ${currentPrice.toFixed(4)})`);
-        }
+      }
+    }
 
-        // Calculate TP price and check if it would trigger immediately
-        const rawTpPrice = isLong
-          ? entryPrice * (1 + symbolConfig.tpPercent / 100)
-          : entryPrice * (1 - symbolConfig.tpPercent / 100);
+    try {
+      if (noOrdersNeeded) {
+logWithTimestamp(`PositionManager: All protective orders already exist for ${key}`);
+        return;
+      }
 
-        // Check if position has already exceeded TP target
-        const pastTP = isLong
-          ? currentPrice >= rawTpPrice
-          : currentPrice <= rawTpPrice;
-
-        if (pastTP) {
-          // Validate entry price before calculating PnL
-          if (!entryPrice || entryPrice <= 0) {
-logWithTimestamp(`PositionManager: WARNING - Invalid entry price (${entryPrice}) for ${symbol}, cannot calculate PnL accurately`);
-logWithTimestamp(`PositionManager: Skipping auto-close due to data issue`);
-            return; // Skip auto-close and continue with normal TP order placement
-          }
-
-          const pnlPercent = isLong
-            ? ((currentPrice - entryPrice) / entryPrice) * 100
-            : ((entryPrice - currentPrice) / entryPrice) * 100;
-
-logWithTimestamp(`PositionManager: Position ${symbol} has exceeded TP target`);
-logWithTimestamp(`  Entry: ${entryPrice}, Current: ${currentPrice}, PnL: ${pnlPercent.toFixed(2)}%, TP: ${symbolConfig.tpPercent}%`);
-logWithTimestamp(`PositionManager: Closing position at market instead of placing TP order`);
-
-          // Close at market immediately
-          try {
-            const formattedQuantity = symbolPrecision.formatQuantity(symbol, quantity);
-            const orderPositionSide = position.positionSide || 'BOTH';
-            const side = isLong ? 'SELL' : 'BUY';
-
-            const marketParams: any = {
-              symbol,
-              side: side as 'BUY' | 'SELL',
-              type: 'MARKET',
-              quantity: formattedQuantity,
-              positionSide: orderPositionSide as 'BOTH' | 'LONG' | 'SHORT',
-              newClientOrderId: `al_btc_${symbol}_${Date.now() % 10000000000}`,
-            };
-
-            if (orderPositionSide === 'BOTH') {
-              marketParams.reduceOnly = true;
-            }
-
-            const marketOrder = await placeOrder(marketParams, this.config.api);
-            logWithTimestamp(`PositionManager: Position closed at market! Order ID: ${marketOrder.orderId}, PnL: ~${pnlPercent.toFixed(2)}%`);
-
-            if (this.statusBroadcaster) {
-              this.statusBroadcaster.broadcastPositionClosed({
-                symbol,
-                side: isLong ? 'LONG' : 'SHORT',
-                quantity,
-                pnl: pnlPercent * quantity * currentPrice / 100,
-                reason: 'Auto-closed at market (exceeded TP target in batch)',
-              });
-            }
-
-            // Still place SL if needed
-            if (placeSL) {
-logWithTimestamp(`PositionManager: Position closed, skipping SL placement`);
-            }
-            return; // Exit after closing position
-          } catch (marketError: any) {
-logErrorWithTimestamp(`PositionManager: Failed to close at market: ${marketError.response?.data?.msg || marketError.message}`);
-            // If market close fails, skip TP placement entirely
-logWithTimestamp(`PositionManager: Skipping TP placement since position is past target`);
-            placeTP = false;
-          }
-        }
-
-        const finalTpPrice = rawTpPrice;
-
-        // Format prices and quantity
+      if (placeSL && placeTP) {
         const slPrice = symbolPrecision.formatPrice(symbol, adjustedSlPrice);
-        const tpPrice = symbolPrecision.formatPrice(symbol, finalTpPrice);
+        const tpPrice = symbolPrecision.formatPrice(symbol, rawTpPrice);
         const formattedQuantity = symbolPrecision.formatQuantity(symbol, quantity);
 
         const orderPositionSide = position.positionSide || 'BOTH';
@@ -1553,7 +1602,6 @@ logWithTimestamp(`  Side: ${side}`);
 logWithTimestamp(`  Position Mode: ${this.isHedgeMode ? 'HEDGE' : 'ONE-WAY'}`);
 logWithTimestamp(`  Position Side: ${orderPositionSide}`);
 
-        // Place both orders in a single batch request (saves 1 API call)
         const batchResult = await placeStopLossAndTakeProfit({
           symbol,
           side: side as 'BUY' | 'SELL',
@@ -1564,7 +1612,6 @@ logWithTimestamp(`  Position Side: ${orderPositionSide}`);
           reduceOnly: orderPositionSide === 'BOTH',
         }, this.config.api);
 
-        // Handle results
         if (batchResult.stopLoss) {
           orders.slOrderId = typeof batchResult.stopLoss.orderId === 'string' ?
             parseInt(batchResult.stopLoss.orderId) : batchResult.stopLoss.orderId;
@@ -1595,17 +1642,13 @@ logWithTimestamp(`PositionManager: Placed TP for ${symbol} at ${tpPrice.toFixed(
           }
         }
 
-        // Handle batch order results properly
-        // Filter out expected "Order would immediately trigger" errors - these are handled by retry logic
         const actualErrors = batchResult.errors.filter(
           errorMsg => !errorMsg.includes('Order would immediately trigger')
         );
 
-        // Log only actual errors (not expected "Order would immediately trigger" ones)
         if (actualErrors.length > 0) {
 logErrorWithTimestamp(`PositionManager: Batch order errors for ${symbol}:`, actualErrors);
 
-          // Log each actual error to the error database
           for (const errorMsg of actualErrors) {
             await errorLogger.logTradingError(
               'batchOrderPlacement',
@@ -1613,7 +1656,7 @@ logErrorWithTimestamp(`PositionManager: Batch order errors for ${symbol}:`, actu
               new Error(errorMsg),
               {
                 type: 'trading',
-                severity: 'high', // High because position is unprotected
+                severity: 'high',
                 context: {
                   component: 'PositionManager',
                   userAction: 'placeProtectionOrders',
@@ -1631,16 +1674,13 @@ logErrorWithTimestamp(`PositionManager: Batch order errors for ${symbol}:`, actu
           }
         }
 
-        // Check if there were ANY errors (including the filtered ones)
         if (batchResult.errors.length > 0) {
-          // Determine what needs to be retried
           const slFailed = placeSL && !batchResult.stopLoss;
           const tpFailed = placeTP && !batchResult.takeProfit;
 
           if (slFailed || tpFailed) {
 logWithTimestamp(`PositionManager: Batch partially failed. Retrying failed orders individually...`);
 
-            // Clear the failed order IDs from tracking
             if (slFailed) {
               orders.slOrderId = undefined;
 logWithTimestamp(`PositionManager: Will retry SL order for ${symbol}`);
@@ -1650,54 +1690,25 @@ logWithTimestamp(`PositionManager: Will retry SL order for ${symbol}`);
 logWithTimestamp(`PositionManager: Will retry TP order for ${symbol}`);
             }
 
-            // Update flags for individual placement
             placeSL = slFailed;
             placeTP = tpFailed;
-
-            // Fall through to individual order placement
           } else {
-            // All requested orders succeeded despite errors (edge case)
 logWithTimestamp(`PositionManager: Batch completed with non-critical errors`);
             this.positionOrders.set(key, orders);
             return;
           }
         } else {
-          // Batch fully succeeded
 logWithTimestamp(`PositionManager: Batch order placement successful and saved 1 API call!`);
           this.positionOrders.set(key, orders);
           return;
         }
       }
 
-      // Place orders individually (either originally or as retry from batch failure)
       if (placeSL || placeTP) {
 logWithTimestamp(`PositionManager: Placing protection orders individually for ${symbol} (SL: ${placeSL}, TP: ${placeTP})`);
       }
 
       if (placeSL) {
-        // Place orders individually if not placing both
-        // Get current market price to avoid "Order would immediately trigger" error
-        const ticker = await axios.get(`https://fapi.asterdex.com/fapi/v1/ticker/price?symbol=${symbol}`);
-        const currentPrice = parseFloat(ticker.data.price);
-
-        const rawSlPrice = isLong
-          ? entryPrice * (1 - symbolConfig.slPercent / 100)
-          : entryPrice * (1 + symbolConfig.slPercent / 100);
-
-        // Check if the position is already beyond the stop level
-        let adjustedSlPrice = rawSlPrice;
-        if ((isLong && rawSlPrice >= currentPrice) || (!isLong && rawSlPrice <= currentPrice)) {
-          // Position is already at a loss beyond the intended stop
-          // Place stop slightly beyond current price to avoid immediate trigger
-          const bufferPercent = 0.1; // 0.1% buffer
-          adjustedSlPrice = isLong
-            ? currentPrice * (1 - bufferPercent / 100)
-            : currentPrice * (1 + bufferPercent / 100);
-
-logWithTimestamp(`PositionManager: Position ${symbol} is underwater. Adjusting SL from ${rawSlPrice.toFixed(4)} to ${adjustedSlPrice.toFixed(4)} (current: ${currentPrice.toFixed(4)})`);
-        }
-
-        // Format price and quantity according to symbol precision
         const slPrice = symbolPrecision.formatPrice(symbol, adjustedSlPrice);
         const formattedQuantity = symbolPrecision.formatQuantity(symbol, quantity);
 
@@ -1708,12 +1719,11 @@ logWithTimestamp(`  Raw SL price: ${rawSlPrice}`);
 logWithTimestamp(`  Adjusted SL price: ${adjustedSlPrice}`);
 logWithTimestamp(`  Formatted SL price: ${slPrice}`);
 
-        // Determine position side for the SL order
         const orderPositionSide = position.positionSide || 'BOTH';
 
         const orderParams: any = {
           symbol,
-          side: isLong ? 'SELL' : 'BUY', // Opposite side to close
+          side: isLong ? 'SELL' : 'BUY',
           type: 'STOP_MARKET',
           quantity: formattedQuantity,
           stopPrice: slPrice,
@@ -1721,8 +1731,6 @@ logWithTimestamp(`  Formatted SL price: ${slPrice}`);
           newClientOrderId: `al_sl_${symbol}_${Date.now() % 10000000000}`,
         };
 
-        // Only add reduceOnly in One-way mode (positionSide == BOTH)
-        // In Hedge Mode, the opposite positionSide naturally closes the position
         if (orderPositionSide === 'BOTH') {
           orderParams.reduceOnly = true;
         }
@@ -1732,7 +1740,6 @@ logWithTimestamp(`  Formatted SL price: ${slPrice}`);
         orders.slOrderId = typeof slOrder.orderId === 'string' ? parseInt(slOrder.orderId) : slOrder.orderId;
 logWithTimestamp(`PositionManager: Placed SL (STOP_MARKET) for ${symbol} at ${slPrice.toFixed(4)}, orderId: ${slOrder.orderId}`);
 
-        // Broadcast SL placed event
         if (this.statusBroadcaster) {
           this.statusBroadcaster.broadcastStopLossPlaced({
             symbol,
@@ -1743,39 +1750,23 @@ logWithTimestamp(`PositionManager: Placed SL (STOP_MARKET) for ${symbol} at ${sl
         }
       }
 
-      // Place Take Profit
       if (placeTP) {
-        // Get current market price to check if TP would trigger immediately
-        const ticker = await axios.get(`https://fapi.asterdex.com/fapi/v1/ticker/price?symbol=${symbol}`);
-        const currentPrice = parseFloat(ticker.data.price);
-
-        const rawTpPrice = isLong
-          ? entryPrice * (1 + symbolConfig.tpPercent / 100)
-          : entryPrice * (1 - symbolConfig.tpPercent / 100);
-
-        // Check if position has already exceeded TP target
-        const pastTP = isLong
+        const pastImmediateTP = isLong
           ? currentPrice >= rawTpPrice
           : currentPrice <= rawTpPrice;
 
-        if (pastTP) {
-          // Validate entry price before calculating PnL
+        if (pastImmediateTP) {
           if (!entryPrice || entryPrice <= 0) {
 logWithTimestamp(`PositionManager: WARNING - Invalid entry price (${entryPrice}) for ${symbol}, cannot calculate PnL accurately`);
 logWithTimestamp(`PositionManager: Skipping auto-close due to data issue`);
-            return; // Skip auto-close and continue with normal TP order placement
+            return;
           }
 
-          // Calculate current PnL percentage
-          const pnlPercent = isLong
-            ? ((currentPrice - entryPrice) / entryPrice) * 100
-            : ((entryPrice - currentPrice) / entryPrice) * 100;
-
-logWithTimestamp(`PositionManager: Position ${symbol} has exceeded TP target!`);
-logWithTimestamp(`  Entry: ${entryPrice}, Current: ${currentPrice}, PnL: ${pnlPercent.toFixed(2)}%, TP target: ${symbolConfig.tpPercent}%`);
-
-          // Always close at market if past TP, regardless of exact profit amount
-logWithTimestamp(`PositionManager: Closing position at market - already past TP target`);
+          logWithTimestamp(`PositionManager: Position ${symbol} has exceeded TP target!`);
+          logWithTimestamp(`  Entry: ${entryPrice}, Current: ${currentPrice}`);
+          logWithTimestamp(`  PnL: $${pnl.toFixed(2)} (${pnlPercent.toFixed(2)}% ROE), TP target: ${symbolConfig.tpPercent}%`);
+          logWithTimestamp(`  Position size: ${quantity}, Margin: $${margin.toFixed(2)}`);
+          logWithTimestamp(`PositionManager: Closing position at market - ROE exceeded TP target`);
 
           try {
             const formattedQuantity = symbolPrecision.formatQuantity(symbol, quantity);
@@ -1806,16 +1797,14 @@ logWithTimestamp(`PositionManager: Closing position at market - already past TP 
                 reason: 'Auto-closed at market (exceeded TP target)',
               });
             }
-            return; // Exit after market close
+            return;
           } catch (marketError: any) {
 logErrorWithTimestamp(`PositionManager: Failed to close at market: ${marketError.response?.data?.msg || marketError.message}`);
-            // If market close fails, don't place TP at all since it would trigger immediately
-logWithTimestamp(`PositionManager: Not placing TP order since position is past target and market close failed`);
+            logWithTimestamp(`PositionManager: Not placing TP order since position is past target and market close failed`);
             return;
           }
 
         } else {
-          // Normal TP placement - position hasn't reached target yet
           const tpPrice = symbolPrecision.formatPrice(symbol, rawTpPrice);
           const formattedQuantity = symbolPrecision.formatQuantity(symbol, quantity);
 
@@ -1844,7 +1833,6 @@ logWithTimestamp(`  Formatted TP price: ${tpPrice}`);
           orders.tpOrderId = typeof tpOrder.orderId === 'string' ? parseInt(tpOrder.orderId) : tpOrder.orderId;
 logWithTimestamp(`PositionManager: Placed TP for ${symbol} at ${tpPrice}, orderId: ${tpOrder.orderId}`);
 
-          // Broadcast TP placed event
           if (this.statusBroadcaster) {
             this.statusBroadcaster.broadcastTakeProfitPlaced({
               symbol,
@@ -1856,7 +1844,6 @@ logWithTimestamp(`PositionManager: Placed TP for ${symbol} at ${tpPrice}, orderI
         }
       }
 
-      // Only save orders that were actually placed successfully
       if (orders.slOrderId || orders.tpOrderId) {
         this.positionOrders.set(key, orders);
 logWithTimestamp(`PositionManager: Protection orders tracked for ${key} - SL: ${orders.slOrderId || 'none'}, TP: ${orders.tpOrderId || 'none'}`);
@@ -2333,40 +2320,41 @@ logWithTimestamp(`PositionManager: WARNING - No valid mark price available for $
         if (pastTP) {
           // Validate entry price before calculating PnL
           if (!entryPrice || entryPrice <= 0) {
-logWithTimestamp(`PositionManager: WARNING - Invalid entry price (${entryPrice}) for ${symbol}, skipping auto-close`);
-            continue;
+            logWithTimestamp(`PositionManager: WARNING - Invalid entry price (${entryPrice}) for ${symbol}, skipping auto-close`);
           }
+          
+          // Calculate PNL based on margin (ROE)
+          const margin = (positionQty * entryPrice) / leverage;
+          const pnl = isLong 
+            ? (markPrice - entryPrice) * positionQty
+            : (entryPrice - markPrice) * positionQty;
+          const pnlPercent = margin > 0 ? (pnl / Math.abs(margin)) * 100 : 0;
 
-          const pnlPercent = isLong
-            ? ((markPrice - entryPrice) / entryPrice) * 100
-            : ((entryPrice - markPrice) / entryPrice) * 100;
-
-logWithTimestamp(`PositionManager: [Periodic Check] Position ${symbol} exceeded TP target!`);
-logWithTimestamp(`  Entry: ${entryPrice}, Mark: ${markPrice}, PnL: ${pnlPercent.toFixed(2)}%, TP target: ${tpPercent}%`);
-
-          // FIX: Remove redundant check - pastTP already confirms we're past the TP price level
-          // The position should be closed if we're past TP, regardless of exact PnL percentage
-logWithTimestamp(`PositionManager: Auto-closing ${symbol} at market - Price exceeded TP target`);
+          logWithTimestamp(`PositionManager: [Periodic Check] Position ${symbol} exceeded TP target!`);
+          logWithTimestamp(`  Entry: ${entryPrice}, Mark: ${markPrice}`);
+          logWithTimestamp(`  PnL: $${pnl.toFixed(2)} (${pnlPercent.toFixed(2)}% ROE), TP target: ${tpPercent}%`);
+          logWithTimestamp(`  Position size: ${positionQty}, Margin: $${margin.toFixed(2)}`);
+          logWithTrace(`PositionManager: Auto-closing ${symbol} at market - ROE exceeded TP target`);
 
           try {
-              const formattedQty = symbolPrecision.formatQuantity(symbol, positionQty);
-              const orderPositionSide = position.positionSide || 'BOTH';
+            const formattedQty = symbolPrecision.formatQuantity(symbol, positionQty);
+            const orderPositionSide = position.positionSide || 'BOTH';
 
-              const marketParams: any = {
-                symbol,
-                side: isLong ? 'SELL' : 'BUY',
-                type: 'MARKET',
-                quantity: formattedQty,
-                positionSide: orderPositionSide as 'BOTH' | 'LONG' | 'SHORT',
-                newClientOrderId: `al_pc_${symbol}_${Date.now() % 10000000000}`,
-              };
+            const marketParams: any = {
+              symbol,
+              side: isLong ? 'SELL' : 'BUY',
+              type: 'MARKET',
+              quantity: formattedQty,
+              positionSide: orderPositionSide as 'BOTH' | 'LONG' | 'SHORT',
+              newClientOrderId: `al_pc_${symbol}_${Date.now() % 10000000000}`,
+            };
 
-              if (orderPositionSide === 'BOTH') {
-                marketParams.reduceOnly = true;
-              }
+            if (orderPositionSide === 'BOTH') {
+              marketParams.reduceOnly = true;
+            }
 
-              const marketOrder = await placeOrder(marketParams, this.config.api);
-logWithTimestamp(`PositionManager: Position ${symbol} closed at market! Order ID: ${marketOrder.orderId}`);
+            const marketOrder = await placeOrder(marketParams, this.config.api);
+            logWithTimestamp(`PositionManager: Position ${symbol} closed at market! Order ID: ${marketOrder.orderId}`);
 
               if (this.statusBroadcaster) {
                 this.statusBroadcaster.broadcastPositionClosed({
