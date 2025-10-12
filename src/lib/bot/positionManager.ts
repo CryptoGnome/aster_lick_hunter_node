@@ -509,8 +509,12 @@ logWithTimestamp(`PositionManager: Re-establishing order tracking for position $
       }
 
       // Clean up order tracking for positions that no longer exist
-      for (const [key, _orders] of previousOrders.entries()) {
+      for (const [key, staleOrders] of previousOrders.entries()) {
         if (!this.currentPositions.has(key)) {
+          if (staleOrders.slOrderId || staleOrders.tpOrderId) {
+logWithTimestamp(`PositionManager: Cancelling protective orders for closed position ${key}`);
+            await this.cancelProtectiveOrders(key, staleOrders);
+          }
 logWithTimestamp(`PositionManager: Removing order tracking for closed position ${key}`);
           this.positionOrders.delete(key);
         }
@@ -520,6 +524,11 @@ logWithTimestamp(`PositionManager: Removing order tracking for closed position $
       for (const order of openOrders) {
         if (order.reduceOnly && !assignedOrderIds.has(order.orderId)) {
 logWarnWithTimestamp(`PositionManager: Unassigned reduce-only order - ${order.symbol} ${order.type} ${order.side}, orderId: ${order.orderId}, qty: ${order.origQty}`);
+          try {
+            await this.cancelOrderWithRetry(order.symbol, order.orderId, order.type || 'reduce-only');
+          } catch (cancelError: any) {
+logErrorWithTimestamp(`PositionManager: Failed to cancel orphan reduce-only order ${order.orderId}:`, cancelError?.response?.data || cancelError?.message);
+          }
         }
       }
 
@@ -1519,6 +1528,27 @@ logErrorWithTimestamp(`PositionManager: Failed to fetch current price for ${symb
         logWithTimestamp(`PositionManager: WARNING - Invalid entry price (${entryPrice}) for ${symbol}`);
         logWithTimestamp(`PositionManager: Skipping auto-close due to data issue`);
         return;
+      }
+
+      if (orders.slOrderId || orders.tpOrderId) {
+        const cancelPromises: Promise<void>[] = [];
+        if (orders.slOrderId) {
+          logWithTimestamp(`PositionManager: Cancelling existing SL ${orders.slOrderId} before market close for ${symbol}`);
+          cancelPromises.push(this.cancelOrderById(symbol, orders.slOrderId).catch(error => {
+            logErrorWithTimestamp(`PositionManager: Failed to cancel SL ${orders.slOrderId} before market close:`, error?.response?.data || error?.message);
+          }));
+        }
+        if (orders.tpOrderId) {
+          logWithTimestamp(`PositionManager: Cancelling existing TP ${orders.tpOrderId} before market close for ${symbol}`);
+          cancelPromises.push(this.cancelOrderById(symbol, orders.tpOrderId).catch(error => {
+            logErrorWithTimestamp(`PositionManager: Failed to cancel TP ${orders.tpOrderId} before market close:`, error?.response?.data || error?.message);
+          }));
+        }
+        if (cancelPromises.length > 0) {
+          await Promise.all(cancelPromises);
+          delete orders.slOrderId;
+          delete orders.tpOrderId;
+        }
       }
 
       logWithTimestamp(`PositionManager: Position ${symbol} has exceeded TP target (${pnlPercent.toFixed(2)}% > ${symbolConfig.tpPercent}%)`);
