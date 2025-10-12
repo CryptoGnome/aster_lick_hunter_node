@@ -339,14 +339,15 @@ export default function PositionTable({
 
       const priceDiff = liveMarkPrice - entryPrice;
       const livePnL = isLong ? priceDiff * quantity : -priceDiff * quantity;
-      const notionalValue = quantity * entryPrice;
-      const livePnLPercent = notionalValue > 0 ? (livePnL / notionalValue) * 100 : 0;
+      const margin = (quantity * liveMarkPrice) / position.leverage;
+      const livePnLPercent = Math.abs(margin) > 0 ? (livePnL / Math.abs(margin)) * 100 : 0;
 
       return {
         ...position,
         markPrice: liveMarkPrice,
         pnl: livePnL,
-        pnlPercent: livePnLPercent
+        pnlPercent: livePnLPercent,
+        margin: margin
       };
     }
     return position;
