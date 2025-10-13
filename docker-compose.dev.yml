@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  aster-bot-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: deps
+    container_name: aster-lick-hunter-dev
+    restart: unless-stopped
+    command: npm run dev
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+      - "${WEBSOCKET_PORT:-8080}:8080"
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+      # Persist database and data
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=development
+      - NEXT_TELEMETRY_DISABLED=1
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-secret-change-me}
+      - NEXT_PUBLIC_WS_HOST=${NEXT_PUBLIC_WS_HOST:-localhost}
+    networks:
+      - aster-network-dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  aster-network-dev:
+    driver: bridge

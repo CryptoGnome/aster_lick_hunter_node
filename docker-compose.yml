@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  aster-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aster-lick-hunter
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+      - "${WEBSOCKET_PORT:-8080}:8080"
+    volumes:
+      # Persist database and data
+      - ./data:/app/data
+      # Mount config files (optional - can use env vars instead)
+      - ./config.user.json:/app/config.user.json:ro
+      # Mount .env.local if it exists
+      - ./.env.local:/app/.env.local:ro
+    environment:
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-change-this-secret-in-production}
+      - NEXT_PUBLIC_WS_HOST=${NEXT_PUBLIC_WS_HOST:-localhost}
+    networks:
+      - aster-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  aster-network:
+    driver: bridge
+
+volumes:
+  data:
+    driver: local

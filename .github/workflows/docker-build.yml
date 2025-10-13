@@ -1,0 +1,50 @@
+name: Docker Build and Test
+
+on:
+  push:
+    branches: [ main, dev, feature/docker-setup-v2 ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: aster-lick-hunter:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Test Docker image
+      run: |
+        docker run --rm -d --name test-container \
+          -e NEXTAUTH_SECRET=test-secret \
+          -e NEXT_PUBLIC_WS_HOST=localhost \
+          aster-lick-hunter:test
+        
+        # Wait for container to start
+        sleep 10
+        
+        # Check if container is running
+        docker ps | grep test-container
+        
+        # Check health endpoint
+        docker exec test-container curl -f http://localhost:3000/api/health || exit 1
+        
+        # Stop container
+        docker stop test-container
+        
+    - name: Check Docker Compose
+      run: |
+        docker-compose config
