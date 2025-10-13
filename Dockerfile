@@ -7,8 +7,12 @@ RUN apk add --no-cache libc6-compat python3 make g++ sqlite
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files and scripts needed for postinstall
 COPY package*.json ./
+COPY scripts ./scripts
+
+# Create a minimal .env.local to satisfy postinstall script
+RUN echo "NEXTAUTH_SECRET=build-time-secret" > .env.local
 
 # Install dependencies
 RUN npm ci --legacy-peer-deps

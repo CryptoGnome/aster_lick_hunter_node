@@ -11,8 +11,6 @@ services:
     volumes:
       # Persist database and data
       - ./data:/app/data
-      # Mount config files (optional - can use env vars instead)
-      - ./config.user.json:/app/config.user.json:ro
       # Mount .env.local if it exists
       - ./.env.local:/app/.env.local:ro
     environment:

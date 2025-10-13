@@ -53,7 +53,6 @@ export const GET = withAuth(async (request: NextRequest, _user) => {
         const unRealizedProfit = parseFloat(pos.unRealizedProfit || '0');
         const leverage = parseInt(pos.leverage || '1');
         const quantity = Math.abs(positionAmt);
-        const notionalValue = quantity * entryPrice;
         const currentNotionalValue = quantity * markPrice;
         const side = positionAmt > 0 ? 'LONG' : 'SHORT';
 

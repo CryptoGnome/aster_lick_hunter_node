@@ -15,10 +15,14 @@ NEXT_PUBLIC_WS_HOST=${NEXT_PUBLIC_WS_HOST:-localhost}
 EOF
 fi
 
-# Check if config.user.json exists, if not use config.default.json
+# Check if config.user.json exists, if not create from default
 if [ ! -f /app/config.user.json ] && [ ! -f /app/config.json ]; then
-  echo "⚠️  No user configuration found, using default configuration..."
-  echo "⚠️  Please mount your config.user.json or set it up via the dashboard"
+  echo "⚠️  No user configuration found, creating from default..."
+  if [ -f /app/config.default.json ]; then
+    cp /app/config.default.json /app/config.user.json
+    echo "✅ Created config.user.json from defaults"
+  fi
+  echo "⚠️  Please configure your API keys via the dashboard at http://localhost:3000/config"
 fi
 
 # Run any setup scripts if needed

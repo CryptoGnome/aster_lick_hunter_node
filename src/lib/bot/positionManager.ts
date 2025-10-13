@@ -2354,6 +2354,7 @@ logWithTimestamp(`PositionManager: WARNING - No valid mark price available for $
           }
           
           // Calculate PNL based on margin (ROE)
+          const leverage = symbolConfig.leverage || 1;
           const margin = (positionQty * entryPrice) / leverage;
           const pnl = isLong 
             ? (markPrice - entryPrice) * positionQty
@@ -2364,7 +2365,7 @@ logWithTimestamp(`PositionManager: WARNING - No valid mark price available for $
           logWithTimestamp(`  Entry: ${entryPrice}, Mark: ${markPrice}`);
           logWithTimestamp(`  PnL: $${pnl.toFixed(2)} (${pnlPercent.toFixed(2)}% ROE), TP target: ${tpPercent}%`);
           logWithTimestamp(`  Position size: ${positionQty}, Margin: $${margin.toFixed(2)}`);
-          logWithTrace(`PositionManager: Auto-closing ${symbol} at market - ROE exceeded TP target`);
+          logWithTimestamp(`PositionManager: Auto-closing ${symbol} at market - ROE exceeded TP target`);
 
           try {
             const formattedQty = symbolPrecision.formatQuantity(symbol, positionQty);
