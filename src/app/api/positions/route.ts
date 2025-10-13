@@ -53,7 +53,6 @@ export const GET = withAuth(async (request: NextRequest, _user) => {
         const unRealizedProfit = parseFloat(pos.unRealizedProfit || '0');
         const leverage = parseInt(pos.leverage || '1');
         const quantity = Math.abs(positionAmt);
-        const notionalValue = quantity * entryPrice;
         const currentNotionalValue = quantity * markPrice;
         const side = positionAmt > 0 ? 'LONG' : 'SHORT';
 
@@ -79,7 +78,7 @@ export const GET = withAuth(async (request: NextRequest, _user) => {
           entryPrice,
           markPrice,
           pnl: unRealizedProfit,
-          pnlPercent: notionalValue > 0 ? (unRealizedProfit / notionalValue) * 100 : 0,
+          pnlPercent: (currentNotionalValue / leverage) > 0 ? (unRealizedProfit / (currentNotionalValue / leverage)) * 100 : 0,
           margin: currentNotionalValue / leverage,
           leverage,
           liquidationPrice: pos.liquidationPrice ? parseFloat(pos.liquidationPrice) : undefined,
