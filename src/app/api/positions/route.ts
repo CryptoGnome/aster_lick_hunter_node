@@ -79,7 +79,7 @@ export const GET = withAuth(async (request: NextRequest, _user) => {
           entryPrice,
           markPrice,
           pnl: unRealizedProfit,
-          pnlPercent: notionalValue > 0 ? (unRealizedProfit / notionalValue) * 100 : 0,
+          pnlPercent: (currentNotionalValue / leverage) > 0 ? (unRealizedProfit / (currentNotionalValue / leverage)) * 100 : 0,
           margin: currentNotionalValue / leverage,
           leverage,
           liquidationPrice: pos.liquidationPrice ? parseFloat(pos.liquidationPrice) : undefined,
