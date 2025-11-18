@@ -140,6 +140,8 @@ export default function TradingViewChart({
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingHistorical, setIsLoadingHistorical] = useState(false);
+  const [hasUserInteracted, setHasUserInteracted] = useState(false);
+  const isInitialLoadRef = useRef(true);
   
   // Refs to store refresh functions for auto-refresh
   const fetchKlineDataRef = useRef<(force?: boolean) => Promise<void>>();
@@ -653,9 +655,14 @@ export default function TradingViewChart({
       chartRef.current = chart;
       candlestickSeriesRef.current = candlestickSeries;
 
-      // Monitor visible time range to load historical data when user scrolls back
+      // Track user interactions (scrolling, zooming)
       const handleVisibleLogicalRangeChange = debounce((newRange: any) => {
         if (!newRange) return;
+        
+        // Mark that user has interacted if this wasn't triggered by initial load
+        if (!isInitialLoadRef.current) {
+          setHasUserInteracted(true);
+        }
         
         // Check if we're approaching the beginning of loaded data
         const firstVisibleBar = Math.floor(newRange.from);
@@ -682,6 +689,10 @@ export default function TradingViewChart({
   // Fetch data when symbol or timeframe changes
   useEffect(() => {
     if (symbol && timeframe && isVisible) {
+      // Reset interaction state for new symbol/timeframe
+      setHasUserInteracted(false);
+      isInitialLoadRef.current = true;
+      
       fetchKlineData();
       fetchLiquidationData();
       fetchOpenOrders();
@@ -710,8 +721,8 @@ export default function TradingViewChart({
     if (candlestickSeriesRef.current && klineData.length > 0) {
       candlestickSeriesRef.current.setData(klineData);
       
-      // Set visible logical range: most recent candle at 2/3 mark, 1/3 empty space on right
-      if (chartRef.current && klineData.length > 0) {
+      // Only set visible range on initial load or if user hasn't interacted
+      if (chartRef.current && klineData.length > 0 && !hasUserInteracted) {
         const totalBars = klineData.length;
         
         // Calculate how many bars to show (e.g., show 60 bars = 1 hour of 1m candles)
@@ -730,9 +741,12 @@ export default function TradingViewChart({
           from: firstBarIndex,
           to: lastBarIndex + rightPadding,
         });
+        
+        // Mark that initial load is complete
+        isInitialLoadRef.current = false;
       }
     }
-  }, [klineData]);
+  }, [klineData, hasUserInteracted]);
 
   // Update position indicators when positions change
   useEffect(() => {
