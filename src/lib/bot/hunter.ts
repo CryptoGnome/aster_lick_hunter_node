@@ -36,6 +36,9 @@ export class Hunter extends EventEmitter {
   private cleanupInterval: NodeJS.Timeout | null = null; // Periodic cleanup timer
   private syncInterval: NodeJS.Timeout | null = null; // Position mode sync timer
   private lastModeSync: number = Date.now(); // Track last mode sync time
+  private wsKeepAliveInterval: NodeJS.Timeout | null = null; // WebSocket keepalive ping timer
+  private wsInactivityTimeout: NodeJS.Timeout | null = null; // WebSocket inactivity detector
+  private lastLiquidationTime: number = Date.now(); // Track last liquidation received
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -325,8 +328,11 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
-logWithTimestamp('Hunter: Stopped periodic position mode sync');
+      logWithTimestamp('Hunter: Stopped periodic position mode sync');
     }
+
+    // Clean up WebSocket keepalive and inactivity timers
+    this.cleanupWebSocketTimers();
 
     if (this.ws) {
       this.ws.close();
@@ -335,18 +341,52 @@ logWithTimestamp('Hunter: Stopped periodic position mode sync');
   }
 
   private connectWebSocket(): void {
+    // Clean up any existing keepalive/inactivity timers
+    if (this.wsKeepAliveInterval) {
+      clearInterval(this.wsKeepAliveInterval);
+      this.wsKeepAliveInterval = null;
+    }
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+      this.wsInactivityTimeout = null;
+    }
+
     this.ws = new WebSocket('wss://fstream.asterdex.com/ws/!forceOrder@arr');
 
     this.ws.on('open', () => {
-logWithTimestamp('Hunter WS connected');
+      logWithTimestamp('Hunter WS connected');
+      this.lastLiquidationTime = Date.now();
+      
+      // Start ping/pong keepalive - send ping every 30 seconds
+      this.wsKeepAliveInterval = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.ping();
+        }
+      }, 30000);
+      
+      // Start inactivity monitor - reconnect if no liquidations for 5 minutes
+      this.startInactivityMonitor();
+    });
+
+    this.ws.on('ping', () => {
+      // Server sent ping, respond with pong (ws library handles this automatically)
+    });
+
+    this.ws.on('pong', () => {
+      // Received pong response from server - connection is alive
     });
 
     this.ws.on('message', (data: Buffer) => {
       try {
         const event = JSON.parse(data.toString());
+        
+        // Update last liquidation time for any valid message
+        this.lastLiquidationTime = Date.now();
+        this.startInactivityMonitor(); // Reset inactivity timer
+        
         this.handleLiquidationEvent(event);
       } catch (error) {
-logErrorWithTimestamp('Hunter: WS message parse error:', error);
+        logErrorWithTimestamp('Hunter: WS message parse error:', error);
         // Log to error database
         errorLogger.logError(error instanceof Error ? error : new Error(String(error)), {
           type: 'websocket',
@@ -372,7 +412,7 @@ logErrorWithTimestamp('Hunter: WS message parse error:', error);
     });
 
     this.ws.on('error', (error) => {
-logErrorWithTimestamp('Hunter WS error:', error);
+      logErrorWithTimestamp('Hunter WS error:', error);
       // Log to error database
       errorLogger.logWebSocketError(
         'wss://fstream.asterdex.com/ws/!forceOrder@arr',
@@ -390,12 +430,17 @@ logErrorWithTimestamp('Hunter WS error:', error);
           }
         );
       }
+      // Clean up timers before reconnecting
+      this.cleanupWebSocketTimers();
       // Reconnect after delay
       setTimeout(() => this.connectWebSocket(), 5000);
     });
 
     this.ws.on('close', () => {
-logWithTimestamp('Hunter WS closed');
+      logWithTimestamp('Hunter WS closed');
+      // Clean up timers
+      this.cleanupWebSocketTimers();
+      
       if (this.isRunning) {
         // Broadcast reconnection attempt to UI
         if (this.statusBroadcaster) {
@@ -410,6 +455,51 @@ logWithTimestamp('Hunter WS closed');
         setTimeout(() => this.connectWebSocket(), 5000);
       }
     });
+  }
+
+  private startInactivityMonitor(): void {
+    // Clear any existing inactivity timeout
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+    }
+    
+    // Set up new inactivity timeout - 5 minutes without liquidations
+    this.wsInactivityTimeout = setTimeout(() => {
+      const timeSinceLastLiq = Date.now() - this.lastLiquidationTime;
+      const minutesInactive = Math.floor(timeSinceLastLiq / 60000);
+      
+      logWarnWithTimestamp(`⚠️ Hunter: No liquidations received for ${minutesInactive} minutes. Reconnecting...`);
+      
+      // Broadcast warning to UI
+      if (this.statusBroadcaster) {
+        this.statusBroadcaster.broadcastWebSocketError(
+          'Hunter Stream Inactive',
+          `No liquidations received for ${minutesInactive} minutes. Reconnecting to ensure stream is alive...`,
+          {
+            component: 'Hunter',
+            inactiveMinutes: minutesInactive,
+          }
+        );
+      }
+      
+      // Force reconnection
+      if (this.ws) {
+        this.ws.close();
+        this.ws = null;
+      }
+      this.connectWebSocket();
+    }, 5 * 60 * 1000); // 5 minutes
+  }
+
+  private cleanupWebSocketTimers(): void {
+    if (this.wsKeepAliveInterval) {
+      clearInterval(this.wsKeepAliveInterval);
+      this.wsKeepAliveInterval = null;
+    }
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+      this.wsInactivityTimeout = null;
+    }
   }
 
   private async handleLiquidationEvent(event: any): Promise<void> {
