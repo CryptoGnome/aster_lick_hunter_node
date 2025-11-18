@@ -51,6 +51,10 @@ export function useBotStatus(): UseBotStatusReturn {
         case 'trade_opportunity':
         case 'vwap_update':
         case 'vwap_bulk':
+        case 'rateLimit':
+        case 'sl_placed':
+        case 'tp_placed':
+        case 'threshold_update':
           // These messages are handled by other components, ignore silently
           break;
         default:

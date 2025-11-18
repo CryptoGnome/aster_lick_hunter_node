@@ -9,7 +9,6 @@ import { initializePriceService, stopPriceService, getPriceService } from '../li
 import { vwapStreamer } from '../lib/services/vwapStreamer';
 import { getPositionMode, setPositionMode } from '../lib/api/positionMode';
 import { execSync } from 'child_process';
-import { cleanupScheduler } from '../lib/services/cleanupScheduler';
 import { db } from '../lib/db/database';
 import { configManager } from '../lib/services/configManager';
 import pnlService from '../lib/services/pnlService';
@@ -42,6 +41,7 @@ class AsterBot {
   private statusBroadcaster: StatusBroadcaster;
   private isHedgeMode: boolean = false;
   private tradeSizeWarnings: any[] = [];
+  private cleanupScheduler: any = null;
 
   constructor() {
     // Will be initialized with config port
@@ -454,8 +454,20 @@ logErrorWithTimestamp('❌ Hunter error:', error);
 logWithTimestamp('✅ Liquidation Hunter started');
 
       // Start the cleanup scheduler for liquidation database
-      cleanupScheduler.start();
-logWithTimestamp('✅ Database cleanup scheduler started (7-day retention)');
+      const dbConfig = this.config.global.liquidationDatabase;
+      const retentionDays = dbConfig?.retentionDays ?? 90;
+      const cleanupHours = dbConfig?.cleanupIntervalHours ?? 24;
+      
+      // Create a new scheduler instance with config values
+      const { CleanupScheduler } = await import('../lib/services/cleanupScheduler');
+      this.cleanupScheduler = new CleanupScheduler(cleanupHours, retentionDays);
+      this.cleanupScheduler.start();
+      
+      if (retentionDays > 0) {
+        logWithTimestamp(`✅ Database cleanup scheduler started (${retentionDays}-day retention, runs every ${cleanupHours}h)`);
+      } else {
+        logWithTimestamp('✅ Database cleanup scheduler started (retention disabled)');
+      }
 
       this.isRunning = true;
       this.statusBroadcaster.setRunning(true);
@@ -609,7 +621,9 @@ logWithTimestamp('✅ Balance service stopped');
       stopPriceService();
 logWithTimestamp('✅ Price service stopped');
 
-      cleanupScheduler.stop();
+      if (this.cleanupScheduler) {
+        this.cleanupScheduler.stop();
+      }
 logWithTimestamp('✅ Cleanup scheduler stopped');
 
       configManager.stop();

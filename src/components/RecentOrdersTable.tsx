@@ -130,7 +130,9 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
 
   // Initial load
   useEffect(() => {
-    loadOrders();
+    // Clear cache and force initial load
+    orderStore.clearCache();
+    loadOrders(true);
   }, [loadOrders]);
 
   // Subscribe to order updates

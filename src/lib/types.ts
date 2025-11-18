@@ -66,6 +66,7 @@ export interface GlobalConfig {
   useThresholdSystem?: boolean; // Enable 60-second rolling volume threshold system (default: false)
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration
+  liquidationDatabase?: LiquidationDatabaseConfig; // Liquidation data retention settings
 }
 
 export interface Config {

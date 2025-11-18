@@ -24,6 +24,7 @@ import {
   AlertCircle,
   Settings2,
   BarChart3,
+  Database,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -686,6 +687,85 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 <AlertDescription>
                   <strong>Note:</strong> After changing ports, you&apos;ll need to restart the application and access it at the new port.
                   {config.global.server?.dashboardPassword && " Password protection is active - you'll need to login to access the dashboard."}
+                </AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
+
+          {/* Liquidation Database Settings Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Liquidation Database
+              </CardTitle>
+              <CardDescription>
+                Configure how long to keep liquidation data for chart analysis
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="retentionDays">Data Retention (Days)</Label>
+                <div className="flex items-center space-x-4">
+                  <Input
+                    id="retentionDays"
+                    type="number"
+                    value={config.global.liquidationDatabase?.retentionDays ?? 90}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value);
+                      handleGlobalChange('liquidationDatabase', {
+                        ...config.global.liquidationDatabase,
+                        retentionDays: isNaN(value) ? 90 : Math.max(0, value)
+                      });
+                    }}
+                    className="w-24"
+                    min="0"
+                    max="3650"
+                    step="1"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    Days to keep liquidation data (0 = never delete)
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  More data means better chart analysis but uses more disk space. 
+                  Set to 0 to keep all liquidation data permanently.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cleanupInterval">Cleanup Interval (Hours)</Label>
+                <div className="flex items-center space-x-4">
+                  <Input
+                    id="cleanupInterval"
+                    type="number"
+                    value={config.global.liquidationDatabase?.cleanupIntervalHours ?? 24}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value);
+                      handleGlobalChange('liquidationDatabase', {
+                        ...config.global.liquidationDatabase,
+                        cleanupIntervalHours: isNaN(value) ? 24 : Math.max(1, value)
+                      });
+                    }}
+                    className="w-24"
+                    min="1"
+                    max="168"
+                    step="1"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    How often to run database cleanup (default: 24)
+                  </span>
+                </div>
+              </div>
+
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Current settings:</strong> {
+                    (config.global.liquidationDatabase?.retentionDays ?? 90) === 0 
+                      ? "All liquidation data will be kept permanently" 
+                      : `Liquidation data older than ${config.global.liquidationDatabase?.retentionDays ?? 90} days will be automatically deleted every ${config.global.liquidationDatabase?.cleanupIntervalHours ?? 24} hours`
+                  }
                 </AlertDescription>
               </Alert>
             </CardContent>
