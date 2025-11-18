@@ -148,35 +148,6 @@ export const prependHistoricalKlines = (symbol: string, interval: string, histor
   return updated;
 };
 
-// Prepend historical data to the beginning of the cache
-export const prependHistoricalKlines = (symbol: string, interval: string, historicalData: number[][]): CachedKlineData | null => {
-  const key = getCacheKey(symbol, interval);
-  const cached = klineCache.get(key);
-  
-  if (!cached || historicalData.length === 0) return null;
-  
-  // Filter out any duplicates
-  const existingTimestamps = new Set(cached.data.map(candle => candle[0]));
-  const newHistorical = historicalData.filter(candle => !existingTimestamps.has(candle[0]));
-  
-  if (newHistorical.length === 0) return cached; // No new data
-  
-  // Prepend and sort
-  const combinedData = [...newHistorical, ...cached.data].sort((a, b) => a[0] - b[0]);
-  
-  const updated: CachedKlineData = {
-    symbol,
-    interval,
-    data: combinedData,
-    lastUpdate: Date.now(),
-    lastCandleTime: combinedData[combinedData.length - 1][0] * 1000,
-    earliestCandleTime: combinedData[0][0] * 1000
-  };
-  
-  klineCache.set(key, updated);
-  return updated;
-};
-
 export const clearCache = (): void => {
   klineCache.clear();
 };
