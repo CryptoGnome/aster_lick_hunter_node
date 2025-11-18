@@ -5,7 +5,7 @@ import orderStore from '@/lib/services/orderStore';
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time } from 'lightweight-charts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { getCachedKlines, setCachedKlines, updateCachedKlines, getCandlesFor7Days } from '@/lib/klineCache';
+import { getCachedKlines, setCachedKlines, updateCachedKlines, getCandlesFor7Days, prependHistoricalKlines } from '@/lib/klineCache';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -139,11 +139,13 @@ export default function TradingViewChart({
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoadingHistorical, setIsLoadingHistorical] = useState(false);
   
   // Refs to store refresh functions for auto-refresh
   const fetchKlineDataRef = useRef<(force?: boolean) => Promise<void>>();
   const fetchLiquidationDataRef = useRef<() => Promise<void>>();
   const fetchOpenOrdersRef = useRef<() => Promise<void>>();
+  const isLoadingHistoricalRef = useRef(false);
 
   // Combine props liquidations with database liquidations
   const allLiquidations = useMemo(() => 
@@ -316,6 +318,53 @@ export default function TradingViewChart({
     }, 250),
     [updatePositionIndicators]
   );
+
+  // Load historical data when scrolling back in time
+  const loadHistoricalData = useCallback(async () => {
+    if (!symbol || !timeframe || isLoadingHistoricalRef.current) return;
+
+    const cached = getCachedKlines(symbol, timeframe);
+    if (!cached) return;
+
+    isLoadingHistoricalRef.current = true;
+    setIsLoadingHistorical(true);
+
+    try {
+      // Fetch candles before the earliest loaded candle
+      const endTime = cached.earliestCandleTime - 1;
+      const response = await fetch(`/api/klines?symbol=${symbol}&interval=${timeframe}&endTime=${endTime}&limit=500`);
+      const result = await response.json();
+
+      if (result.success && result.data.length > 0) {
+        // Prepend historical data to cache
+        const updated = prependHistoricalKlines(symbol, timeframe, result.data);
+        
+        if (updated) {
+          // Transform and update chart data
+          const transformedData: CandlestickData[] = updated.data.map((kline: any[]) => {
+            const timestamp = typeof kline[0] === 'number' ? kline[0] : parseInt(kline[0]);
+            return {
+              time: timestamp as Time,
+              open: parseFloat(kline[1]),
+              high: parseFloat(kline[2]),
+              low: parseFloat(kline[3]),
+              close: parseFloat(kline[4])
+            };
+          });
+          
+          transformedData.sort((a, b) => (a.time as number) - (b.time as number));
+          setKlineData(transformedData);
+          
+          console.log(`[TradingViewChart] Loaded ${result.data.length} historical candles`);
+        }
+      }
+    } catch (error) {
+      console.error('[TradingViewChart] Error loading historical data:', error);
+    } finally {
+      setIsLoadingHistorical(false);
+      isLoadingHistoricalRef.current = false;
+    }
+  }, [symbol, timeframe]);
 
   // Fetch liquidation data from database
   const fetchLiquidationData = useCallback(async () => {
@@ -599,6 +648,20 @@ export default function TradingViewChart({
 
       chartRef.current = chart;
       candlestickSeriesRef.current = candlestickSeries;
+
+      // Monitor visible time range to load historical data when user scrolls back
+      const handleVisibleLogicalRangeChange = debounce((newRange: any) => {
+        if (!newRange || !klineData.length) return;
+        
+        // Check if we're approaching the beginning of loaded data
+        const firstVisibleBar = Math.floor(newRange.from);
+        if (firstVisibleBar < 20 && !loading) {
+          // User is getting close to the oldest loaded data
+          loadHistoricalData();
+        }
+      }, 500);
+
+      chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
     } catch (error) {
       console.error(`[TradingViewChart] Error creating chart:`, error);
     }
@@ -610,7 +673,7 @@ export default function TradingViewChart({
         candlestickSeriesRef.current = null;
       }
     };
-  }, [loading, error, isVisible, chartHeight]); // Re-initialize when loading/error/visibility states change
+  }, [loading, error, isVisible, chartHeight, klineData.length]); // Re-initialize when loading/error/visibility states change
 
   // Fetch data when symbol or timeframe changes
   useEffect(() => {
@@ -1081,11 +1144,19 @@ export default function TradingViewChart({
         )}
         
         {!loading && !error && (
-          <div 
-            ref={chartContainerRef}
-            className="w-full bg-background rounded-md border border-border"
-            style={{ minHeight: chartHeight, minWidth: '300px', height: chartHeight, width: '100%' }}
-          />
+          <div className="relative">
+            {isLoadingHistorical && (
+              <div className="absolute top-2 left-2 z-10 bg-background/90 border border-border rounded-md px-3 py-1.5 flex items-center gap-2 shadow-sm">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span className="text-xs text-muted-foreground">Loading history...</span>
+              </div>
+            )}
+            <div 
+              ref={chartContainerRef}
+              className="w-full bg-background rounded-md border border-border"
+              style={{ minHeight: chartHeight, minWidth: '300px', height: chartHeight, width: '100%' }}
+            />
+          </div>
         )}
         </CardContent>
       )}

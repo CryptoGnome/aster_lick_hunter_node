@@ -1,10 +1,11 @@
-// Kline caching utility for 7-day historical data
+// Kline caching utility for historical data
 export interface CachedKlineData {
   symbol: string;
   interval: string;
   data: number[][]; // [timestamp, open, high, low, close, volume]
   lastUpdate: number;
   lastCandleTime: number;
+  earliestCandleTime: number; // Track oldest loaded candle
 }
 
 // Calculate candles needed for 7 days based on timeframe
@@ -78,7 +79,8 @@ export const setCachedKlines = (symbol: string, interval: string, data: number[]
     interval,
     data: sortedData,
     lastUpdate: now,
-    lastCandleTime: sortedData[sortedData.length - 1][0] * 1000 // Convert back to milliseconds
+    lastCandleTime: sortedData[sortedData.length - 1][0] * 1000, // Convert back to milliseconds
+    earliestCandleTime: sortedData[0][0] * 1000 // Track oldest loaded candle
   };
   
   klineCache.set(key, cached);
@@ -109,7 +111,66 @@ export const updateCachedKlines = (symbol: string, interval: string, newData: nu
     interval,
     data: trimmedData,
     lastUpdate: Date.now(),
-    lastCandleTime: trimmedData[trimmedData.length - 1][0] * 1000
+    lastCandleTime: trimmedData[trimmedData.length - 1][0] * 1000,
+    earliestCandleTime: trimmedData[0][0] * 1000
+  };
+  
+  klineCache.set(key, updated);
+  return updated;
+};
+
+// Prepend historical data to the beginning of the cache
+export const prependHistoricalKlines = (symbol: string, interval: string, historicalData: number[][]): CachedKlineData | null => {
+  const key = getCacheKey(symbol, interval);
+  const cached = klineCache.get(key);
+  
+  if (!cached || historicalData.length === 0) return null;
+  
+  // Filter out any duplicates
+  const existingTimestamps = new Set(cached.data.map(candle => candle[0]));
+  const newHistorical = historicalData.filter(candle => !existingTimestamps.has(candle[0]));
+  
+  if (newHistorical.length === 0) return cached; // No new data
+  
+  // Prepend and sort
+  const combinedData = [...newHistorical, ...cached.data].sort((a, b) => a[0] - b[0]);
+  
+  const updated: CachedKlineData = {
+    symbol,
+    interval,
+    data: combinedData,
+    lastUpdate: Date.now(),
+    lastCandleTime: combinedData[combinedData.length - 1][0] * 1000,
+    earliestCandleTime: combinedData[0][0] * 1000
+  };
+  
+  klineCache.set(key, updated);
+  return updated;
+};
+
+// Prepend historical data to the beginning of the cache
+export const prependHistoricalKlines = (symbol: string, interval: string, historicalData: number[][]): CachedKlineData | null => {
+  const key = getCacheKey(symbol, interval);
+  const cached = klineCache.get(key);
+  
+  if (!cached || historicalData.length === 0) return null;
+  
+  // Filter out any duplicates
+  const existingTimestamps = new Set(cached.data.map(candle => candle[0]));
+  const newHistorical = historicalData.filter(candle => !existingTimestamps.has(candle[0]));
+  
+  if (newHistorical.length === 0) return cached; // No new data
+  
+  // Prepend and sort
+  const combinedData = [...newHistorical, ...cached.data].sort((a, b) => a[0] - b[0]);
+  
+  const updated: CachedKlineData = {
+    symbol,
+    interval,
+    data: combinedData,
+    lastUpdate: Date.now(),
+    lastCandleTime: combinedData[combinedData.length - 1][0] * 1000,
+    earliestCandleTime: combinedData[0][0] * 1000
   };
   
   klineCache.set(key, updated);

@@ -17,6 +17,7 @@ export async function GET(request: NextRequest) {
     const interval = searchParams.get('interval') || '5m';
     const requestedLimit = parseInt(searchParams.get('limit') || '0');
     const since = searchParams.get('since');
+    const endTime = searchParams.get('endTime');
 
     // Validate interval
     const validIntervals = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M'];
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
 
     console.log(`[Klines API] Fetching ${limit} candles for ${symbol} ${interval} (7-day optimized: ${getCandlesFor7Days(interval)})`);
 
-    const klines = await getKlines(symbol, interval, limit);
+    const klines = await getKlines(symbol, interval, limit, endTime ? parseInt(endTime) : undefined);
 
     // Transform to lightweight-charts format: [timestamp, open, high, low, close, volume]
     const chartData = klines.map(kline => [
