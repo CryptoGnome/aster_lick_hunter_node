@@ -146,6 +146,7 @@ export default function TradingViewChart({
   const fetchLiquidationDataRef = useRef<() => Promise<void>>();
   const fetchOpenOrdersRef = useRef<() => Promise<void>>();
   const isLoadingHistoricalRef = useRef(false);
+  const loadHistoricalDataRef = useRef<() => Promise<void>>();
 
   // Combine props liquidations with database liquidations
   const allLiquidations = useMemo(() => 
@@ -365,6 +366,9 @@ export default function TradingViewChart({
       isLoadingHistoricalRef.current = false;
     }
   }, [symbol, timeframe]);
+  
+  // Store function ref
+  loadHistoricalDataRef.current = loadHistoricalData;
 
   // Fetch liquidation data from database
   const fetchLiquidationData = useCallback(async () => {
@@ -651,13 +655,13 @@ export default function TradingViewChart({
 
       // Monitor visible time range to load historical data when user scrolls back
       const handleVisibleLogicalRangeChange = debounce((newRange: any) => {
-        if (!newRange || !klineData.length) return;
+        if (!newRange) return;
         
         // Check if we're approaching the beginning of loaded data
         const firstVisibleBar = Math.floor(newRange.from);
-        if (firstVisibleBar < 20 && !loading) {
+        if (firstVisibleBar < 20 && !loading && loadHistoricalDataRef.current) {
           // User is getting close to the oldest loaded data
-          loadHistoricalData();
+          loadHistoricalDataRef.current();
         }
       }, 500);
 
@@ -673,7 +677,7 @@ export default function TradingViewChart({
         candlestickSeriesRef.current = null;
       }
     };
-  }, [loading, error, isVisible, chartHeight, klineData.length]); // Re-initialize when loading/error/visibility states change
+  }, [loading, error, isVisible, chartHeight]); // Re-initialize when loading/error/visibility states change
 
   // Fetch data when symbol or timeframe changes
   useEffect(() => {
