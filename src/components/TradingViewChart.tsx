@@ -136,6 +136,7 @@ export default function TradingViewChart({
   const [openOrders, setOpenOrders] = useState<any[]>([]);
   const [showVWAP, setShowVWAP] = useState(false);
   const [showRecentOrders, setShowRecentOrders] = useState(false);
+  const [showPositions, setShowPositions] = useState(true); // Show TP/SL lines
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -231,6 +232,11 @@ export default function TradingViewChart({
     });
     positionLinesRef.current = [];
 
+    // Don't show position lines if toggle is off
+    if (!showPositions) {
+      return;
+    }
+
     // Filter positions for current symbol
     const symbolPositions = positions.filter(pos => pos.symbol === symbol);
 
@@ -311,7 +317,7 @@ export default function TradingViewChart({
         console.error('[TradingViewChart] Error adding order line:', error);
       }
     });
-  }, [symbol]);
+  }, [symbol, showPositions]);
 
   // Debounced position updates
   const debouncedUpdatePositions = useCallback(
@@ -748,12 +754,22 @@ export default function TradingViewChart({
     }
   }, [klineData, hasUserInteracted]);
 
-  // Update position indicators when positions change
+  // Update position indicators when positions change or toggle changes
   useEffect(() => {
-    if (positions.length > 0) {
+    if (showPositions && positions.length > 0) {
       debouncedUpdatePositions(positions, openOrders);
+    } else if (!showPositions) {
+      // Clear lines when toggle is off
+      positionLinesRef.current.forEach(line => {
+        try {
+          candlestickSeriesRef.current?.removePriceLine(line);
+        } catch (_e) {
+          // Ignore errors
+        }
+      });
+      positionLinesRef.current = [];
     }
-  }, [positions, openOrders, debouncedUpdatePositions]);
+  }, [positions, openOrders, showPositions, debouncedUpdatePositions]);
 
   // Manual refresh handler
   const handleRefresh = useCallback(() => {
@@ -1058,18 +1074,6 @@ export default function TradingViewChart({
                   Auto-refresh
                 </Label>
               </div>
-              
-              <div className="flex items-center gap-1.5">
-                <Checkbox 
-                  id="show-liquidations" 
-                  checked={showLiquidations}
-                  onCheckedChange={(checked) => setShowLiquidations(checked as boolean)}
-                  className="h-4 w-4"
-                />
-                <Label htmlFor="show-liquidations" className="text-xs cursor-pointer">
-                  Liquidations
-                </Label>
-              </div>
 
               <div className="flex items-center gap-1.5">
                 <Checkbox
@@ -1080,6 +1084,18 @@ export default function TradingViewChart({
                 />
                 <Label htmlFor="show-recent-orders" className="text-xs cursor-pointer">
                   Orders
+                </Label>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <Checkbox
+                  id="show-positions"
+                  checked={showPositions}
+                  onCheckedChange={(checked) => setShowPositions(checked as boolean)}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="show-positions" className="text-xs cursor-pointer">
+                  TP/SL
                 </Label>
               </div>
 
@@ -1098,23 +1114,39 @@ export default function TradingViewChart({
 
             <div className="h-4 w-px bg-border" />
 
-            {showLiquidations && (
+            <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5">
-                <Label className="text-xs text-muted-foreground">Group:</Label>
-                <Select value={liquidationGrouping} onValueChange={setLiquidationGrouping}>
-                  <SelectTrigger className="w-[70px] h-7 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LIQUIDATION_GROUPINGS.map(group => (
-                      <SelectItem key={group.value} value={group.value}>
-                        {group.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Checkbox 
+                  id="show-liquidations" 
+                  checked={showLiquidations}
+                  onCheckedChange={(checked) => setShowLiquidations(checked as boolean)}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="show-liquidations" className="text-xs cursor-pointer">
+                  Liquidations
+                </Label>
               </div>
-            )}
+
+              {showLiquidations && (
+                <div className="flex items-center gap-1.5">
+                  <Label className="text-xs text-muted-foreground">Group:</Label>
+                  <Select value={liquidationGrouping} onValueChange={setLiquidationGrouping}>
+                    <SelectTrigger className="w-[70px] h-7 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LIQUIDATION_GROUPINGS.map(group => (
+                        <SelectItem key={group.value} value={group.value}>
+                          {group.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
+
+            <div className="h-4 w-px bg-border" />
 
             <div className="flex items-center gap-1.5">
               <Label className="text-xs text-muted-foreground">Timeframe:</Label>
