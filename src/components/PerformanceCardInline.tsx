@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Clock, TrendingUp, TrendingDown } from 'lucide-react';
+import { Clock } from 'lucide-react';
 import websocketService from '@/lib/services/websocketService';
 import dataStore from '@/lib/services/dataStore';
 

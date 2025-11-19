@@ -1191,6 +1191,31 @@ logWarnWithTimestamp('Hunter: Cannot determine correct mode. Since we cannot ver
 
       // Only broadcast and emit if order was successfully placed
       if (order && order.orderId) {
+        // Create tranche if tranche management is enabled
+        if (symbolConfig.enableTrancheManagement) {
+          try {
+            const { getTrancheManager } = await import('../services/trancheManager');
+            const trancheManager = getTrancheManager();
+            const _trancheSide = side === 'BUY' ? 'LONG' : 'SHORT';
+
+            const tranche = await trancheManager.createTranche({
+              symbol,
+              side,
+              positionSide: getPositionSide(this.isHedgeMode, side) as any,
+              entryPrice: orderType === 'LIMIT' ? orderPrice : entryPrice,
+              quantity: quantity!,
+              marginUsed: tradeSizeUSDT,
+              leverage: symbolConfig.leverage,
+              orderId: order.orderId.toString(),
+            });
+
+            logWithTimestamp(`Hunter: Created tranche ${tranche.id.substring(0, 8)} for ${symbol} ${side}`);
+          } catch (trancheError) {
+            logErrorWithTimestamp('Hunter: Failed to create tranche:', trancheError);
+            // Don't fail the trade, just log the error
+          }
+        }
+
         // Broadcast order placed event
         if (this.statusBroadcaster) {
           this.statusBroadcaster.broadcastOrderPlaced({

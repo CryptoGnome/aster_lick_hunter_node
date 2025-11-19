@@ -372,6 +372,95 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         }
       }
 
+      // Initialize Tranche Manager (if enabled for any symbol)
+      const trancheEnabledSymbols = Object.entries(this.config.symbols).filter(
+        ([_symbol, config]) => config.enableTrancheManagement
+      );
+
+      if (trancheEnabledSymbols.length > 0) {
+        try {
+          const { initializeTrancheManager } = await import('../lib/services/trancheManager');
+          const trancheManager = initializeTrancheManager(this.config);
+          await trancheManager.initialize();
+
+          // Connect tranche events to status broadcaster
+          trancheManager.on('trancheCreated', (tranche) => {
+            this.statusBroadcaster.broadcastTrancheCreated({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              quantity: tranche.quantity,
+              marginUsed: tranche.marginUsed,
+              leverage: tranche.leverage,
+              tpPrice: tranche.tpPrice,
+              slPrice: tranche.slPrice,
+            });
+            logWithTimestamp(`📊 Tranche created: ${tranche.id.substring(0, 8)} for ${tranche.symbol} ${tranche.side}`);
+          });
+
+          trancheManager.on('trancheIsolated', (tranche) => {
+            const symbolConfig = this.config?.symbols[tranche.symbol];
+            const currentPrice = tranche.isolationPrice || 0;
+            const pnlPercent = tranche.side === 'LONG'
+              ? ((currentPrice - tranche.entryPrice) / tranche.entryPrice) * 100
+              : ((tranche.entryPrice - currentPrice) / tranche.entryPrice) * 100;
+
+            this.statusBroadcaster.broadcastTrancheIsolated({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              currentPrice,
+              unrealizedPnl: tranche.unrealizedPnl,
+              pnlPercent,
+              isolationThreshold: symbolConfig?.trancheIsolationThreshold || 5,
+            });
+            logWithTimestamp(`⚠️  Tranche isolated: ${tranche.id.substring(0, 8)} for ${tranche.symbol} (${pnlPercent.toFixed(2)}% loss)`);
+          });
+
+          trancheManager.on('trancheClosed', (tranche) => {
+            this.statusBroadcaster.broadcastTrancheClosed({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              exitPrice: tranche.exitPrice || 0,
+              quantity: tranche.quantity,
+              realizedPnl: tranche.realizedPnl,
+              closedFully: tranche.status === 'closed',
+              orderId: tranche.exitOrderId,
+            });
+            logWithTimestamp(`💰 Tranche closed: ${tranche.id.substring(0, 8)} for ${tranche.symbol} (PnL: $${tranche.realizedPnl.toFixed(2)})`);
+          });
+
+          trancheManager.on('tranchePartialClose', (tranche) => {
+            this.statusBroadcaster.broadcastTrancheClosed({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              exitPrice: 0, // Partial close - exit price varies
+              quantity: tranche.quantity,
+              realizedPnl: tranche.realizedPnl,
+              closedFully: false,
+            });
+            logWithTimestamp(`📉 Tranche partially closed: ${tranche.id.substring(0, 8)} for ${tranche.symbol}`);
+          });
+
+          // Start periodic isolation monitoring
+          trancheManager.startIsolationMonitoring(10000); // Check every 10 seconds
+
+          logWithTimestamp(`✅ Tranche Manager initialized for ${trancheEnabledSymbols.length} symbol(s): ${trancheEnabledSymbols.map(([s]) => s).join(', ')}`);
+        } catch (error: any) {
+          logErrorWithTimestamp('⚠️  Tranche Manager failed to start:', error.message);
+          this.statusBroadcaster.addError(`Tranche Manager: ${error.message}`);
+          // Continue without tranche management
+        }
+      } else {
+        logWithTimestamp('ℹ️  Tranche Management disabled for all symbols');
+      }
+
       // Initialize Hunter
       this.hunter = new Hunter(this.config, this.isHedgeMode);
 

@@ -1313,11 +1313,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                     value={config.symbols[selectedSymbol].vwapLookback || 100}
                                     onChange={(e) => {
                                       const value = parseInt(e.target.value);
-                                      handleSymbolChange(
-                                        selectedSymbol,
-                                        'vwapLookback',
-                                        isNaN(value) ? 100 : value
-                                      );
+                                      if (e.target.value === '' || isNaN(value)) {
+                                        // Remove the field if empty - will use default from config.default.json
+                                        const { vwapLookback: _vwapLookback, ...rest } = config.symbols[selectedSymbol];
+                                        setConfig({
+                                          ...config,
+                                          symbols: {
+                                            ...config.symbols,
+                                            [selectedSymbol]: rest,
+                                          },
+                                        });
+                                      } else {
+                                        handleSymbolChange(selectedSymbol, 'vwapLookback', value);
+                                      }
                                     }}
                                     min="10"
                                     max="500"
@@ -1374,8 +1382,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                         value={(config.symbols[selectedSymbol].thresholdTimeWindow || 60000) / 1000}
                                         onChange={(e) => {
                                           const seconds = parseFloat(e.target.value);
-                                          const ms = isNaN(seconds) ? 60000 : seconds * 1000;
-                                          handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', ms);
+                                          if (e.target.value === '' || isNaN(seconds)) {
+                                            // Remove the field if empty - will use default from config.default.json
+                                            const { thresholdTimeWindow: _thresholdTimeWindow, ...rest } = config.symbols[selectedSymbol];
+                                            setConfig({
+                                              ...config,
+                                              symbols: {
+                                                ...config.symbols,
+                                                [selectedSymbol]: rest,
+                                              },
+                                            });
+                                          } else {
+                                            handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', seconds * 1000);
+                                          }
                                         }}
                                         min="10"
                                         max="300"
@@ -1393,8 +1412,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                         value={(config.symbols[selectedSymbol].thresholdCooldown || 30000) / 1000}
                                         onChange={(e) => {
                                           const seconds = parseFloat(e.target.value);
-                                          const ms = isNaN(seconds) ? 30000 : seconds * 1000;
-                                          handleSymbolChange(selectedSymbol, 'thresholdCooldown', ms);
+                                          if (e.target.value === '' || isNaN(seconds)) {
+                                            // Remove the field if empty - will use default from config.default.json
+                                            const { thresholdCooldown: _thresholdCooldown, ...rest } = config.symbols[selectedSymbol];
+                                            setConfig({
+                                              ...config,
+                                              symbols: {
+                                                ...config.symbols,
+                                                [selectedSymbol]: rest,
+                                              },
+                                            });
+                                          } else {
+                                            handleSymbolChange(selectedSymbol, 'thresholdCooldown', seconds * 1000);
+                                          }
                                         }}
                                         min="10"
                                         max="300"
