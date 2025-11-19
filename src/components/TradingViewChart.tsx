@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import orderStore from '@/lib/services/orderStore';
-import { createChart, IChartApi, ISeriesApi, CandlestickData, Time } from 'lightweight-charts';
+import { createChart, IChartApi, ISeriesApi, CandlestickData, HistogramData, Time } from 'lightweight-charts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { getCachedKlines, setCachedKlines, updateCachedKlines, getCandlesFor7Days, prependHistoricalKlines } from '@/lib/klineCache';
@@ -121,6 +121,7 @@ export default function TradingViewChart({
   
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const positionLinesRef = useRef<any[]>([]);
   const vwapLineRef = useRef<any>(null);
   const orderMarkersRef = useRef<any[]>([]);
@@ -130,6 +131,7 @@ export default function TradingViewChart({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [klineData, setKlineData] = useState<CandlestickData[]>([]);
+  const [volumeData, setVolumeData] = useState<HistogramData[]>([]);
   const [dbLiquidations, setDbLiquidations] = useState<LiquidationData[]>([]);
   const [showLiquidations, setShowLiquidations] = useState(true);
   const [liquidationGrouping, setLiquidationGrouping] = useState('5m');
@@ -137,6 +139,7 @@ export default function TradingViewChart({
   const [showVWAP, setShowVWAP] = useState(false);
   const [showRecentOrders, setShowRecentOrders] = useState(false);
   const [showPositions, setShowPositions] = useState(true); // Show TP/SL lines
+  const [showVolume, setShowVolume] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(30); // Default 30 seconds
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -525,6 +528,12 @@ export default function TradingViewChart({
           }
         }
         
+        // Reset error counter on success
+        if (consecutiveErrorsRef.current > 0) {
+          consecutiveErrorsRef.current = 0;
+          setApiConnectionError(false);
+        }
+        
         setIsRefreshing(false);
         setLastUpdate(new Date());
         return;
@@ -615,13 +624,29 @@ export default function TradingViewChart({
         };
       });
       
+      // Transform volume data (quote asset volume in USDT)
+      const transformedVolume: HistogramData[] = result.data.map((kline: any[]) => {
+        const timestamp = typeof kline[0] === 'number' ? kline[0] : parseInt(kline[0]);
+        const open = parseFloat(kline[1]);
+        const close = parseFloat(kline[4]);
+        const volume = parseFloat(kline[7]); // Quote asset volume (USDT)
+        
+        return {
+          time: timestamp as Time,
+          value: volume,
+          color: close >= open ? '#26a69a' : '#ef5350' // Green for bullish, red for bearish
+        };
+      });
+      
       // Sort data by time (TradingView requires chronological order)
       transformedData.sort((a, b) => (a.time as number) - (b.time as number));
+      transformedVolume.sort((a, b) => (a.time as number) - (b.time as number));
 
       // Cache the data
       setCachedKlines(symbol, timeframe, result.data);
       
       setKlineData(transformedData);
+      setVolumeData(transformedVolume);
     } catch (error) {
       console.error('[TradingViewChart] Error fetching kline data:', error);
       setError(error instanceof Error ? error.message : 'Failed to fetch chart data');
@@ -680,8 +705,26 @@ export default function TradingViewChart({
         wickDownColor: '#ef5350',
       });
 
+      // Add volume histogram series
+      const volumeSeries = chart.addHistogramSeries({
+        color: '#26a69a',
+        priceFormat: {
+          type: 'volume',
+        },
+        priceScaleId: 'volume', // Separate scale for volume
+      });
+
+      // Configure volume scale to be at bottom 20% of chart
+      volumeSeries.priceScale().applyOptions({
+        scaleMargins: {
+          top: 0.8, // Volume takes bottom 20%
+          bottom: 0,
+        },
+      });
+
       chartRef.current = chart;
       candlestickSeriesRef.current = candlestickSeries;
+      volumeSeriesRef.current = volumeSeries;
 
       // Track user interactions (scrolling, zooming)
       const handleVisibleLogicalRangeChange = debounce((newRange: any) => {
@@ -710,6 +753,7 @@ export default function TradingViewChart({
         chartRef.current.remove();
         chartRef.current = null;
         candlestickSeriesRef.current = null;
+        volumeSeriesRef.current = null;
       }
     };
   }, [loading, error, isVisible, chartHeight]); // Re-initialize when loading/error/visibility states change
@@ -750,6 +794,11 @@ export default function TradingViewChart({
     if (candlestickSeriesRef.current && klineData.length > 0) {
       candlestickSeriesRef.current.setData(klineData);
       
+      // Update volume data if available
+      if (volumeSeriesRef.current && volumeData.length > 0) {
+        volumeSeriesRef.current.setData(volumeData);
+      }
+      
       // Only set visible range on initial load or if user hasn't interacted
       if (chartRef.current && klineData.length > 0 && !hasUserInteracted) {
         const totalBars = klineData.length;
@@ -775,7 +824,16 @@ export default function TradingViewChart({
         isInitialLoadRef.current = false;
       }
     }
-  }, [klineData, hasUserInteracted]);
+  }, [klineData, volumeData, hasUserInteracted]);
+
+  // Toggle volume visibility
+  useEffect(() => {
+    if (volumeSeriesRef.current) {
+      volumeSeriesRef.current.applyOptions({
+        visible: showVolume,
+      });
+    }
+  }, [showVolume]);
 
   // Update position indicators when positions change or toggle changes
   useEffect(() => {
@@ -1152,6 +1210,18 @@ export default function TradingViewChart({
                 />
                 <Label htmlFor="show-vwap" className="text-xs cursor-pointer">
                   VWAP
+                </Label>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <Checkbox
+                  id="show-volume"
+                  checked={showVolume}
+                  onCheckedChange={(checked) => setShowVolume(checked as boolean)}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="show-volume" className="text-xs cursor-pointer">
+                  Volume
                 </Label>
               </div>
             </div>
