@@ -458,24 +458,55 @@ export default function TradingViewChart({
     setError(null);
 
     try {
-      // When forcing refresh, always fetch latest data
+      // When forcing refresh, only fetch the latest candles (much more efficient)
       if (force) {
-        // Get the latest candles from the API
         const cached = getCachedKlines(symbol, timeframe);
-        const since = cached?.lastCandleTime || Date.now() - (7 * 24 * 60 * 60 * 1000);
         
-        const response = await fetch(`/api/klines?symbol=${symbol}&interval=${timeframe}&since=${since}&limit=500`);
-        const result = await response.json();
-
-        if (result.success && result.data.length > 0) {
-          // Update cache with new data
-          const updated = cached 
-            ? updateCachedKlines(symbol, timeframe, result.data)
-            : { data: result.data, lastUpdate: Date.now(), lastCandleTime: result.data[result.data.length - 1][0] };
+        if (cached) {
+          // We have cached data - only fetch latest 2 candles to update
+          const lastCachedTime = cached.lastCandleTime || cached.data[cached.data.length - 1][0];
           
-          if (updated) {
-            // Update chart with merged data
-            const transformedData: CandlestickData[] = updated.data.map((kline: any[]) => {
+          // Fetch just the latest 2 candles (current incomplete + most recent complete)
+          const response = await fetch(`/api/klines?symbol=${symbol}&interval=${timeframe}&since=${lastCachedTime}&limit=2`);
+          const result = await response.json();
+
+          if (result.success && result.data.length > 0) {
+            // Update cache with just the new candles
+            const updated = updateCachedKlines(symbol, timeframe, result.data);
+            
+            if (updated) {
+              // Update chart with merged data
+              const transformedData: CandlestickData[] = updated.data.map((kline: any[]) => {
+                const timestamp = typeof kline[0] === 'number' ? kline[0] : parseInt(kline[0]);
+                return {
+                  time: timestamp as Time,
+                  open: parseFloat(kline[1]),
+                  high: parseFloat(kline[2]),
+                  low: parseFloat(kline[3]),
+                  close: parseFloat(kline[4])
+                };
+              });
+              
+              transformedData.sort((a, b) => (a.time as number) - (b.time as number));
+              
+              // Only update if data has actually changed
+              setKlineData(prev => {
+                if (prev.length === transformedData.length && 
+                    prev[prev.length - 1]?.close === transformedData[transformedData.length - 1]?.close) {
+                  return prev; // No change
+                }
+                return transformedData;
+              });
+            }
+          }
+        } else {
+          // No cache - do a full initial fetch
+          const since = Date.now() - (7 * 24 * 60 * 60 * 1000);
+          const response = await fetch(`/api/klines?symbol=${symbol}&interval=${timeframe}&since=${since}&limit=500`);
+          const result = await response.json();
+
+          if (result.success && result.data.length > 0) {
+            const transformedData: CandlestickData[] = result.data.map((kline: any[]) => {
               const timestamp = typeof kline[0] === 'number' ? kline[0] : parseInt(kline[0]);
               return {
                 time: timestamp as Time,
@@ -487,20 +518,10 @@ export default function TradingViewChart({
             });
             
             transformedData.sort((a, b) => (a.time as number) - (b.time as number));
+            setKlineData(transformedData);
             
-            // Only update if data has actually changed
-            setKlineData(prev => {
-              if (prev.length === transformedData.length && 
-                  prev[prev.length - 1]?.close === transformedData[transformedData.length - 1]?.close) {
-                return prev; // No change
-              }
-              return transformedData;
-            });
-            
-            // Cache the merged data
-            if (!cached) {
-              setCachedKlines(symbol, timeframe, updated.data);
-            }
+            // Cache the data
+            setCachedKlines(symbol, timeframe, result.data);
           }
         }
         
