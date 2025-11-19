@@ -528,12 +528,6 @@ export default function TradingViewChart({
           }
         }
         
-        // Reset error counter on success
-        if (consecutiveErrorsRef.current > 0) {
-          consecutiveErrorsRef.current = 0;
-          setApiConnectionError(false);
-        }
-        
         setIsRefreshing(false);
         setLastUpdate(new Date());
         return;
@@ -796,6 +790,7 @@ export default function TradingViewChart({
       
       // Update volume data if available
       if (volumeSeriesRef.current && volumeData.length > 0) {
+        console.log('[TradingViewChart] Setting volume data, count:', volumeData.length, 'sample:', volumeData[0]);
         volumeSeriesRef.current.setData(volumeData);
       }
       
