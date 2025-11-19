@@ -123,17 +123,6 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
         const eventId = `${liquidationData.symbol}-${liquidationData.eventTime}`;
 
         setEvents(prev => {
-          // Check if this liquidation already exists (deduplicate)
-          const isDuplicate = prev.some(e => 
-            e.symbol === liquidationData.symbol && 
-            e.eventTime === liquidationData.eventTime
-          );
-          
-          if (isDuplicate) {
-            console.log(`[LiquidationSidebar:${instanceId.current}] Duplicate liquidation detected, skipping:`, eventId);
-            return prev;
-          }
-          
           // Mark as new for animation
           setNewEventIds(prevIds => new Set([...prevIds, eventId]));
 
