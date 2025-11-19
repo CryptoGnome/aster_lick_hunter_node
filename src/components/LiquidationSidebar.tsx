@@ -105,7 +105,7 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
     
     const handleMessage = (message: any) => {
       if (message.type === 'liquidation') {
-        console.log(`[LiquidationSidebar:${instanceId.current}] Received liquidation message:`, message.data?.symbol);
+        console.log(`[LiquidationSidebar:${instanceId.current}] Received liquidation:`, message.data?.symbol, 'eventTime:', message.data?.eventTime);
         const liquidationData = message.data;
 
         // Calculate volume and determine if high volume (use ref for latest threshold)
@@ -123,6 +123,17 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
         const eventId = `${liquidationData.symbol}-${liquidationData.eventTime}`;
 
         setEvents(prev => {
+          // Check if this liquidation already exists (deduplicate)
+          const isDuplicate = prev.some(e => 
+            e.symbol === liquidationData.symbol && 
+            e.eventTime === liquidationData.eventTime
+          );
+          
+          if (isDuplicate) {
+            console.log(`[LiquidationSidebar:${instanceId.current}] Duplicate liquidation detected, skipping:`, eventId);
+            return prev;
+          }
+          
           // Mark as new for animation
           setNewEventIds(prevIds => new Set([...prevIds, eventId]));
 
