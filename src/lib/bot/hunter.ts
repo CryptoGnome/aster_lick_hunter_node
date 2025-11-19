@@ -39,6 +39,7 @@ export class Hunter extends EventEmitter {
   private wsKeepAliveInterval: NodeJS.Timeout | null = null; // WebSocket keepalive ping timer
   private wsInactivityTimeout: NodeJS.Timeout | null = null; // WebSocket inactivity detector
   private lastLiquidationTime: number = Date.now(); // Track last liquidation received
+  private statusLogInterval: NodeJS.Timeout | null = null; // Periodic status logging
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -338,6 +339,9 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       this.ws.close();
       this.ws = null;
     }
+
+    // Remove all event listeners to prevent memory leaks and duplicate event handlers
+    this.removeAllListeners();
   }
 
   private connectWebSocket(): void {
@@ -366,6 +370,19 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       
       // Start inactivity monitor - reconnect if no liquidations for 5 minutes
       this.startInactivityMonitor();
+      
+      // Start periodic status logging - every 2 minutes
+      this.statusLogInterval = setInterval(() => {
+        const timeSinceLastLiq = Date.now() - this.lastLiquidationTime;
+        const minutesInactive = Math.floor(timeSinceLastLiq / 60000);
+        const secondsInactive = Math.floor((timeSinceLastLiq % 60000) / 1000);
+        
+        if (minutesInactive >= 1) {
+          logWithTimestamp(`📊 Hunter: Monitoring | Last liquidation: ${minutesInactive}m ${secondsInactive}s ago`);
+        } else {
+          logWithTimestamp(`📊 Hunter: Monitoring | Last liquidation: ${secondsInactive}s ago`);
+        }
+      }, 120000); // Every 2 minutes
     });
 
     this.ws.on('ping', () => {
@@ -442,16 +459,7 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       this.cleanupWebSocketTimers();
       
       if (this.isRunning) {
-        // Broadcast reconnection attempt to UI
-        if (this.statusBroadcaster) {
-          this.statusBroadcaster.broadcastWebSocketError(
-            'Hunter WebSocket Closed',
-            'Liquidation stream disconnected. Reconnecting in 5 seconds...',
-            {
-              component: 'Hunter',
-            }
-          );
-        }
+        // Reconnect silently - close events are often normal (like during inactivity reconnect)
         setTimeout(() => this.connectWebSocket(), 5000);
       }
     });
@@ -468,19 +476,7 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       const timeSinceLastLiq = Date.now() - this.lastLiquidationTime;
       const minutesInactive = Math.floor(timeSinceLastLiq / 60000);
       
-      logWarnWithTimestamp(`⚠️ Hunter: No liquidations received for ${minutesInactive} minutes. Reconnecting...`);
-      
-      // Broadcast warning to UI
-      if (this.statusBroadcaster) {
-        this.statusBroadcaster.broadcastWebSocketError(
-          'Hunter Stream Inactive',
-          `No liquidations received for ${minutesInactive} minutes. Reconnecting to ensure stream is alive...`,
-          {
-            component: 'Hunter',
-            inactiveMinutes: minutesInactive,
-          }
-        );
-      }
+      logWarnWithTimestamp(`⚠️ Hunter: No liquidations for ${minutesInactive} minutes. Reconnecting stream...`);
       
       // Force reconnection
       if (this.ws) {
@@ -500,10 +496,16 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       clearTimeout(this.wsInactivityTimeout);
       this.wsInactivityTimeout = null;
     }
+    if (this.statusLogInterval) {
+      clearInterval(this.statusLogInterval);
+      this.statusLogInterval = null;
+    }
   }
 
   private async handleLiquidationEvent(event: any): Promise<void> {
     if (event.e !== 'forceOrder') return; // Not a liquidation event
+    
+    console.log(`[Hunter] handleLiquidationEvent START: ${event.o.s} @ ${Date.now()}`);
 
     const liquidation: LiquidationEvent = {
       symbol: event.o.s,
@@ -521,6 +523,10 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       time: event.E, // Keep for backward compatibility
     };
 
+    // Log liquidation received with basic info
+    const volumeUSDT = liquidation.qty * liquidation.price;
+    logWithTimestamp(`💥 Liquidation: ${liquidation.symbol} ${liquidation.side} ${liquidation.qty.toFixed(4)} @ $${liquidation.price.toLocaleString()} ($${volumeUSDT.toFixed(2)})`);
+
     // Check if threshold system is enabled globally and for this symbol
     const useThresholdSystem = this.config.global.useThresholdSystem === true &&
                               this.config.symbols[liquidation.symbol]?.useThreshold === true;
@@ -529,15 +535,15 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
     const thresholdStatus = useThresholdSystem ? thresholdMonitor.processLiquidation(liquidation) : null;
 
     // Emit liquidation event to WebSocket clients (all liquidations) with threshold info
+    console.log(`[Hunter] About to emit liquidationDetected for ${liquidation.symbol}`);
     this.emit('liquidationDetected', {
       ...liquidation,
       thresholdStatus
     });
+    console.log(`[Hunter] Finished emitting liquidationDetected for ${liquidation.symbol}`);
 
     const symbolConfig = this.config.symbols[liquidation.symbol];
     if (!symbolConfig) return; // Symbol not in config
-
-    const volumeUSDT = liquidation.qty * liquidation.price;
 
     // Store liquidation in database (non-blocking)
     liquidationStorage.saveLiquidation(liquidation, volumeUSDT).catch(error => {

@@ -461,8 +461,14 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp('ℹ️  Tranche Management disabled for all symbols');
       }
 
-      // Initialize Hunter
-      this.hunter = new Hunter(this.config, this.isHedgeMode);
+      // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
+      if (!this.hunter) {
+        this.hunter = new Hunter(this.config, this.isHedgeMode);
+      } else {
+        // Remove all old listeners before re-attaching to prevent duplicates
+        this.hunter.removeAllListeners();
+        console.log('[Bot] Removed all old hunter event listeners to prevent duplicates');
+      }
 
       // Inject status broadcaster for order events
       this.hunter.setStatusBroadcaster(this.statusBroadcaster);
@@ -474,7 +480,8 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
 
       // Connect hunter events to position manager and status broadcaster
       this.hunter.on('liquidationDetected', (liquidationEvent: any) => {
-        logWithTimestamp(`💥 Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
+        console.log(`[Bot] liquidationDetected event received for ${liquidationEvent.symbol}`);
+        // Broadcast to UI and log activity (don't log to console - already logged in hunter.ts)
         this.statusBroadcaster.broadcastLiquidation(liquidationEvent);
         this.statusBroadcaster.logActivity(`Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
       });
@@ -491,6 +498,9 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.logActivity(`Blocked: ${data.symbol} ${data.side} - ${data.blockType}`);
       });
 
+      // Remove old threshold monitor listeners to prevent duplicates
+      thresholdMonitor.removeAllListeners('thresholdUpdate');
+      
       // Listen for threshold updates and broadcast to UI
       thresholdMonitor.on('thresholdUpdate', (thresholdUpdate: any) => {
         this.statusBroadcaster.broadcastThresholdUpdate(thresholdUpdate);

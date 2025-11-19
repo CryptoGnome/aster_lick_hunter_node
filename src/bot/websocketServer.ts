@@ -211,12 +211,18 @@ export class StatusBroadcaster extends EventEmitter {
 
   private _broadcast(type: string, data: any): void {
     const message = JSON.stringify({ type, data });
+    let sentCount = 0;
 
     this.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
+        sentCount++;
       }
     });
+    
+    if (type === 'liquidation') {
+      console.log(`[WebSocketServer] Sent ${type} to ${sentCount} open clients (${this.clients.size} total)`);
+    }
   }
 
   logActivity(activity: string): void {
@@ -229,6 +235,7 @@ export class StatusBroadcaster extends EventEmitter {
 
   // Broadcast liquidation events to connected clients
   broadcastLiquidation(liquidationEvent: LiquidationEvent): void {
+    console.log(`[WebSocketServer] Broadcasting liquidation ${liquidationEvent.symbol} to ${this.clients.size} clients`);
     this._broadcast('liquidation', {
       symbol: liquidationEvent.symbol,
       side: liquidationEvent.side,

@@ -172,6 +172,8 @@ class WebSocketService {
             this.isIntentionalDisconnect = true;
           }
 
+          // Broadcast to all handlers
+          console.log(`[WebSocketService] Broadcasting ${message.type} to ${this.handlers.size} handlers`);
           this.handlers.forEach(handler => {
             try {
               handler(message);
@@ -242,6 +244,7 @@ class WebSocketService {
 
   addMessageHandler(handler: MessageHandler): () => void {
     this.handlers.add(handler);
+    console.log(`[WebSocketService] Handler added. Total handlers: ${this.handlers.size}`);
 
     // Check if we should auto-connect (skip on excluded pages)
     if (typeof window !== 'undefined') {
@@ -275,6 +278,7 @@ class WebSocketService {
     // Return cleanup function
     return () => {
       this.handlers.delete(handler);
+      console.log(`[WebSocketService] Handler removed. Total handlers: ${this.handlers.size}`);
 
       // If no more handlers, disconnect
       if (this.handlers.size === 0) {
