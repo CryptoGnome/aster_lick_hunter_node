@@ -487,10 +487,23 @@ export default function TradingViewChart({
                   high: parseFloat(kline[2]),
                   low: parseFloat(kline[3]),
                   close: parseFloat(kline[4])
+                };              });
+              
+              const transformedVolume: HistogramData[] = result.data.map((kline: any[]) => {
+                const timestamp = typeof kline[0] === 'number' ? kline[0] : parseInt(kline[0]);
+                const open = parseFloat(kline[1]);
+                const close = parseFloat(kline[4]);
+                const volume = parseFloat(kline[7]);
+                
+                return {
+                  time: timestamp as Time,
+                  value: volume,
+                  color: close >= open ? '#26a69a' : '#ef5350'
                 };
               });
               
               transformedData.sort((a, b) => (a.time as number) - (b.time as number));
+              transformedVolume.sort((a, b) => (a.time as number) - (b.time as number));
               
               // Only update if data has actually changed
               setKlineData(prev => {
@@ -500,6 +513,7 @@ export default function TradingViewChart({
                 }
                 return transformedData;
               });
+              setVolumeData(transformedVolume);
             }
           }
         } else {
@@ -520,8 +534,23 @@ export default function TradingViewChart({
               };
             });
             
+            const transformedVolume: HistogramData[] = result.data.map((kline: any[]) => {
+              const timestamp = typeof kline[0] === 'number' ? kline[0] : parseInt(kline[0]);
+              const open = parseFloat(kline[1]);
+              const close = parseFloat(kline[4]);
+              const volume = parseFloat(kline[7]);
+              
+              return {
+                time: timestamp as Time,
+                value: volume,
+                color: close >= open ? '#26a69a' : '#ef5350'
+              };
+            });
+            
             transformedData.sort((a, b) => (a.time as number) - (b.time as number));
+            transformedVolume.sort((a, b) => (a.time as number) - (b.time as number));
             setKlineData(transformedData);
+            setVolumeData(transformedVolume);
             
             // Cache the data
             setCachedKlines(symbol, timeframe, result.data);
@@ -549,9 +578,25 @@ export default function TradingViewChart({
           };
         });
 
+        // Transform cached volume data
+        const transformedVolume: HistogramData[] = cached.data.map((kline: any[]) => {
+          const timestamp = typeof kline[0] === 'number' ? kline[0] : parseInt(kline[0]);
+          const open = parseFloat(kline[1]);
+          const close = parseFloat(kline[4]);
+          const volume = parseFloat(kline[7]); // Quote asset volume (USDT)
+          
+          return {
+            time: timestamp as Time,
+            value: volume,
+            color: close >= open ? '#26a69a' : '#ef5350'
+          };
+        });
+
         // Sort data by time (TradingView requires chronological order)
         transformedData.sort((a, b) => (a.time as number) - (b.time as number));
+        transformedVolume.sort((a, b) => (a.time as number) - (b.time as number));
         setKlineData(transformedData);
+        setVolumeData(transformedVolume);
         
         // Check if we need to fetch recent updates (cache older than 2 minutes)
         const cacheAge = Date.now() - cached.lastUpdate;
@@ -624,6 +669,12 @@ export default function TradingViewChart({
         const open = parseFloat(kline[1]);
         const close = parseFloat(kline[4]);
         const volume = parseFloat(kline[7]); // Quote asset volume (USDT)
+        
+        // Debug first item
+        if (timestamp === result.data[0][0]) {
+          console.log('[TradingViewChart] First kline data:', kline);
+          console.log('[TradingViewChart] Volume at index 7:', kline[7], 'parsed:', volume);
+        }
         
         return {
           time: timestamp as Time,

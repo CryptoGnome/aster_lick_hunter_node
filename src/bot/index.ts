@@ -464,8 +464,11 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
       // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
       if (!this.hunter) {
         this.hunter = new Hunter(this.config, this.isHedgeMode);
+        console.log('[Bot] Created new Hunter instance');
       } else {
         // Remove all old listeners before re-attaching to prevent duplicates
+        const listenerCount = this.hunter.listenerCount('liquidationDetected');
+        console.log(`[Bot] Existing Hunter has ${listenerCount} liquidationDetected listeners`);
         this.hunter.removeAllListeners();
         console.log('[Bot] Removed all old hunter event listeners to prevent duplicates');
       }
@@ -480,7 +483,7 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
 
       // Connect hunter events to position manager and status broadcaster
       this.hunter.on('liquidationDetected', (liquidationEvent: any) => {
-        console.log(`[Bot] liquidationDetected event received for ${liquidationEvent.symbol}`);
+        console.log(`[Bot] liquidationDetected event received for ${liquidationEvent.symbol} (${this.hunter.listenerCount('liquidationDetected')} total listeners)`);
         // Broadcast to UI and log activity (don't log to console - already logged in hunter.ts)
         this.statusBroadcaster.broadcastLiquidation(liquidationEvent);
         this.statusBroadcaster.logActivity(`Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
