@@ -138,6 +138,7 @@ export default function TradingViewChart({
   const [showRecentOrders, setShowRecentOrders] = useState(false);
   const [showPositions, setShowPositions] = useState(true); // Show TP/SL lines
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(30); // Default 30 seconds
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadingHistorical, setIsLoadingHistorical] = useState(false);
@@ -705,22 +706,23 @@ export default function TradingViewChart({
     }
   }, [symbol, timeframe, isVisible, fetchKlineData, fetchLiquidationData, fetchOpenOrders]);
 
-  // Auto-refresh effect - refreshes every 60 seconds when enabled
+  // Auto-refresh effect - refreshes at configured interval when enabled
   useEffect(() => {
     if (!autoRefresh || !isVisible || !symbol || !timeframe) {
       return;
     }
 
+    const intervalMs = refreshInterval * 1000;
     const interval = setInterval(() => {
-      console.log('[TradingViewChart] Auto-refresh triggered');
+      console.log(`[TradingViewChart] Auto-refresh triggered (${refreshInterval}s interval)`);
       // Use refs to avoid dependency issues
       if (fetchKlineDataRef.current) fetchKlineDataRef.current(true);
       if (fetchLiquidationDataRef.current) fetchLiquidationDataRef.current();
       if (fetchOpenOrdersRef.current) fetchOpenOrdersRef.current();
-    }, 60000); // 60 seconds
+    }, intervalMs);
 
     return () => clearInterval(interval);
-  }, [autoRefresh, isVisible, symbol, timeframe]);
+  }, [autoRefresh, isVisible, symbol, timeframe, refreshInterval]);
 
   // Update chart data when klineData changes
   useEffect(() => {
@@ -1063,16 +1065,37 @@ export default function TradingViewChart({
         {isVisible && (
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5">
-                <Checkbox
-                  id="auto-refresh"
-                  checked={autoRefresh}
-                  onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
-                  className="h-4 w-4"
-                />
-                <Label htmlFor="auto-refresh" className="text-xs cursor-pointer">
-                  Auto-refresh
-                </Label>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Checkbox
+                    id="auto-refresh"
+                    checked={autoRefresh}
+                    onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
+                    className="h-4 w-4"
+                  />
+                  <Label htmlFor="auto-refresh" className="text-xs cursor-pointer">
+                    Auto-refresh
+                  </Label>
+                </div>
+                {autoRefresh && (
+                  <Select
+                    value={refreshInterval.toString()}
+                    onValueChange={(value) => setRefreshInterval(parseInt(value))}
+                  >
+                    <SelectTrigger className="h-7 w-[90px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="5">5s</SelectItem>
+                      <SelectItem value="10">10s</SelectItem>
+                      <SelectItem value="15">15s</SelectItem>
+                      <SelectItem value="30">30s</SelectItem>
+                      <SelectItem value="60">1min</SelectItem>
+                      <SelectItem value="120">2min</SelectItem>
+                      <SelectItem value="300">5min</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5">
