@@ -48,7 +48,8 @@ export class Database {
         order_trade_time INTEGER,
         event_time INTEGER NOT NULL,
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
-        metadata TEXT
+        metadata TEXT,
+        UNIQUE(symbol, event_time)
       );
 
       CREATE INDEX IF NOT EXISTS idx_liquidations_event_time

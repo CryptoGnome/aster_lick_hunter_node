@@ -42,7 +42,7 @@ export interface LiquidationStats {
 export class LiquidationStorage {
   async saveLiquidation(event: LiquidationEvent, volumeUSDT: number): Promise<void> {
     const sql = `
-      INSERT INTO liquidations (
+      INSERT OR IGNORE INTO liquidations (
         symbol, side, order_type, quantity, price, average_price,
         volume_usdt, order_status, order_last_filled_quantity,
         order_filled_accumulated_quantity, order_trade_time,
