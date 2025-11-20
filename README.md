@@ -17,6 +17,7 @@ A smart trading bot that monitors and trades liquidation events on Aster DEX. Fe
 
 - 📈 **Real-time Liquidation Hunting** - Monitors and instantly trades liquidation events
 - 💰 **Smart Position Management** - Automatic stop-loss and take-profit on every trade
+- 🎯 **Multi-Tranche System** - Isolate losing positions while continuing to trade fresh entries
 - 🧪 **Paper Trading Mode** - Test strategies safely with simulated trades
 - 🎨 **Beautiful Web Dashboard** - Monitor everything from a clean, modern UI
 - ⚡ **One-Click Setup** - Get running in under 2 minutes
@@ -75,6 +76,7 @@ Access at http://localhost:3000
 
 - **Dashboard** - Monitor positions and P&L
 - **Config** - Adjust all settings via UI
+- **Tranches** - View and manage multi-tranche positions
 - **History** - View past trades
 
 ## ⚙️ Commands
@@ -178,11 +180,133 @@ Found a bug in the dev branch? Help us improve!
 
 **Note**: Always start with paper mode when testing new beta features!
 
+## 🎯 Advanced Features
+
+### Multi-Tranche Position Management
+
+The bot includes an intelligent **multi-tranche system** that dramatically improves trading performance when positions move against you:
+
+#### What are Tranches?
+
+Think of tranches as separate "sub-positions" within the same trading pair. Instead of one large position that you keep adding to, the bot tracks multiple independent entries:
+
+- **Position goes underwater (>5% loss)?** → Bot automatically **isolates** it
+- **Continue trading?** → Bot opens **new tranches** without adding to the loser
+- **Keep making profits?** → Trade fresh entries while holding positions recover
+- **Better margin usage** → Don't let one bad position lock up all your capital
+
+#### Why Use Multi-Tranche?
+
+**Traditional Trading Problem:**
+```
+Enter BTCUSDT LONG @ $50,000
+Price drops to $47,500 (-5%)
+You're stuck: Can't trade more without adding to losing position
+Miss opportunities while waiting for recovery
+```
+
+**With Multi-Tranche System:**
+```
+Tranche #1: LONG @ $50,000 → Down 5% → ISOLATED (held separately)
+Tranche #2: LONG @ $47,500 → Up 2% → CLOSE (+profit!)
+Tranche #3: LONG @ $48,000 → Up 3% → CLOSE (+profit!)
+Meanwhile, Tranche #1 recovers → Eventually closes at breakeven or profit
+```
+
+**Result:** You keep making money on new trades while bad positions recover naturally.
+
+#### Key Benefits
+
+✅ **Isolate Losing Positions** - Underwater positions tracked separately
+✅ **Continue Trading** - Open fresh positions without adding to losers
+✅ **Better Margin Efficiency** - Don't lock up capital in losing trades
+✅ **Automatic Management** - Bot handles everything automatically
+✅ **Configurable Strategies** - Choose FIFO, LIFO, or close best/worst first
+✅ **Real-Time Monitoring** - Dashboard shows all tranches and their P&L
+
+#### How to Enable
+
+1. **Via Web UI** (Recommended):
+   - Go to http://localhost:3000/config
+   - Find your trading pair (e.g., BTCUSDT)
+   - Scroll to "Tranche Management Settings"
+   - Toggle "Enable Multi-Tranche Management"
+   - Configure settings:
+     - **Isolation Threshold**: When to isolate (default: 5% loss)
+     - **Max Tranches**: Max active positions (default: 3)
+     - **Max Isolated**: Max underwater positions before blocking new trades (default: 2)
+     - **Closing Strategy**: FIFO (oldest first), LIFO (newest first), WORST_FIRST, BEST_FIRST
+     - **SL/TP Strategy**: Which tranche's targets to use (NEWEST, OLDEST, BEST_ENTRY, AVERAGE)
+
+2. **Monitor Your Tranches**:
+   - Visit http://localhost:3000/tranches
+   - See all active, isolated, and closed tranches
+   - Real-time P&L tracking
+   - Event timeline showing tranche lifecycle
+
+#### Configuration Example
+
+```json
+{
+  "symbols": {
+    "BTCUSDT": {
+      "enableTrancheManagement": true,
+      "trancheIsolationThreshold": 5,
+      "maxTranches": 3,
+      "maxIsolatedTranches": 2,
+      "allowTrancheWhileIsolated": true,
+      "trancheStrategy": {
+        "closingStrategy": "FIFO",
+        "slTpStrategy": "NEWEST",
+        "isolationAction": "HOLD"
+      }
+    }
+  }
+}
+```
+
+#### Safety & Risk Management
+
+The multi-tranche system includes built-in safety features:
+
+- **Position Limits**: Won't exceed max tranches per symbol
+- **Isolation Blocking**: Stops new trades if too many positions are underwater
+- **Exchange Sync**: Reconciles local tracking with exchange positions
+- **Automatic Monitoring**: Checks every 10 seconds for positions needing isolation
+- **Event Audit Trail**: Full history of every tranche action in database
+
+**⚠️ Important Notes:**
+- Start with **paper mode** to understand how tranches work
+- Set conservative limits (3 max tranches, 2 max isolated is recommended)
+- Higher isolation threshold (5-10%) prevents over-isolation
+- Monitor the `/tranches` dashboard regularly
+
+#### Advanced Use Cases
+
+**Scalping Strategy:**
+- Low isolation threshold (3%)
+- High max tranches (5)
+- LIFO closing (close newest first)
+- Works great for quick in-and-out trades
+
+**Hold & Recover Strategy:**
+- High isolation threshold (10%)
+- Moderate max tranches (3)
+- FIFO closing (close oldest first)
+- Good for trending markets
+
+**Best Trade First:**
+- BEST_FIRST closing strategy
+- Take profits on winners quickly
+- Hold losers for recovery
+- Maximizes realized gains
+
 ## 🛡️ Safety Features
 
 - Paper mode for testing
 - Automatic stop-loss/take-profit
 - Position size limits
+- Multi-tranche isolation system
 - WebSocket auto-reconnection
 
 ## 🌐 Remote Access Configuration
