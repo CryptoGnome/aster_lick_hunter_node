@@ -40,6 +40,8 @@ export class Hunter extends EventEmitter {
   private wsInactivityTimeout: NodeJS.Timeout | null = null; // WebSocket inactivity detector
   private lastLiquidationTime: number = Date.now(); // Track last liquidation received
   private statusLogInterval: NodeJS.Timeout | null = null; // Periodic status logging
+  private shouldReconnect: boolean = true; // Flag to control automatic reconnection
+  private reconnectTimeout: NodeJS.Timeout | null = null; // Track scheduled reconnection
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -321,6 +323,13 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
 
   stop(): void {
     this.isRunning = false;
+    this.shouldReconnect = false; // Disable auto-reconnect on shutdown
+
+    // Cancel any scheduled reconnections
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
 
     // Stop periodic cleanup
     this.stopPeriodicCleanup();
@@ -345,6 +354,12 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
   }
 
   private connectWebSocket(): void {
+    // Cancel any pending reconnection attempts
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+
     // Clean up any existing keepalive/inactivity timers
     if (this.wsKeepAliveInterval) {
       clearInterval(this.wsKeepAliveInterval);
@@ -363,10 +378,17 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
     // This prevents duplicate event handlers from accumulating
     if (this.ws) {
       try {
+        // Temporarily disable auto-reconnect to prevent close event from triggering reconnection
+        const wasAutoReconnectEnabled = this.shouldReconnect;
+        this.shouldReconnect = false;
+        
         this.ws.removeAllListeners();
         if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
           this.ws.close();
         }
+        
+        // Restore auto-reconnect flag
+        this.shouldReconnect = wasAutoReconnectEnabled;
       } catch (error) {
         logErrorWithTimestamp('Hunter: Error closing old WebSocket:', error);
       }
@@ -467,8 +489,10 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       }
       // Clean up timers before reconnecting
       this.cleanupWebSocketTimers();
-      // Reconnect after delay
-      setTimeout(() => this.connectWebSocket(), 5000);
+      // Reconnect after delay (only if auto-reconnect is enabled)
+      if (this.shouldReconnect && this.isRunning) {
+        this.reconnectTimeout = setTimeout(() => this.connectWebSocket(), 5000);
+      }
     });
 
     this.ws.on('close', () => {
@@ -476,9 +500,10 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       // Clean up timers
       this.cleanupWebSocketTimers();
       
-      if (this.isRunning) {
-        // Reconnect silently - close events are often normal (like during inactivity reconnect)
-        setTimeout(() => this.connectWebSocket(), 5000);
+      // Only reconnect if auto-reconnect is enabled and bot is running
+      // This prevents reconnection loops during manual disconnects
+      if (this.shouldReconnect && this.isRunning) {
+        this.reconnectTimeout = setTimeout(() => this.connectWebSocket(), 5000);
       }
     });
   }
@@ -496,10 +521,13 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       
       logWarnWithTimestamp(`⚠️ Hunter: No liquidations for ${minutesInactive} minutes. Reconnecting stream...`);
       
-      // Force reconnection
+      // Force reconnection (this is intentional, so we allow it)
       if (this.ws) {
+        // Temporarily disable auto-reconnect to prevent close handler from double-reconnecting
+        this.shouldReconnect = false;
         this.ws.close();
         this.ws = null;
+        this.shouldReconnect = true;
       }
       this.connectWebSocket();
     }, 5 * 60 * 1000); // 5 minutes
@@ -517,6 +545,10 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
     if (this.statusLogInterval) {
       clearInterval(this.statusLogInterval);
       this.statusLogInterval = null;
+    }
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
     }
   }
 
