@@ -354,6 +354,24 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
       clearTimeout(this.wsInactivityTimeout);
       this.wsInactivityTimeout = null;
     }
+    if (this.statusLogInterval) {
+      clearInterval(this.statusLogInterval);
+      this.statusLogInterval = null;
+    }
+
+    // CRITICAL: Close and remove all listeners from old WebSocket before creating new one
+    // This prevents duplicate event handlers from accumulating
+    if (this.ws) {
+      try {
+        this.ws.removeAllListeners();
+        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+          this.ws.close();
+        }
+      } catch (error) {
+        logErrorWithTimestamp('Hunter: Error closing old WebSocket:', error);
+      }
+      this.ws = null;
+    }
 
     this.ws = new WebSocket('wss://fstream.asterdex.com/ws/!forceOrder@arr');
 
