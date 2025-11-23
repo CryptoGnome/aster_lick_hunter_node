@@ -40,6 +40,18 @@ export interface SymbolConfig {
   allowTrancheWhileIsolated?: boolean;   // Allow opening new tranches while some are isolated
   trancheAutoCloseIsolated?: boolean;    // Automatically close isolated tranches when they recover
   trancheRecoveryThreshold?: number;     // P&L % threshold to auto-close recovered tranches (e.g., 0.5 for +0.5%)
+
+  // Protective Orders (partial position trimming)
+  enableProtectiveOrders?: boolean;      // Enable automatic position trimming at specific levels
+  protectiveBreakeven?: {
+    enabled: boolean;                    // Trim at breakeven
+    triggerOffset: number;               // % offset from entry (0 = exact breakeven, 1 = 1% profit, -1 = 1% loss)
+    trimPercent: number;                 // % of position to close (e.g., 50 for 50%)
+  };
+  protectiveTrimLevels?: Array<{
+    triggerPercent: number;              // PnL % to trigger (can be negative for loss protection)
+    trimPercent: number;                 // % of remaining position to close
+  }>;
 }
 
 export interface ApiCredentials {

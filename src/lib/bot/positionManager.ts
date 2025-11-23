@@ -12,6 +12,7 @@ import { errorLogger } from '../services/errorLogger';
 import { getPriceService } from '../services/priceService';
 import { invalidateIncomeCache } from '../api/income';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../utils/timestamp';
+import { getProtectiveOrderService } from '../services/protectiveOrderService';
 
 // Minimal local state - only track order IDs linked to positions
 interface PositionOrders {
@@ -860,6 +861,11 @@ logErrorWithTimestamp(`PositionManager: Failed to ensure protection for ${symbol
             });
           }
 
+          // Check for protective orders if enabled
+          this.checkProtectiveOrders(position).catch(error => {
+logErrorWithTimestamp(`PositionManager: Failed to check protective orders for ${symbol}:`, error?.message);
+          });
+
           // Trigger balance refresh if position size changed
           if (sizeChanged) {
             this.refreshBalance();
@@ -919,6 +925,12 @@ logWithTimestamp(`PositionManager: Order cancellation already in progress for ${
           this.positionOrders.delete(key);
           this.previousPositionSizes.delete(key);
 
+          // Clear protective orders for this position
+          const protectiveService = getProtectiveOrderService();
+          if (protectiveService) {
+            protectiveService.clearProtectiveOrders(symbol, position.positionSide);
+          }
+
           // Trigger balance refresh after position closure
           this.refreshBalance();
         }
@@ -950,6 +962,16 @@ logWithTimestamp(`PositionManager: ORDER_TRADE_UPDATE - Symbol: ${symbol}, Order
     // Check if this is a filled order that affects positions (SL/TP fills)
     if (orderStatus === 'FILLED' && order.rp) { // rp = realized profit (from exchange API)
       logWithTimestamp(`PositionManager: Reduce-only order filled for ${symbol}`);
+      
+      // Check if this was a protective order
+      const clientOrderId = order.c;
+      if (clientOrderId && clientOrderId.startsWith('po_')) {
+        const protectiveService = getProtectiveOrderService();
+        if (protectiveService) {
+          protectiveService.handleOrderFilled(orderId);
+        }
+      }
+      
       // Trigger balance refresh after SL/TP execution
       this.refreshBalance();
     }
@@ -1944,6 +1966,11 @@ logWithTimestamp('PositionManager: Checking for orphaned and duplicate orders...
       const openOrders = await this.getOpenOrdersFromExchange();
       const positions = await this.getPositionsFromExchange();
 
+      // Filter out protective orders (they are managed by ProtectiveOrderService)
+      const managedOrders = openOrders.filter(order => {
+        return !order.clientOrderId || !order.clientOrderId.startsWith('po_');
+      });
+
       // Create map of active positions with their position details
       const activePositions = new Map<string, { symbol: string; positionAmt: number; positionSide: string }>();
 
@@ -1975,7 +2002,7 @@ logWithTimestamp('PositionManager: Checking for orphaned and duplicate orders...
 
       // Find orphaned orders (reduce-only orders without matching positions)
       // Enhanced check considers order quantity matching
-      const orphanedOrders = openOrders.filter(order => {
+      const orphanedOrders = managedOrders.filter(order => {
         if (!order.reduceOnly) return false;
 
         const symbolDetails = symbolPositionDetails.get(order.symbol);
@@ -2561,6 +2588,45 @@ logErrorWithTimestamp('PositionManager: Error checking orders for position %s:',
   public async manualCleanup(): Promise<void> {
 logWithTimestamp('PositionManager: Manual cleanup triggered');
     await this.cleanupOrphanedOrders();
+  }
+
+  // Check and place protective orders for a position
+  private async checkProtectiveOrders(position: ExchangePosition): Promise<void> {
+    const protectiveService = getProtectiveOrderService();
+    if (!protectiveService) {
+      return; // Service not initialized
+    }
+
+    const symbol = position.symbol;
+    const symbolConfig = this.config.symbols[symbol];
+    
+    if (!symbolConfig?.enableProtectiveOrders) {
+      return; // Not enabled for this symbol
+    }
+
+    // Get current market price
+    const priceService = getPriceService();
+    let currentPrice = parseFloat(position.markPrice);
+
+    // If markPrice is 0 or stale, get from price service
+    if (currentPrice <= 0 || !priceService) {
+      try {
+        const priceData = priceService?.getMarkPrice(symbol);
+        if (priceData && priceData.markPrice) {
+          currentPrice = parseFloat(priceData.markPrice);
+        }
+      } catch (error) {
+        logErrorWithTimestamp(`PositionManager: Failed to get current price for ${symbol}:`, error);
+        return;
+      }
+    }
+
+    if (currentPrice <= 0) {
+      return; // Invalid price
+    }
+
+    // Check if protective orders should be placed
+    await protectiveService.checkPositionForProtectiveOrders(position, currentPrice);
   }
 
   // Manual methods
