@@ -28,7 +28,6 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { TrancheSettingsSection } from './TrancheSettingsSection';
-import { ProtectiveOrdersSection } from './ProtectiveOrdersSection';
 
 interface SymbolConfigFormProps {
   onSave: (config: Config) => void;
@@ -1463,16 +1462,6 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                         <div className="col-span-2">
                           <Separator className="my-4" />
                           <TrancheSettingsSection
-                            symbol={selectedSymbol}
-                            config={config.symbols[selectedSymbol]}
-                            onChange={(field, value) => handleSymbolChange(selectedSymbol, field, value)}
-                          />
-                        </div>
-
-                        {/* Protective Orders */}
-                        <div className="col-span-2">
-                          <Separator className="my-4" />
-                          <ProtectiveOrdersSection
                             symbol={selectedSymbol}
                             config={config.symbols[selectedSymbol]}
                             onChange={(field, value) => handleSymbolChange(selectedSymbol, field, value)}

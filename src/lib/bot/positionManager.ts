@@ -861,11 +861,6 @@ logErrorWithTimestamp(`PositionManager: Failed to ensure protection for ${symbol
             });
           }
 
-          // Check for protective orders if enabled
-          this.checkProtectiveOrders(position).catch(error => {
-logErrorWithTimestamp(`PositionManager: Failed to check protective orders for ${symbol}:`, error?.message);
-          });
-
           // Trigger balance refresh if position size changed
           if (sizeChanged) {
             this.refreshBalance();
@@ -2588,45 +2583,6 @@ logErrorWithTimestamp('PositionManager: Error checking orders for position %s:',
   public async manualCleanup(): Promise<void> {
 logWithTimestamp('PositionManager: Manual cleanup triggered');
     await this.cleanupOrphanedOrders();
-  }
-
-  // Check and place protective orders for a position
-  private async checkProtectiveOrders(position: ExchangePosition): Promise<void> {
-    const protectiveService = getProtectiveOrderService();
-    if (!protectiveService) {
-      return; // Service not initialized
-    }
-
-    const symbol = position.symbol;
-    const symbolConfig = this.config.symbols[symbol];
-    
-    if (!symbolConfig?.enableProtectiveOrders) {
-      return; // Not enabled for this symbol
-    }
-
-    // Get current market price
-    const priceService = getPriceService();
-    let currentPrice = parseFloat(position.markPrice);
-
-    // If markPrice is 0 or stale, get from price service
-    if (currentPrice <= 0 || !priceService) {
-      try {
-        const priceData = priceService?.getMarkPrice(symbol);
-        if (priceData && priceData.markPrice) {
-          currentPrice = parseFloat(priceData.markPrice);
-        }
-      } catch (error) {
-        logErrorWithTimestamp(`PositionManager: Failed to get current price for ${symbol}:`, error);
-        return;
-      }
-    }
-
-    if (currentPrice <= 0) {
-      return; // Invalid price
-    }
-
-    // Check if protective orders should be placed
-    await protectiveService.checkPositionForProtectiveOrders(position, currentPrice);
   }
 
   // Manual methods
