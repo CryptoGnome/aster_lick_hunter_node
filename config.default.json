@@ -29,6 +29,7 @@
     "positionMode": "HEDGE",
     "maxOpenPositions": 5,
     "useThresholdSystem": false,
+    "debugMode": false,
     "server": {
       "dashboardPassword": "admin",
       "dashboardPort": 3000,

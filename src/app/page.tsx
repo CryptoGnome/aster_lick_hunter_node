@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import logger from '@/lib/utils/logger';
 import { DashboardLayout } from '@/components/dashboard-layout';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -87,14 +88,14 @@ export default function DashboardPage() {
             setAvailableChartSymbols(allSymbols);
           }
         } catch (error) {
-          console.error('[Dashboard] Failed to fetch liquidation symbols:', error);
+          logger.error('[Dashboard] Failed to fetch liquidation symbols:', error);
           // Fallback to configured symbols only
           if (config?.symbols) {
             setAvailableChartSymbols(Object.keys(config.symbols));
           }
         }
       } catch (error) {
-        console.error('[Dashboard] Failed to load initial data:', error);
+        logger.error('[Dashboard] Failed to load initial data:', error);
         setBalanceStatus({ error: error instanceof Error ? error.message : 'Unknown error' });
       } finally {
         setIsLoading(false);
@@ -105,14 +106,14 @@ export default function DashboardPage() {
 
     // Listen to data store updates
     const handleBalanceUpdate = (data: AccountInfo & { source: string }) => {
-      console.log('[Dashboard] Balance updated from data store:', data.source);
+      logger.debug('[Dashboard] Balance updated from data store:', data.source);
       setAccountInfo(data);
       setBalanceStatus({ source: data.source, timestamp: Date.now() });
       setIsLoading(false);
     };
 
     const handlePositionsUpdate = (data: Position[]) => {
-      console.log('[Dashboard] Positions updated from data store');
+      logger.debug('[Dashboard] Positions updated from data store');
       setPositions(data);
     };
 
@@ -153,7 +154,7 @@ export default function DashboardPage() {
       setPositions(positionsData);
       setBalanceStatus({ source: 'manual', timestamp: Date.now() });
     } catch (error) {
-      console.error('[Dashboard] Failed to refresh data:', error);
+      logger.error('[Dashboard] Failed to refresh data:', error);
       setBalanceStatus({ error: error instanceof Error ? error.message : 'Unknown error' });
     }
   };

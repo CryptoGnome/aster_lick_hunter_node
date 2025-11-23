@@ -809,6 +809,11 @@ logWithTimestamp('✅ Price service stopped');
       }
 logWithTimestamp('✅ Cleanup scheduler stopped');
 
+      // Flush liquidation buffer to prevent data loss
+      const { liquidationStorage } = await import('../lib/services/liquidationStorage');
+      await liquidationStorage.shutdown();
+logWithTimestamp('✅ Liquidation storage flushed');
+
       configManager.stop();
 logWithTimestamp('✅ Config manager stopped');
 

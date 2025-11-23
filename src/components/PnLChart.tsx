@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import logger from '@/lib/utils/logger';
 import {
   Area,
   AreaChart,
@@ -159,7 +160,6 @@ export default function PnLChart() {
             dailyPnL: validatedDailyPnL
           });
           console.log(`[PnL Chart] Loaded ${validatedDailyPnL.length} valid daily PnL records for ${timeRange}`);
-          console.log(`[PnL Chart] Daily PnL data for ${timeRange}:`, validatedDailyPnL);
         } else {
           console.error('Invalid PnL data structure:', data);
           setPnlData(null);
@@ -533,31 +533,30 @@ export default function PnLChart() {
 
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => setIsCollapsed(!isCollapsed)}
-            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
-          >
-            <CardTitle className="text-base font-medium flex items-center gap-2">
-              <BarChart3 className="h-4 w-4" />
-              Performance
-            </CardTitle>
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
-          </button>
-          {!isCollapsed && (
-            <div className="flex items-center gap-1.5">
+      <CardHeader className="pb-3">
+        <button
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="flex items-center gap-2 hover:opacity-80 transition-opacity w-full"
+        >
+          <BarChart3 className="h-4 w-4" />
+          <CardTitle className="text-base font-medium">Performance</CardTitle>
+          <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+        </button>
+        {!isCollapsed && (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mt-3 pt-3 border-t">
+            <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="h-7 w-7 shrink-0"
                 onClick={() => fetchPnLData(true)}
                 disabled={isRefreshing}
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
               </Button>
+              <div className="h-4 w-px bg-border hidden sm:block" />
               <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
-                <SelectTrigger className="h-7 w-24 text-xs">
+                <SelectTrigger className="h-7 w-[70px] text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -569,17 +568,18 @@ export default function PnLChart() {
                   <SelectItem value="all">All</SelectItem>
                 </SelectContent>
               </Select>
-              <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)}>
-                <TabsList className="h-7">
-                  <TabsTrigger value="daily" className="h-6 text-xs">Daily</TabsTrigger>
-                  <TabsTrigger value="cumulative" className="h-6 text-xs">Total</TabsTrigger>
-                  <TabsTrigger value="breakdown" className="h-6 text-xs">Breakdown</TabsTrigger>
-                  <TabsTrigger value="symbols" className="h-6 text-xs">Per Symbol</TabsTrigger>
-                </TabsList>
-              </Tabs>
             </div>
-          )}
-        </div>
+            <div className="h-4 w-px bg-border hidden sm:block" />
+            <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)} className="w-full sm:w-auto">
+              <TabsList className="h-7 w-full sm:w-auto grid grid-cols-4 sm:inline-flex">
+                <TabsTrigger value="daily" className="h-6 text-[11px] px-2">Daily</TabsTrigger>
+                <TabsTrigger value="cumulative" className="h-6 text-[11px] px-2">Total</TabsTrigger>
+                <TabsTrigger value="breakdown" className="h-6 text-[11px] px-2">Break</TabsTrigger>
+                <TabsTrigger value="symbols" className="h-6 text-[11px] px-2">Symbol</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        )}
       </CardHeader>
       {!isCollapsed && (
         <CardContent>

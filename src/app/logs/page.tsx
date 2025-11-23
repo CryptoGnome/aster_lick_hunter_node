@@ -64,15 +64,15 @@ export default function LogsPage() {
 
       if (data.success) {
         if (since) {
-          // Append new logs
+          // Append new logs to the end (newest at bottom)
           setLogs(prev => {
-            const combined = [...data.logs.reverse(), ...prev];
-            // Keep max 1000 logs in UI
-            return combined.slice(0, 1000);
+            const combined = [...prev, ...data.logs];
+            // Keep max 1000 logs, trim from the top (oldest)
+            return combined.length > 1000 ? combined.slice(-1000) : combined;
           });
         } else {
-          // Full refresh
-          setLogs(data.logs.reverse());
+          // Full refresh - reverse so newest is at bottom
+          setLogs(data.logs);
         }
         setComponents(data.components);
         
@@ -300,7 +300,7 @@ export default function LogsPage() {
                   {filteredLogs.map((log) => (
                     <div
                       key={log.id}
-                      className={`flex gap-2 items-start py-1 px-2 rounded hover:bg-gray-800 ${
+                      className={`py-1 px-2 rounded hover:bg-gray-800 ${
                         log.level === 'error'
                           ? 'bg-red-950/30'
                           : log.level === 'warn'
@@ -308,25 +308,55 @@ export default function LogsPage() {
                           : ''
                       }`}
                     >
-                      <span className="text-gray-500 shrink-0">
-                        {log.timestampFormatted}
-                      </span>
-                      <span className="shrink-0">{getLevelIcon(log.level)}</span>
-                      <Badge
-                        variant={getLevelBadgeVariant(log.level)}
-                        className="shrink-0 text-[10px] px-1.5 py-0"
-                      >
-                        {log.component}
-                      </Badge>
-                      <span className="flex-1 break-words">{log.message}</span>
-                      {log.data && (
-                        <details className="text-gray-400 text-[10px] shrink-0">
-                          <summary className="cursor-pointer">data</summary>
-                          <pre className="mt-1 p-2 bg-gray-900 rounded max-w-md overflow-x-auto">
-                            {JSON.stringify(log.data, null, 2)}
-                          </pre>
-                        </details>
-                      )}
+                      {/* Mobile: Stack vertically */}
+                      <div className="flex flex-col gap-1 sm:hidden">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-500 text-[10px]">
+                            {log.timestampFormatted}
+                          </span>
+                          <span className="shrink-0">{getLevelIcon(log.level)}</span>
+                          <Badge
+                            variant={getLevelBadgeVariant(log.level)}
+                            className="shrink-0 text-[10px] px-1.5 py-0"
+                          >
+                            {log.component}
+                          </Badge>
+                        </div>
+                        <div className="text-[11px] break-words pl-1">
+                          {log.message}
+                        </div>
+                        {log.data && (
+                          <details className="text-gray-400 text-[10px] pl-1">
+                            <summary className="cursor-pointer">data</summary>
+                            <pre className="mt-1 p-2 bg-gray-900 rounded overflow-x-auto">
+                              {JSON.stringify(log.data, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </div>
+                      
+                      {/* Desktop: Horizontal layout */}
+                      <div className="hidden sm:flex gap-2 items-start">
+                        <span className="text-gray-500 shrink-0">
+                          {log.timestampFormatted}
+                        </span>
+                        <span className="shrink-0">{getLevelIcon(log.level)}</span>
+                        <Badge
+                          variant={getLevelBadgeVariant(log.level)}
+                          className="shrink-0 text-[10px] px-1.5 py-0"
+                        >
+                          {log.component}
+                        </Badge>
+                        <span className="flex-1 break-words">{log.message}</span>
+                        {log.data && (
+                          <details className="text-gray-400 text-[10px] shrink-0">
+                            <summary className="cursor-pointer">data</summary>
+                            <pre className="mt-1 p-2 bg-gray-900 rounded max-w-md overflow-x-auto">
+                              {JSON.stringify(log.data, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </div>
                     </div>
                   ))}
                   <div ref={logsEndRef} />

@@ -572,7 +572,152 @@ export default function PositionTable({
 
       {!isCollapsed && (
         <CardContent className="pt-0">
-          <div className="rounded-md border">
+          {/* Mobile Card View */}
+          <div className="sm:hidden space-y-3">
+            {isLoading ? (
+              Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="border rounded-lg p-3">
+                  <Skeleton className="h-4 w-24 mb-2" />
+                  <Skeleton className="h-8 w-full" />
+                </div>
+              ))
+            ) : displayPositions.length === 0 ? (
+              <div className="text-center py-6 text-sm text-muted-foreground">
+                No open positions
+              </div>
+            ) : (
+              displayPositions.map((position) => {
+                const key = `${position.symbol}-${position.side}`;
+                const vwap = vwapData[position.symbol];
+                const symbolConfig = config?.symbols?.[position.symbol];
+                const hasVwapProtection = symbolConfig?.vwapProtection;
+                const isProtected = protectionStatus[`${position.symbol}_${position.side}`];
+
+                return (
+                  <div key={key} className="border rounded-lg p-3 space-y-2">
+                    {/* Header: Symbol, Side, Leverage */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <a 
+                          href={`https://www.asterdex.com/en/futures/v1/${position.symbol}`} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="font-semibold text-sm hover:underline"
+                        >
+                          {position.symbol}
+                        </a>
+                        <Badge variant="secondary" className="h-4 text-[10px] px-1">
+                          {position.leverage}x
+                        </Badge>
+                      </div>
+                      <Badge
+                        variant={position.side === 'LONG' ? 'outline' : 'destructive'}
+                        className={`h-5 text-xs ${position.side === 'LONG' ? 'border-green-600 text-green-600' : ''}`}
+                      >
+                        {position.side === 'LONG' ? <TrendingUp className="h-3 w-3 mr-0.5" /> : <TrendingDown className="h-3 w-3 mr-0.5" />}
+                        {position.side}
+                      </Badge>
+                    </div>
+
+                    {/* PnL - Large and prominent */}
+                    <div className="flex items-baseline gap-2">
+                      <span className={`text-lg font-bold ${position.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {position.pnl >= 0 ? '+' : ''}${Math.abs(position.pnl).toFixed(2)}
+                      </span>
+                      <Badge variant={position.pnl >= 0 ? "outline" : "destructive"} className={`h-4 text-[10px] ${position.pnl >= 0 ? 'border-green-600 text-green-600' : ''}`}>
+                        {position.pnlPercent >= 0 ? '+' : ''}{position.pnlPercent.toFixed(1)}%
+                      </Badge>
+                    </div>
+
+                    {/* Position Details Grid */}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <div className="text-muted-foreground">Size</div>
+                        <div className="font-mono font-medium">{formatQuantity(position.symbol, position.quantity)}</div>
+                        <div className="text-[10px] text-muted-foreground">${position.margin.toFixed(2)}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">Entry / Mark</div>
+                        <div className="font-mono font-medium">${formatPriceWithCommas(position.symbol, position.entryPrice)}</div>
+                        <div className="text-[10px] text-muted-foreground">${formatPriceWithCommas(position.symbol, position.markPrice)}</div>
+                      </div>
+                      {position.liquidationPrice && position.liquidationPrice > 0 && (
+                        <div>
+                          <div className="text-muted-foreground">Liquidation</div>
+                          <div className="font-mono font-medium text-orange-600">${formatPriceWithCommas(position.symbol, position.liquidationPrice)}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {(() => {
+                              const distancePercent = position.side === 'LONG'
+                                ? ((position.markPrice - position.liquidationPrice) / position.markPrice) * 100
+                                : ((position.liquidationPrice - position.markPrice) / position.markPrice) * 100;
+                              return `${distancePercent.toFixed(1)}% away`;
+                            })()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Protection Status */}
+                    <div className="flex items-center gap-1 pt-1 border-t">
+                      {position.hasStopLoss ? (
+                        <Badge variant="outline" className="h-5 text-[10px] px-1.5 border-green-600 text-green-600">
+                          <Shield className="h-3 w-3 mr-0.5" />SL
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="h-5 text-[10px] px-1.5 text-muted-foreground">
+                          <Shield className="h-3 w-3 mr-0.5" />No SL
+                        </Badge>
+                      )}
+                      {position.hasTakeProfit ? (
+                        <Badge variant="outline" className="h-5 text-[10px] px-1.5 border-blue-600 text-blue-600">
+                          <Target className="h-3 w-3 mr-0.5" />TP
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="h-5 text-[10px] px-1.5 text-muted-foreground">
+                          <Target className="h-3 w-3 mr-0.5" />No TP
+                        </Badge>
+                      )}
+                      {hasVwapProtection && vwap && (
+                        <Badge variant="outline" className={`h-5 text-[10px] px-1.5 ${
+                          (position.side === 'LONG' && vwap.position === 'below') || (position.side === 'SHORT' && vwap.position === 'above')
+                            ? 'border-green-600 text-green-600'
+                            : 'border-orange-600 text-orange-600'
+                        }`}>
+                          <BarChart3 className="h-3 w-3 mr-0.5" />
+                          ${formatPrice(position.symbol, vwap.value)}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex gap-2 pt-1">
+                      <Button
+                        variant={isProtected ? "default" : "outline"}
+                        size="sm"
+                        onClick={(e) => { e.stopPropagation(); handleProtectPosition(position); }}
+                        className={`flex-1 h-8 text-xs ${isProtected ? 'bg-green-600 hover:bg-green-700' : ''}`}
+                      >
+                        <Shield className="h-3 w-3 mr-1" />
+                        {isProtected ? 'Scaling' : 'Scale Out'}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={(e) => { e.stopPropagation(); handleClosePosition(position); }}
+                        className="flex-1 h-8 text-xs"
+                      >
+                        <X className="h-3 w-3 mr-1" />
+                        Close
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Desktop Table View */}
+          <div className="hidden sm:block overflow-x-auto rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow className="h-8">

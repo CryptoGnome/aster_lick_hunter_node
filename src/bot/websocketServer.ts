@@ -139,7 +139,8 @@ export class StatusBroadcaster extends EventEmitter {
         ws.on('ping', () => ws.pong());
       });
 
-      // Update uptime every second and rate limits every 2 seconds
+      // Update uptime and broadcast status less frequently to reduce load
+      // Status updates every 5 seconds, rate limits every 10 seconds
       let counter = 0;
       this.uptimeInterval = setInterval(() => {
         if (this.status.isRunning && this.status.startTime) {
@@ -147,12 +148,12 @@ export class StatusBroadcaster extends EventEmitter {
           this._broadcast('status', this.status);
         }
 
-        // Update rate limits every 2 seconds
+        // Update rate limits every 10 seconds (every 2 iterations)
         counter++;
         if (counter % 2 === 0) {
           this.updateRateLimit();
         }
-      }, 1000);
+      }, 5000); // Reduced from 1000ms to 5000ms (5 seconds)
 
       console.log(`📡 WebSocket server running on port ${this.port}`);
     } catch (error) {

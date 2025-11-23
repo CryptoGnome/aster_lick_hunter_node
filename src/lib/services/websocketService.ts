@@ -1,3 +1,8 @@
+import logger from '@/lib/utils/logger';
+
+// WebSocket Service with optimized message handling
+// Last updated: 2025-11-24 - Added message queue and batch processing
+
 type WebSocketMessage = {
   type: string;
   data: any;
@@ -16,33 +21,32 @@ class WebSocketService {
   private isConnected = false;
   private connectionListeners: Set<(connected: boolean) => void> = new Set();
   private isIntentionalDisconnect = false;
+  private messageQueue: WebSocketMessage[] = [];
+  private processingMessages = false;
 
   constructor(url?: string) {
-    // Will be set dynamically based on config
+    // Will be set dynamically based on config by WebSocketProvider
     if (url) {
       this.url = url;
-    } else if (typeof window !== 'undefined') {
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const wsHost = window.location.hostname;
-      // Use port 8080 as default, will be updated by WebSocketProvider
-      this.url = `${wsProtocol}://${wsHost}:8080`;
-      console.log('WebSocketService: Initialized with default URL from window location:', this.url);
     } else {
-      // Don't set a default URL during SSR - it will be set by WebSocketProvider
+      // Don't set a default URL - it will be set by WebSocketProvider with config port
       this.url = '';
+      if (typeof window !== 'undefined') {
+        logger.debug('WebSocketService: Initialized without URL, waiting for WebSocketProvider to set it');
+      }
     }
   }
 
   setUrl(url: string): void {
     if (this.url !== url) {
-      console.log('WebSocketService: Setting URL from', this.url, 'to', url);
+      logger.debug('WebSocketService: Setting URL from', this.url, 'to', url);
       this.url = url;
       // If connected, reconnect with new URL
       if (this.isConnected) {
         this.disconnect();
         this.reconnectAttempts = 0;
         this.connect().catch(error => {
-          console.log('WebSocketService: Reconnection with new URL failed:', error.message);
+          logger.debug('WebSocketService: Reconnection with new URL failed:', error.message);
         });
       }
     }
@@ -51,7 +55,7 @@ class WebSocketService {
   // Test if WebSocket server is reachable
   async testConnection(): Promise<boolean> {
     if (!this.url) {
-      console.log('WebSocketService: Cannot test connection - URL not configured');
+      logger.debug('WebSocketService: Cannot test connection - URL not configured');
       return false;
     }
 
@@ -79,7 +83,7 @@ class WebSocketService {
     return new Promise((resolve, reject) => {
       // Don't attempt to connect if URL is not set
       if (!this.url) {
-        console.log('WebSocketService: Cannot connect - URL not configured');
+        logger.debug('WebSocketService: Cannot connect - URL not configured');
         reject(new Error('WebSocket URL not configured'));
         return;
       }
@@ -104,12 +108,12 @@ class WebSocketService {
         return;
       }
 
-      console.log('WebSocketService: Attempting to connect to', this.url);
+      logger.debug('WebSocketService: Attempting to connect to', this.url);
 
       try {
         this.ws = new WebSocket(this.url);
       } catch (error) {
-        console.log('WebSocketService: Failed to create WebSocket:', error);
+        logger.debug('WebSocketService: Failed to create WebSocket:', error);
         reject(new Error(`Failed to create WebSocket connection: ${error instanceof Error ? error.message : 'Unknown error'}`));
         return;
       }
@@ -122,7 +126,7 @@ class WebSocketService {
       };
 
       const onOpen = () => {
-        console.log('WebSocketService: Connected');
+        logger.debug('WebSocketService: Connected');
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this.notifyConnectionChange(true);
@@ -139,8 +143,8 @@ class WebSocketService {
       };
 
       const onError = (event: Event) => {
-        console.log('WebSocketService: Connection failed to', this.url);
-        console.log('WebSocketService: Error event details:', {
+        logger.debug('WebSocketService: Connection failed to', this.url);
+        logger.debug('WebSocketService: Error event details:', {
           type: event.type,
           target: event.target instanceof WebSocket ? {
             readyState: event.target.readyState,
@@ -168,28 +172,20 @@ class WebSocketService {
 
           // Handle shutdown message specially
           if (message.type === 'shutdown') {
-            console.log('WebSocketService: Received shutdown message - bot service stopping');
+            logger.debug('WebSocketService: Received shutdown message - bot service stopping');
             this.isIntentionalDisconnect = true;
           }
 
-          // Broadcast to all handlers (only log important events to reduce spam)
-          if (['liquidation', 'shutdown', 'error'].includes(message.type)) {
-            console.log(`[WebSocketService] Broadcasting ${message.type} to ${this.handlers.size} handlers`);
-          }
-          this.handlers.forEach(handler => {
-            try {
-              handler(message);
-            } catch (error) {
-              console.error('WebSocketService: Handler error:', error);
-            }
-          });
+          // Queue message for batch processing to avoid blocking
+          this.messageQueue.push(message);
+          this.scheduleMessageProcessing();
         } catch (error) {
-          console.error('WebSocketService: Message parse error:', error);
+          logger.error('WebSocketService: Message parse error:', error);
         }
       });
 
       this.ws.addEventListener('close', () => {
-        console.log('WebSocketService: Connection closed' + (this.isIntentionalDisconnect ? ' (intentional)' : ''));
+        logger.debug('WebSocketService: Connection closed' + (this.isIntentionalDisconnect ? ' (intentional)' : ''));
         this.isConnected = false;
 
         // Clear ping interval
@@ -210,8 +206,53 @@ class WebSocketService {
     });
   }
 
+  private scheduleMessageProcessing(): void {
+    if (this.processingMessages) return;
+    
+    this.processingMessages = true;
+    
+    // Use requestAnimationFrame for better performance
+    // Falls back to setTimeout if not available
+    const processFrame = () => {
+      const messages = this.messageQueue.splice(0, 10); // Process up to 10 messages per frame
+      
+      messages.forEach(message => {
+        this.broadcastMessage(message);
+      });
+      
+      if (this.messageQueue.length > 0) {
+        // More messages to process
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(processFrame);
+        } else {
+          setTimeout(processFrame, 0);
+        }
+      } else {
+        this.processingMessages = false;
+      }
+    };
+    
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(processFrame);
+    } else {
+      setTimeout(processFrame, 0);
+    }
+  }
+
+  private broadcastMessage(message: WebSocketMessage): void {
+    // Broadcast to all handlers
+    // Wrap in try-catch to prevent one handler from breaking others
+    this.handlers.forEach(handler => {
+      try {
+        handler(message);
+      } catch (error) {
+        logger.error('WebSocketService: Handler error:', error);
+      }
+    });
+  }
+
   disconnect(): void {
-    console.log('WebSocketService: Disconnecting');
+    logger.debug('WebSocketService: Disconnecting');
 
     // Mark for disconnection to prevent reconnection attempts
     this.reconnectAttempts = this.maxReconnectAttempts;
@@ -235,7 +276,7 @@ class WebSocketService {
         try {
           ws.close();
         } catch (error) {
-          console.log('WebSocketService: Error closing WebSocket:', error);
+          logger.debug('WebSocketService: Error closing WebSocket:', error);
         }
       }
     }
@@ -254,7 +295,7 @@ class WebSocketService {
       const shouldConnect = !wsExcludedPaths.some(path => pathname.startsWith(path));
 
       if (!shouldConnect) {
-        console.log('WebSocketService: Skipping auto-connect on excluded page:', pathname);
+        logger.debug('WebSocketService: Skipping auto-connect on excluded page:', pathname);
         // Return cleanup function without connecting
         return () => {
           this.handlers.delete(handler);
@@ -270,7 +311,7 @@ class WebSocketService {
       setTimeout(() => {
         if (this.url && !this.isConnected && (!this.ws || this.ws.readyState === WebSocket.CLOSED)) {
           this.connect().catch(_error => {
-            console.log('WebSocketService: Auto-connect failed, will retry');
+            logger.debug('WebSocketService: Auto-connect failed, will retry');
           });
         }
       }, 100);
@@ -295,7 +336,7 @@ class WebSocketService {
       const shouldConnect = !wsExcludedPaths.some(path => pathname.startsWith(path));
 
       if (!shouldConnect) {
-        console.log('WebSocketService: Skipping connection listener on excluded page:', pathname);
+        logger.debug('WebSocketService: Skipping connection listener on excluded page:', pathname);
         // Return no-op cleanup function
         return () => {};
       }
@@ -303,8 +344,14 @@ class WebSocketService {
 
     this.connectionListeners.add(listener);
 
-    // Immediately notify of current state
-    listener(this.isConnected);
+    // Delay initial notification to avoid false positives on first load
+    // Give the WebSocket time to establish connection (especially important for remote connections)
+    setTimeout(() => {
+      // Only notify if listener is still registered
+      if (this.connectionListeners.has(listener)) {
+        listener(this.isConnected);
+      }
+    }, 1000); // Wait 1 second before first notification
 
     // Return cleanup function
     return () => {
@@ -317,7 +364,7 @@ class WebSocketService {
       try {
         listener(connected);
       } catch (error) {
-        console.error('WebSocketService: Connection listener error:', error);
+        logger.error('WebSocketService: Connection listener error:', error);
       }
     });
   }
@@ -330,12 +377,12 @@ class WebSocketService {
 
     if (!this.url) {
       // No URL configured, don't reconnect
-      console.log('WebSocketService: Cannot reconnect - URL not configured');
+      logger.debug('WebSocketService: Cannot reconnect - URL not configured');
       return;
     }
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log('WebSocketService: Max reconnection attempts reached');
+      logger.debug('WebSocketService: Max reconnection attempts reached');
       return;
     }
 
@@ -346,7 +393,7 @@ class WebSocketService {
 
     this.reconnectTimeout = setTimeout(() => {
       this.connect().catch(error => {
-        console.error('WebSocketService: Reconnection failed:', error);
+        logger.error('WebSocketService: Reconnection failed:', error);
       });
     }, delay);
   }

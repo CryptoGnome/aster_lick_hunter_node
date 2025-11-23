@@ -40,43 +40,94 @@ export interface LiquidationStats {
 }
 
 export class LiquidationStorage {
+  private buffer: Array<{ event: LiquidationEvent; volumeUSDT: number }> = [];
+  private flushTimeout: NodeJS.Timeout | null = null;
+  private readonly BUFFER_SIZE = 50; // Flush after 50 liquidations
+  private readonly FLUSH_INTERVAL = 10000; // Or every 10 seconds
+  private isShuttingDown = false;
+
   async saveLiquidation(event: LiquidationEvent, volumeUSDT: number): Promise<void> {
-    const sql = `
-      INSERT OR IGNORE INTO liquidations (
-        symbol, side, order_type, quantity, price, average_price,
-        volume_usdt, order_status, order_last_filled_quantity,
-        order_filled_accumulated_quantity, order_trade_time,
-        event_time, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
+    // Add to buffer instead of immediate write
+    this.buffer.push({ event, volumeUSDT });
 
-    const metadata = JSON.stringify({
-      orderType: event.orderType,
-      originalQty: event.qty,
-      originalTime: event.time
-    });
+    // Flush if buffer is full
+    if (this.buffer.length >= this.BUFFER_SIZE) {
+      await this.flushBuffer();
+    } else {
+      // Schedule a flush if not already scheduled
+      this.scheduleFlush();
+    }
+  }
 
-    const params = [
-      event.symbol,
-      event.side,
-      event.orderType,
-      event.quantity,
-      event.price,
-      event.averagePrice,
-      volumeUSDT,
-      event.orderStatus,
-      event.orderLastFilledQuantity,
-      event.orderFilledAccumulatedQuantity,
-      event.orderTradeTime,
-      event.eventTime,
-      metadata
-    ];
+  private scheduleFlush(): void {
+    if (this.flushTimeout) return; // Already scheduled
+    
+    this.flushTimeout = setTimeout(async () => {
+      this.flushTimeout = null;
+      await this.flushBuffer();
+    }, this.FLUSH_INTERVAL);
+  }
+
+  private async flushBuffer(): Promise<void> {
+    if (this.buffer.length === 0) return;
+
+    const itemsToFlush = [...this.buffer];
+    this.buffer = []; // Clear buffer immediately to accept new events
 
     try {
-      await db.run(sql, params);
+      // Use transaction for batch insert
+      await db.run('BEGIN TRANSACTION');
+
+      const sql = `
+        INSERT OR IGNORE INTO liquidations (
+          symbol, side, order_type, quantity, price, average_price,
+          volume_usdt, order_status, order_last_filled_quantity,
+          order_filled_accumulated_quantity, order_trade_time,
+          event_time, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+
+      for (const { event, volumeUSDT } of itemsToFlush) {
+        const metadata = JSON.stringify({
+          orderType: event.orderType,
+          originalQty: event.qty,
+          originalTime: event.time
+        });
+
+        const params = [
+          event.symbol,
+          event.side,
+          event.orderType,
+          event.quantity,
+          event.price,
+          event.averagePrice,
+          volumeUSDT,
+          event.orderStatus,
+          event.orderLastFilledQuantity,
+          event.orderFilledAccumulatedQuantity,
+          event.orderTradeTime,
+          event.eventTime,
+          metadata
+        ];
+
+        await db.run(sql, params);
+      }
+
+      await db.run('COMMIT');
     } catch (error) {
-      console.error('Error saving liquidation:', error);
+      await db.run('ROLLBACK').catch(() => {}); // Rollback on error
+      console.error(`Error flushing ${itemsToFlush.length} liquidations:`, error);
     }
+  }
+
+  // Flush on shutdown to prevent data loss
+  async shutdown(): Promise<void> {
+    this.isShuttingDown = true;
+    if (this.flushTimeout) {
+      clearTimeout(this.flushTimeout);
+      this.flushTimeout = null;
+    }
+    await this.flushBuffer();
   }
 
   async getLiquidations(params: LiquidationQueryParams = {}): Promise<{

@@ -9,7 +9,7 @@ import { getCachedKlines, setCachedKlines, updateCachedKlines, getCandlesFor7Day
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, ChevronDown } from 'lucide-react';
 
 // Types
 interface LiquidationData {
@@ -1032,78 +1032,76 @@ export default function TradingViewChart({
 
   return (
     <Card className={className}>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3 pt-3">
-        <div className="flex items-center gap-2">
+      <CardHeader className="pb-3">
+        {/* Title Row */}
+        <div
+          onClick={() => setIsVisible(v => !v)}
+          className="flex items-center gap-2 hover:opacity-80 transition-opacity w-full mb-2 cursor-pointer"
+        >
           {availableSymbols.length > 0 && onSymbolChange ? (
-            <Select value={symbol} onValueChange={onSymbolChange}>
-              <SelectTrigger className="w-[140px] h-8">
-                <SelectValue placeholder="Select symbol" />
-              </SelectTrigger>
-              <SelectContent>
-                {availableSymbols.map((sym) => (
-                  <SelectItem key={sym} value={sym}>
-                    {sym}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-2">
+              <Select value={symbol} onValueChange={onSymbolChange}>
+                <SelectTrigger className="w-[110px] sm:w-[130px] h-7 font-medium">
+                  <SelectValue placeholder="Select symbol" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableSymbols.map((sym) => (
+                    <SelectItem key={sym} value={sym}>
+                      {sym}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-sm text-muted-foreground">Chart</span>
+            </div>
           ) : (
-            <CardTitle className="text-base font-semibold">
-              {symbol}
+            <CardTitle className="text-base font-medium">
+              {symbol} Chart
             </CardTitle>
           )}
-          
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            onClick={() => setIsVisible(v => !v)}
-            className="h-8 px-2"
-          >
-            {isVisible ? 'Hide' : 'Show'}
-          </Button>
-
-          {isVisible && (
-            <>
-              <div className="h-4 w-px bg-border mx-1" />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleRefresh}
-                disabled={isRefreshing || loading}
-                className="h-8 px-2"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-              </Button>
-              {lastUpdate && (
-                <span className="text-xs text-muted-foreground">
-                  {lastUpdate.toLocaleTimeString()}
-                </span>
-              )}
-            </>
-          )}
+          <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${!isVisible ? '-rotate-90' : ''}`} />
         </div>
-        
+
+        {/* Controls Row */}
         {isVisible && (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-2 pt-3 border-t">
+            {/* Top Row: Refresh, Auto-refresh, Timeframe */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1.5">
-                  <Checkbox
-                    id="auto-refresh"
-                    checked={autoRefresh}
-                    onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
-                    className="h-4 w-4"
-                  />
-                  <Label htmlFor="auto-refresh" className="text-xs cursor-pointer">
-                    Auto-refresh
-                  </Label>
-                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || loading}
+                  className="h-7 w-7 shrink-0"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                </Button>
+                {lastUpdate && (
+                  <span className="text-[10px] text-muted-foreground hidden sm:inline">
+                    {lastUpdate.toLocaleTimeString()}
+                  </span>
+                )}
+              </div>
+
+              <div className="h-4 w-px bg-border hidden sm:block" />
+
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5 w-full sm:w-auto">
+                <Checkbox
+                  id="auto-refresh"
+                  checked={autoRefresh}
+                  onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="auto-refresh" className="text-sm cursor-pointer font-medium min-w-[45px]">
+                  Auto
+                </Label>
                 {autoRefresh && (
                   <Select
                     value={refreshInterval.toString()}
                     onValueChange={(value) => setRefreshInterval(parseInt(value))}
                   >
-                    <SelectTrigger className="h-7 w-[90px] text-xs">
+                    <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1111,71 +1109,94 @@ export default function TradingViewChart({
                       <SelectItem value="10">10s</SelectItem>
                       <SelectItem value="15">15s</SelectItem>
                       <SelectItem value="30">30s</SelectItem>
-                      <SelectItem value="60">1min</SelectItem>
-                      <SelectItem value="120">2min</SelectItem>
-                      <SelectItem value="300">5min</SelectItem>
+                      <SelectItem value="60">1m</SelectItem>
+                      <SelectItem value="120">2m</SelectItem>
+                      <SelectItem value="300">5m</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
               </div>
 
-              <div className="flex items-center gap-1.5">
-                <Checkbox
-                  id="show-recent-orders"
-                  checked={showRecentOrders}
-                  onCheckedChange={(checked) => setShowRecentOrders(checked as boolean)}
-                  className="h-4 w-4"
-                />
-                <Label htmlFor="show-recent-orders" className="text-xs cursor-pointer">
-                  Orders
-                </Label>
-              </div>
+              <div className="h-4 w-px bg-border hidden sm:block" />
 
-              <div className="flex items-center gap-1.5">
-                <Checkbox
-                  id="show-positions"
-                  checked={showPositions}
-                  onCheckedChange={(checked) => setShowPositions(checked as boolean)}
-                  className="h-4 w-4"
-                />
-                <Label htmlFor="show-positions" className="text-xs cursor-pointer">
-                  TP/SL
-                </Label>
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <Checkbox
-                  id="show-vwap"
-                  checked={showVWAP}
-                  onCheckedChange={(checked) => setShowVWAP(checked as boolean)}
-                  className="h-4 w-4"
-                />
-                <Label htmlFor="show-vwap" className="text-xs cursor-pointer">
-                  VWAP
-                </Label>
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5 w-full sm:w-auto">
+                <Label className="text-sm text-muted-foreground font-medium min-w-[80px]">Timeframe</Label>
+                <Select value={timeframe} onValueChange={setTimeframe}>
+                  <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TIMEFRAMES.map(tf => (
+                      <SelectItem key={tf.value} value={tf.value}>
+                        {tf.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
-            <div className="h-4 w-px bg-border" />
+            {/* Bottom Row: Overlays */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wide hidden sm:inline">Overlays:</span>
+              
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="show-recent-orders"
+                    checked={showRecentOrders}
+                    onCheckedChange={(checked) => setShowRecentOrders(checked as boolean)}
+                    className="h-4 w-4"
+                  />
+                  <Label htmlFor="show-recent-orders" className="text-sm cursor-pointer font-medium">
+                    Orders
+                  </Label>
+                </div>
 
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5">
+                <div className="h-4 w-px bg-border" />
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="show-positions"
+                    checked={showPositions}
+                    onCheckedChange={(checked) => setShowPositions(checked as boolean)}
+                    className="h-4 w-4"
+                  />
+                  <Label htmlFor="show-positions" className="text-sm cursor-pointer font-medium">
+                    TP/SL
+                  </Label>
+                </div>
+
+                <div className="h-4 w-px bg-border" />
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="show-vwap"
+                    checked={showVWAP}
+                    onCheckedChange={(checked) => setShowVWAP(checked as boolean)}
+                    className="h-4 w-4"
+                  />
+                  <Label htmlFor="show-vwap" className="text-sm cursor-pointer font-medium">
+                    VWAP
+                  </Label>
+                </div>
+              </div>
+
+              <div className="h-4 w-px bg-border hidden sm:block" />
+
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
                 <Checkbox 
                   id="show-liquidations" 
                   checked={showLiquidations}
                   onCheckedChange={(checked) => setShowLiquidations(checked as boolean)}
                   className="h-4 w-4"
                 />
-                <Label htmlFor="show-liquidations" className="text-xs cursor-pointer">
-                  Liquidations
+                <Label htmlFor="show-liquidations" className="text-sm cursor-pointer font-medium min-w-[40px]">
+                  Liqs
                 </Label>
-              </div>
-
-              {showLiquidations && (
-                <div className="flex items-center gap-1.5">
-                  <Label className="text-xs text-muted-foreground">Group:</Label>
+                {showLiquidations && (
                   <Select value={liquidationGrouping} onValueChange={setLiquidationGrouping}>
-                    <SelectTrigger className="w-[70px] h-7 text-xs">
+                    <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1186,26 +1207,8 @@ export default function TradingViewChart({
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-              )}
-            </div>
-
-            <div className="h-4 w-px bg-border" />
-
-            <div className="flex items-center gap-1.5">
-              <Label className="text-xs text-muted-foreground">Timeframe:</Label>
-              <Select value={timeframe} onValueChange={setTimeframe}>
-                <SelectTrigger className="w-[70px] h-7 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {TIMEFRAMES.map(tf => (
-                    <SelectItem key={tf.value} value={tf.value}>
-                      {tf.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                )}
+              </div>
             </div>
           </div>
         )}

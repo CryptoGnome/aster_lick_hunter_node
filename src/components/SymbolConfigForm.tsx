@@ -53,8 +53,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
           useThresholdSystem: false,
           server: {
             dashboardPassword: '',
-            dashboardPort: 3000,
-            websocketPort: 8080,
+            dashboardPort: 0,
+            websocketPort: 0,
             useRemoteWebSocket: false,
             websocketHost: null
           },
@@ -94,8 +94,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         useThresholdSystem: false,
         server: {
           dashboardPassword: 'admin',
-          dashboardPort: 3000,
-          websocketPort: 8080,
+          dashboardPort: 0,
+          websocketPort: 0,
           useRemoteWebSocket: false,
           websocketHost: null
         },
@@ -491,6 +491,22 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   </p>
                 </div>
               )}
+
+              <Separator />
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="debugMode">Debug Mode</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Enable verbose console logging for troubleshooting
+                  </p>
+                </div>
+                <Switch
+                  id="debugMode"
+                  checked={config.global.debugMode || false}
+                  onCheckedChange={(checked) => handleGlobalChange('debugMode', checked)}
+                />
+              </div>
 
               <Separator />
 
