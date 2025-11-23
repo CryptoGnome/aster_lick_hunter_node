@@ -22,7 +22,7 @@ interface ExchangePosition {
 }
 
 interface ProtectiveOrder {
-  orderId: number;
+  orderId: string;
   symbol: string;
   side: 'BUY' | 'SELL';
   positionSide: string;
@@ -72,6 +72,217 @@ export class ProtectiveOrderService extends EventEmitter {
     }
 
     logWithTimestamp('ProtectiveOrderService: Stopped');
+  }
+
+  /**
+   * Activate protective orders for a specific position with custom settings
+   * This is used by the UI when a user manually activates protection
+   */
+  public async activateProtection(
+    symbol: string,
+    side: 'LONG' | 'SHORT',
+    entryPrice: number,
+    currentQuantity: number,
+    settings: {
+      enableBreakeven: boolean;
+      breakevenTrimPercent?: number;
+      trimLevels: Array<{ profitPercent: number; trimPercent: number }>;
+    }
+  ): Promise<void> {
+    if (currentQuantity <= 0) {
+      throw new Error('Invalid position quantity');
+    }
+
+    // Create a mock position for the protective order logic
+    const positionSide = side; // 'LONG' or 'SHORT'
+    const posAmt = side === 'LONG' ? currentQuantity : -currentQuantity;
+    
+    const mockPosition: ExchangePosition = {
+      symbol,
+      positionAmt: posAmt.toString(),
+      entryPrice: entryPrice.toString(),
+      markPrice: entryPrice.toString(), // We'll use current market price
+      unRealizedProfit: '0',
+      liquidationPrice: '0',
+      leverage: '10',
+      marginType: 'isolated',
+      isolatedMargin: '0',
+      isAutoAddMargin: 'false',
+      positionSide: positionSide,
+      updateTime: Date.now(),
+    };
+
+    const key = this.getPositionKey(symbol, positionSide);
+
+    // Clear any existing protective orders for this position
+    this.clearProtectiveOrders(symbol, positionSide);
+
+    logWithTimestamp(
+      `ProtectiveOrderService: Activating protection for ${symbol} ${side} - Breakeven: ${settings.enableBreakeven}, Trim levels: ${settings.trimLevels.length}`
+    );
+
+    // Place breakeven order if enabled
+    if (settings.enableBreakeven) {
+      const trimPercent = settings.breakevenTrimPercent || 25; // Default 25%
+      await this.placeBreakevenOrder(mockPosition, entryPrice, trimPercent, key);
+    }
+
+    // Place trim level orders
+    for (const level of settings.trimLevels) {
+      await this.placeTrimLevelOrder(
+        mockPosition,
+        entryPrice,
+        level.profitPercent,
+        level.trimPercent,
+        key
+      );
+    }
+
+    logWithTimestamp(
+      `ProtectiveOrderService: Protection activated for ${symbol} ${side}`
+    );
+  }
+
+  /**
+   * Place a breakeven protective order
+   */
+  private async placeBreakevenOrder(
+    position: ExchangePosition,
+    entryPrice: number,
+    trimPercent: number,
+    key: string
+  ): Promise<void> {
+    const symbol = position.symbol;
+    const posAmt = parseFloat(position.positionAmt);
+    const isLong = posAmt > 0;
+
+    // Breakeven is exactly at entry price
+    const triggerPrice = entryPrice;
+
+    // Calculate quantity to trim
+    const trimQuantity = Math.abs(posAmt) * (trimPercent / 100);
+    const formattedQty = symbolPrecision.formatQuantity(symbol, trimQuantity);
+
+    try {
+      const side = isLong ? 'SELL' : 'BUY';
+      const clientOrderId = `po_be_${symbol}_${Date.now()}`;
+
+      const orderParams: any = {
+        symbol,
+        side,
+        type: 'LIMIT',
+        quantity: formattedQty,
+        price: symbolPrecision.formatPrice(symbol, triggerPrice),
+        timeInForce: 'GTC',
+        positionSide: position.positionSide,
+        reduceOnly: true,
+        newClientOrderId: clientOrderId,
+      };
+
+      const order = await placeOrder(orderParams, this.config.api);
+
+      const protectiveOrder: ProtectiveOrder = {
+        orderId: order.orderId,
+        symbol,
+        side,
+        positionSide: position.positionSide,
+        triggerType: 'breakeven',
+        triggerPercent: 0,
+        quantity: trimQuantity,
+        price: triggerPrice,
+        createdAt: Date.now(),
+      };
+
+      if (!this.activeOrders.has(key)) {
+        this.activeOrders.set(key, []);
+      }
+      this.activeOrders.get(key)!.push(protectiveOrder);
+
+      logWithTimestamp(
+        `ProtectiveOrderService: Placed breakeven order for ${symbol} at ${triggerPrice.toFixed(2)} (${trimPercent}% of position)`
+      );
+
+      this.emit('protectiveOrderPlaced', protectiveOrder);
+    } catch (error: any) {
+      logErrorWithTimestamp(
+        `ProtectiveOrderService: Failed to place breakeven order for ${symbol}:`,
+        error?.response?.data || error?.message
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Place a trim level protective order at a specific profit percentage
+   */
+  private async placeTrimLevelOrder(
+    position: ExchangePosition,
+    entryPrice: number,
+    profitPercent: number,
+    trimPercent: number,
+    key: string
+  ): Promise<void> {
+    const symbol = position.symbol;
+    const posAmt = parseFloat(position.positionAmt);
+    const isLong = posAmt > 0;
+
+    // Calculate trigger price
+    const priceMultiplier = isLong
+      ? 1 + profitPercent / 100
+      : 1 - profitPercent / 100;
+    const triggerPrice = entryPrice * priceMultiplier;
+
+    // Calculate quantity to trim
+    const trimQuantity = Math.abs(posAmt) * (trimPercent / 100);
+    const formattedQty = symbolPrecision.formatQuantity(symbol, trimQuantity);
+
+    try {
+      const side = isLong ? 'SELL' : 'BUY';
+      const clientOrderId = `po_trim_${symbol}_${profitPercent}_${Date.now()}`;
+
+      const orderParams: any = {
+        symbol,
+        side,
+        type: 'LIMIT',
+        quantity: formattedQty,
+        price: symbolPrecision.formatPrice(symbol, triggerPrice),
+        timeInForce: 'GTC',
+        positionSide: position.positionSide,
+        reduceOnly: true,
+        newClientOrderId: clientOrderId,
+      };
+
+      const order = await placeOrder(orderParams, this.config.api);
+
+      const protectiveOrder: ProtectiveOrder = {
+        orderId: order.orderId,
+        symbol,
+        side,
+        positionSide: position.positionSide,
+        triggerType: 'trim_level',
+        triggerPercent: profitPercent,
+        quantity: trimQuantity,
+        price: triggerPrice,
+        createdAt: Date.now(),
+      };
+
+      if (!this.activeOrders.has(key)) {
+        this.activeOrders.set(key, []);
+      }
+      this.activeOrders.get(key)!.push(protectiveOrder);
+
+      logWithTimestamp(
+        `ProtectiveOrderService: Placed trim order for ${symbol} at ${triggerPrice.toFixed(2)} (+${profitPercent}%, ${trimPercent}% of position)`
+      );
+
+      this.emit('protectiveOrderPlaced', protectiveOrder);
+    } catch (error: any) {
+      logErrorWithTimestamp(
+        `ProtectiveOrderService: Failed to place trim order for ${symbol} at ${profitPercent}%:`,
+        error?.response?.data || error?.message
+      );
+      throw error;
+    }
   }
 
   // Check if protective orders should be placed for a position
@@ -324,9 +535,10 @@ export class ProtectiveOrderService extends EventEmitter {
   }
 
   // Handle order fill events to remove from tracking
-  public handleOrderFilled(orderId: number): void {
+  public handleOrderFilled(orderId: string | number): void {
+    const orderIdStr = String(orderId);
     for (const [key, orders] of this.activeOrders.entries()) {
-      const index = orders.findIndex(o => o.orderId === orderId);
+      const index = orders.findIndex(o => o.orderId === orderIdStr);
       if (index !== -1) {
         const order = orders[index];
         orders.splice(index, 1);
@@ -370,3 +582,13 @@ export function initializeProtectiveOrderService(config: Config): ProtectiveOrde
   }
   return protectiveOrderServiceInstance;
 }
+
+// Export singleton for API usage
+export const protectiveOrderService = new Proxy({} as ProtectiveOrderService, {
+  get(_target, prop) {
+    if (!protectiveOrderServiceInstance) {
+      throw new Error('ProtectiveOrderService not initialized. Call initializeProtectiveOrderService() first.');
+    }
+    return (protectiveOrderServiceInstance as any)[prop];
+  },
+});

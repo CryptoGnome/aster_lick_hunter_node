@@ -461,6 +461,27 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp('ℹ️  Tranche Management disabled for all symbols');
       }
 
+      // Initialize Protective Order Service (if enabled for any symbol)
+      const protectiveEnabledSymbols = Object.entries(this.config.symbols).filter(
+        ([_symbol, config]) => config.enableProtectiveOrders
+      );
+
+      if (protectiveEnabledSymbols.length > 0) {
+        try {
+          const { initializeProtectiveOrderService } = await import('../lib/services/protectiveOrderService');
+          const protectiveOrderService = initializeProtectiveOrderService(this.config);
+          protectiveOrderService.start();
+
+          logWithTimestamp(`✅ Protective Order Service initialized for ${protectiveEnabledSymbols.length} symbol(s): ${protectiveEnabledSymbols.map(([s]) => s).join(', ')}`);
+        } catch (error: any) {
+          logErrorWithTimestamp('⚠️  Protective Order Service failed to start:', error.message);
+          this.statusBroadcaster.addError(`Protective Order Service: ${error.message}`);
+          // Continue without protective orders
+        }
+      } else {
+        logWithTimestamp('ℹ️  Protective Orders disabled for all symbols');
+      }
+
       // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
       if (!this.hunter) {
         this.hunter = new Hunter(this.config, this.isHedgeMode);

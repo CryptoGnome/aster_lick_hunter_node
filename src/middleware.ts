@@ -12,7 +12,7 @@ export default withAuth(
         const pathname = req.nextUrl.pathname;
 
         // Allow public paths
-        const PUBLIC_PATHS = ['/login', '/api/auth', '/api/health', '/api/klines'];
+        const PUBLIC_PATHS = ['/login', '/api/auth', '/api/health', '/api/klines', '/api/logs'];
         if (PUBLIC_PATHS.some(path => pathname.startsWith(path))) {
           return true;
         }

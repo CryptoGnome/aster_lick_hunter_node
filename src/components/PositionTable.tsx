@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+import { ProtectPositionModal, ProtectiveSettings } from '@/components/ProtectPositionModal';
 import websocketService from '@/lib/services/websocketService';
 import { useConfig } from '@/components/ConfigProvider';
 import { useSymbolPrecision } from '@/hooks/useSymbolPrecision';
@@ -69,6 +70,19 @@ export default function PositionTable({
     quantity: 0,
   });
   const [isClosingPosition, setIsClosingPosition] = useState(false);
+  const [protectPositionModal, setProtectPositionModal] = useState<{
+    isOpen: boolean;
+    position: {
+      symbol: string;
+      side: 'LONG' | 'SHORT';
+      quantity: number;
+      entryPrice: number;
+      markPrice: number;
+    } | null;
+  }>({
+    isOpen: false,
+    position: null,
+  });
   const { config } = useConfig();
   const { formatPrice, formatQuantity, formatPriceWithCommas } = useSymbolPrecision();
 
@@ -325,6 +339,78 @@ export default function PositionTable({
       side: 'LONG',
       quantity: 0,
     });
+  }, []);
+
+  // Handle protect position
+  const handleProtectPosition = useCallback((position: Position) => {
+    setProtectPositionModal({
+      isOpen: true,
+      position: {
+        symbol: position.symbol,
+        side: position.side,
+        quantity: position.quantity,
+        entryPrice: position.entryPrice,
+        markPrice: position.markPrice,
+      },
+    });
+  }, []);
+
+  const handleProtectConfirm = useCallback(async (settings: ProtectiveSettings) => {
+    if (!protectPositionModal.position) return;
+
+    try {
+      const response = await fetch('/api/positions/protect', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          symbol: protectPositionModal.position.symbol,
+          side: protectPositionModal.position.side,
+          entryPrice: protectPositionModal.position.entryPrice,
+          quantity: protectPositionModal.position.quantity,
+          settings,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast.success(`Protection activated for ${protectPositionModal.position.symbol}`, {
+          description: settings.enableBreakeven 
+            ? `Breakeven order and ${settings.trimLevels.length} trim level(s) set`
+            : `${settings.trimLevels.length} trim level(s) set`,
+          duration: 5000,
+        });
+      } else {
+        showTradingError(
+          'Failed to activate protection',
+          result.error || 'An unknown error occurred',
+          {
+            symbol: protectPositionModal.position.symbol,
+            component: 'PositionTable',
+            rawError: result,
+          }
+        );
+      }
+    } catch (error) {
+      console.error('Error activating protection:', error);
+      showApiError(
+        'Network error',
+        'Failed to connect to the server',
+        {
+          symbol: protectPositionModal.position.symbol,
+          component: 'PositionTable',
+          rawError: error,
+        }
+      );
+    } finally {
+      setProtectPositionModal({ isOpen: false, position: null });
+    }
+  }, [protectPositionModal]);
+
+  const handleProtectCancel = useCallback(() => {
+    setProtectPositionModal({ isOpen: false, position: null });
   }, []);
 
   // Use passed positions if available, otherwise use fetched positions
@@ -613,18 +699,32 @@ export default function PositionTable({
                     </div>
                   </TableCell>
                   <TableCell className="text-center py-2">
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleClosePosition(position);
-                      }}
-                      className="h-7 px-2 text-xs"
-                    >
-                      <X className="h-3 w-3 mr-1" />
-                      Close
-                    </Button>
+                    <div className="flex gap-1 justify-center">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleProtectPosition(position);
+                        }}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <Shield className="h-3 w-3 mr-1" />
+                        Protect
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleClosePosition(position);
+                        }}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <X className="h-3 w-3 mr-1" />
+                        Close
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               );
@@ -702,6 +802,16 @@ export default function PositionTable({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Protect Position Modal */}
+      {protectPositionModal.position && (
+        <ProtectPositionModal
+          isOpen={protectPositionModal.isOpen}
+          onClose={handleProtectCancel}
+          onConfirm={handleProtectConfirm}
+          position={protectPositionModal.position}
+        />
+      )}
     </Card>
   );
 }

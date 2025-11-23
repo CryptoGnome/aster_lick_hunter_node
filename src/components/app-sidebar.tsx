@@ -15,6 +15,7 @@ import {
   Bug,
   Target,
   Layers,
+  FileText,
 } from "lucide-react"
 
 import { RateLimitSidebar } from "@/components/RateLimitSidebar"
@@ -65,6 +66,11 @@ const navigation = [
     title: "Wiki & Help",
     icon: BookOpen,
     href: "/wiki",
+  },
+  {
+    title: "System Logs",
+    icon: FileText,
+    href: "/logs",
   },
   {
     title: "Error Logs",
