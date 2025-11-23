@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { protectiveOrderService } from '@/lib/services/protectiveOrderService';
+import { getProtectiveOrderService } from '@/lib/services/protectiveOrderService';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +9,15 @@ export const dynamic = 'force-dynamic';
  */
 export async function POST(request: NextRequest) {
   try {
+    const protectiveOrderService = getProtectiveOrderService();
+    
+    if (!protectiveOrderService) {
+      return NextResponse.json(
+        { success: false, error: 'Protective order service not available. Please ensure the bot is running.' },
+        { status: 503 }
+      );
+    }
+
     const body = await request.json();
     const { symbol, side, entryPrice, quantity, settings } = body;
 
