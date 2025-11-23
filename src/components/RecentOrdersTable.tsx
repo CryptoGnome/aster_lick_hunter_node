@@ -412,8 +412,8 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
           <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
         </button>
         {!isCollapsed && (
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-3 border-t">
-            <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 pt-3 border-t">
+            <div className="flex items-center gap-2 flex-wrap sm:ml-auto">
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="w-[110px] h-7 text-xs">
                   <SelectValue />

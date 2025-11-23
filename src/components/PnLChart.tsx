@@ -543,18 +543,8 @@ export default function PnLChart() {
           <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
         </button>
         {!isCollapsed && (
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mt-3 pt-3 border-t">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mt-3 pt-3 border-t">
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                onClick={() => fetchPnLData(true)}
-                disabled={isRefreshing}
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-              </Button>
-              <div className="h-4 w-px bg-border hidden sm:block" />
               <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
                 <SelectTrigger className="h-7 w-[70px] text-xs">
                   <SelectValue />
@@ -568,8 +558,17 @@ export default function PnLChart() {
                   <SelectItem value="all">All</SelectItem>
                 </SelectContent>
               </Select>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                onClick={() => fetchPnLData(true)}
+                disabled={isRefreshing}
+                title="Refresh data"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+              </Button>
             </div>
-            <div className="h-4 w-px bg-border hidden sm:block" />
             <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)} className="w-full sm:w-auto">
               <TabsList className="h-7 w-full sm:w-auto grid grid-cols-4 sm:inline-flex">
                 <TabsTrigger value="daily" className="h-6 text-[11px] px-2">Daily</TabsTrigger>
