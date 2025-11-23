@@ -294,8 +294,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         [selectedSymbol]: hasLongSize || hasShortSize
       }));
 
-      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize).toString());
-      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize).toString());
+      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize ?? 100).toString());
+      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize ?? 100).toString());
     } else {
       setSymbolDetails(null);
     }
@@ -1464,7 +1464,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                           <TrancheSettingsSection
                             symbol={selectedSymbol}
                             config={config.symbols[selectedSymbol]}
-                            onChange={handleSymbolChange}
+                            onChange={(field, value) => handleSymbolChange(selectedSymbol, field, value)}
                           />
                         </div>
                       </CardContent>

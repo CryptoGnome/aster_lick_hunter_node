@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Bug,
   Target,
+  Layers,
 } from "lucide-react"
 
 import { RateLimitSidebar } from "@/components/RateLimitSidebar"
@@ -49,6 +50,11 @@ const navigation = [
     title: "Configuration",
     icon: Settings,
     href: "/config",
+  },
+  {
+    title: "Tranches",
+    icon: Layers,
+    href: "/tranches",
   },
   {
     title: "Optimizer",
