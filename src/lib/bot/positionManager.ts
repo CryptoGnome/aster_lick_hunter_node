@@ -964,11 +964,53 @@ logWithTimestamp(`PositionManager: ORDER_TRADE_UPDATE - Symbol: ${symbol}, Order
         const protectiveService = getProtectiveOrderService();
         if (protectiveService) {
           protectiveService.handleOrderFilled(orderId);
+          
+          // Broadcast status update to UI
+          const positionSide = order.ps || 'BOTH';
+          const side = positionSide === 'LONG' ? 'LONG' : positionSide === 'SHORT' ? 'SHORT' : (order.S === 'BUY' ? 'SHORT' : 'LONG');
+          const isActive = protectiveService.isProtectionActive(symbol, side);
+          if (this.statusBroadcaster) {
+            this.statusBroadcaster.broadcast('scale_out_status_update', {
+              symbol,
+              side,
+              isActive,
+              reason: 'order_filled'
+            });
+          }
         }
       }
       
       // Trigger balance refresh after SL/TP execution
       this.refreshBalance();
+    }
+    
+    // Check if this is a canceled protective order
+    if (orderStatus === 'CANCELED') {
+      const clientOrderId = order.c;
+      if (clientOrderId && clientOrderId.startsWith('po_')) {
+        const protectiveService = getProtectiveOrderService();
+        if (protectiveService) {
+          protectiveService.handleOrderFilled(orderId); // Same cleanup for canceled orders
+          
+          // Broadcast status update to UI (but skip if manually deactivating)
+          const positionSide = order.ps || 'BOTH';
+          const side = positionSide === 'LONG' ? 'LONG' : positionSide === 'SHORT' ? 'SHORT' : (order.S === 'BUY' ? 'SHORT' : 'LONG');
+          
+          // Skip status update if this position is being manually deactivated
+          // (the deactivation handler will send its own status update)
+          if (!protectiveService.isDeactivating(symbol, side)) {
+            const isActive = protectiveService.isProtectionActive(symbol, side);
+            if (this.statusBroadcaster) {
+              this.statusBroadcaster.broadcast('scale_out_status_update', {
+                symbol,
+                side,
+                isActive,
+                reason: 'order_canceled'
+              });
+            }
+          }
+        }
+      }
     }
 
     // Track our SL/TP order IDs when they're placed
@@ -1270,6 +1312,13 @@ logWithTimestamp(`PositionManager: Notified of potential new position: ${data.sy
     const posAmt = parseFloat(position.positionAmt);
     const key = this.getPositionKey(symbol, position.positionSide, posAmt);
 
+    // Check if default TP/SL is disabled for this position via scale out settings
+    const protectiveOrderService = (await import('../services/protectiveOrderService')).getProtectiveOrderService();
+    if (protectiveOrderService?.isDefaultTPSLDisabled(symbol, position.positionSide)) {
+logWithTimestamp(`PositionManager: Skipping default TP/SL management for ${key} - disabled via scale out settings`);
+      return;
+    }
+
     // Check if adjustment is already in progress for this position
     if (this.orderPlacementLocks.has(key)) {
 logWithTimestamp(`PositionManager: Order adjustment already in progress for ${key}, skipping`);
@@ -1362,6 +1411,14 @@ logWarnWithTimestamp(`PositionManager: No config for symbol ${symbol}`);
     }
 
     const posAmt = parseFloat(position.positionAmt);
+    
+    // Check if default TP/SL is disabled for this position via scale out settings
+    const protectiveOrderService = (await import('../services/protectiveOrderService')).getProtectiveOrderService();
+    if (protectiveOrderService?.isDefaultTPSLDisabled(symbol, position.positionSide)) {
+logWithTimestamp(`PositionManager: Skipping default TP/SL placement for ${symbol} ${position.positionSide} - disabled via scale out settings`);
+      return;
+    }
+
     const entryPrice = parseFloat(position.entryPrice);
     const quantity = Math.abs(posAmt);
     const isLong = posAmt > 0;
@@ -2108,7 +2165,7 @@ logWithTimestamp(`PositionManager: Found stuck entry order for ${order.symbol} -
         }
 
         // Find all SL orders for this specific position
-        const slOrders = openOrders.filter(o => {
+        const slOrders = managedOrders.filter(o => {
           // Must match symbol
           if (o.symbol !== symbol) return false;
           // Must be a stop order type
@@ -2125,7 +2182,7 @@ logWithTimestamp(`PositionManager: Evaluating SL order ${o.orderId} for position
         });
 
         // Find all TP orders for this specific position
-        const tpOrders = openOrders.filter(o => {
+        const tpOrders = managedOrders.filter(o => {
           // Must match symbol
           if (o.symbol !== symbol) return false;
           // Must be a take profit or limit order type

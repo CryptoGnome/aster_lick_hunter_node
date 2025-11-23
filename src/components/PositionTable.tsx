@@ -10,7 +10,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { ProtectPositionModal, ProtectiveSettings } from '@/components/ProtectPositionModal';
+import { ScaleOutModal, ScaleOutSettings } from '@/components/ScaleOutModal';
 import websocketService from '@/lib/services/websocketService';
 import { useConfig } from '@/components/ConfigProvider';
 import { useSymbolPrecision } from '@/hooks/useSymbolPrecision';
@@ -53,6 +53,7 @@ export default function PositionTable({
   const [isLoading, setIsLoading] = useState(true);
   const [markPrices, setMarkPrices] = useState<Record<string, number>>({});
   const [vwapData, setVwapData] = useState<Record<string, VWAPData>>({});
+  const [protectionStatus, setProtectionStatus] = useState<Record<string, boolean>>({});
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [closePositionModal, setClosePositionModal] = useState<{
     isOpen: boolean;
@@ -195,13 +196,18 @@ export default function PositionTable({
             });
             setVwapData(prev => ({ ...prev, ...vwapUpdates }));
           }
+        } else if (message.type === 'scale_out_status_update') {
+          // Update scale out button status when orders are filled/canceled
+          const { symbol, side, isActive } = message.data;
+          const key = `${symbol}_${side}`;
+          setProtectionStatus(prev => ({ ...prev, [key]: isActive }));
         }
       };
 
       const cleanupWebSocket = websocketService.addMessageHandler(handleWebSocketMessage);
 
-      // Load initial VWAP data once
-      loadVWAPData();
+      // Skip initial VWAP load - WebSocket will provide updates
+      // loadVWAPData();
 
       // Cleanup on unmount
       return () => {
@@ -248,6 +254,53 @@ export default function PositionTable({
       };
     }
   }, [positions.length, loadVWAPData]); // Include loadVWAPData dependency
+
+  // Load scale out status for all positions on mount and when position count changes
+  useEffect(() => {
+    const displayedPositions = positions.length > 0 ? positions : realPositions;
+    if (displayedPositions.length === 0) return;
+
+    // Create a unique key for each position to track what we've checked
+    const positionKeys = displayedPositions.map(p => `${p.symbol}_${p.side}`);
+    const uncheckedPositions = displayedPositions.filter(p => {
+      const key = `${p.symbol}_${p.side}`;
+      return !(key in protectionStatus);
+    });
+    
+    // Only check if we have new positions we haven't checked yet
+    if (uncheckedPositions.length === 0) return;
+
+    // Request status for all positions in parallel (much faster)
+    const checkStatuses = async () => {
+      const statusPromises = uncheckedPositions.map(async (position) => {
+        const key = `${position.symbol}_${position.side}`;
+        try {
+          const response = await fetch(`/api/positions/scale-out/status?symbol=${position.symbol}&side=${position.side}`);
+          if (response.ok) {
+            const data = await response.json();
+            return { key, isActive: data.isActive };
+          }
+        } catch (error) {
+          console.error(`Failed to check scale out status for ${position.symbol}:`, error);
+        }
+        return null;
+      });
+
+      const results = await Promise.all(statusPromises);
+      const updates: Record<string, boolean> = {};
+      results.forEach(result => {
+        if (result) updates[result.key] = result.isActive;
+      });
+      
+      if (Object.keys(updates).length > 0) {
+        setProtectionStatus(prev => ({ ...prev, ...updates }));
+      }
+    };
+
+    // Small delay to batch requests after component mounts
+    const timer = setTimeout(checkStatuses, 100);
+    return () => clearTimeout(timer);
+  }, [positions.length, realPositions.length]); // Removed protectionStatus from deps
 
 
   // Handle close position
@@ -343,23 +396,61 @@ export default function PositionTable({
 
   // Handle protect position
   const handleProtectPosition = useCallback((position: Position) => {
-    setProtectPositionModal({
-      isOpen: true,
-      position: {
-        symbol: position.symbol,
-        side: position.side,
-        quantity: position.quantity,
-        entryPrice: position.entryPrice,
-        markPrice: position.markPrice,
-      },
-    });
+    const key = `${position.symbol}_${position.side}`;
+    const isProtected = protectionStatus[key];
+
+    // If already protected, deactivate instead of showing modal
+    if (isProtected) {
+      handleDeactivateProtection(position);
+    } else {
+      setProtectPositionModal({
+        isOpen: true,
+        position: {
+          symbol: position.symbol,
+          side: position.side,
+          quantity: position.quantity,
+          entryPrice: position.entryPrice,
+          markPrice: position.markPrice,
+        },
+      });
+    }
+  }, [protectionStatus]);
+
+  const handleDeactivateProtection = useCallback(async (position: Position) => {
+    try {
+      const response = await fetch('/api/positions/scale-out/deactivate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          symbol: position.symbol,
+          side: position.side,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast.success(`Scale out deactivated for ${position.symbol}`);
+        const key = `${position.symbol}_${position.side}`;
+        setProtectionStatus(prev => ({ ...prev, [key]: false }));
+      } else {
+        throw new Error(result.error || 'Failed to deactivate scale out');
+      }
+    } catch (error: any) {
+      console.error('[PositionTable] Error deactivating scale out:', error);
+      toast.error(`Failed to deactivate scale out`, {
+        description: error.message || 'Unknown error occurred',
+      });
+    }
   }, []);
 
-  const handleProtectConfirm = useCallback(async (settings: ProtectiveSettings) => {
+  const handleProtectConfirm = useCallback(async (settings: ScaleOutSettings) => {
     if (!protectPositionModal.position) return;
 
     try {
-      const response = await fetch('/api/positions/protect', {
+      const response = await fetch('/api/positions/scale-out', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -376,15 +467,19 @@ export default function PositionTable({
       const result = await response.json();
 
       if (result.success) {
-        toast.success(`Protection activated for ${protectPositionModal.position.symbol}`, {
+        toast.success(`Scale out active for ${protectPositionModal.position.symbol}`, {
           description: settings.enableBreakeven 
             ? `Breakeven order and ${settings.trimLevels.length} trim level(s) set`
             : `${settings.trimLevels.length} trim level(s) set`,
           duration: 5000,
         });
+        
+        // Update protection status
+        const key = `${protectPositionModal.position.symbol}_${protectPositionModal.position.side}`;
+        setProtectionStatus(prev => ({ ...prev, [key]: true }));
       } else {
         showTradingError(
-          'Failed to activate protection',
+          'Failed to activate scale out',
           result.error || 'An unknown error occurred',
           {
             symbol: protectPositionModal.position.symbol,
@@ -415,28 +510,31 @@ export default function PositionTable({
 
   // Use passed positions if available, otherwise use fetched positions
   // Apply live mark prices to calculate real-time PnL
-  const displayPositions = (positions.length > 0 ? positions : realPositions).map(position => {
-    const liveMarkPrice = markPrices[position.symbol];
-    if (liveMarkPrice && liveMarkPrice !== position.markPrice) {
-      // Calculate live PnL based on current mark price
-      const entryPrice = position.entryPrice;
-      const quantity = position.quantity;
-      const isLong = position.side === 'LONG';
+  // Memoized to avoid recalculating on every render
+  const displayPositions = useMemo(() => {
+    return (positions.length > 0 ? positions : realPositions).map(position => {
+      const liveMarkPrice = markPrices[position.symbol];
+      if (liveMarkPrice && liveMarkPrice !== position.markPrice) {
+        // Calculate live PnL based on current mark price
+        const entryPrice = position.entryPrice;
+        const quantity = position.quantity;
+        const isLong = position.side === 'LONG';
 
-      const priceDiff = liveMarkPrice - entryPrice;
-      const livePnL = isLong ? priceDiff * quantity : -priceDiff * quantity;
-      const notionalValue = quantity * entryPrice;
-      const livePnLPercent = notionalValue > 0 ? (livePnL / notionalValue) * 100 : 0;
+        const priceDiff = liveMarkPrice - entryPrice;
+        const livePnL = isLong ? priceDiff * quantity : -priceDiff * quantity;
+        const notionalValue = quantity * entryPrice;
+        const livePnLPercent = notionalValue > 0 ? (livePnL / notionalValue) * 100 : 0;
 
-      return {
-        ...position,
-        markPrice: liveMarkPrice,
-        pnl: livePnL,
-        pnlPercent: livePnLPercent
-      };
-    }
-    return position;
-  });
+        return {
+          ...position,
+          markPrice: liveMarkPrice,
+          pnl: livePnL,
+          pnlPercent: livePnLPercent
+        };
+      }
+      return position;
+    });
+  }, [positions, realPositions, markPrices]);
 
   const _totalPnL = displayPositions.reduce((sum, p) => sum + p.pnl, 0);
   const _totalMargin = displayPositions.reduce((sum, p) => sum + p.margin, 0);
@@ -700,18 +798,24 @@ export default function PositionTable({
                   </TableCell>
                   <TableCell className="text-center py-2">
                     <div className="flex gap-1 justify-center">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleProtectPosition(position);
-                        }}
-                        className="h-7 px-2 text-xs"
-                      >
-                        <Shield className="h-3 w-3 mr-1" />
-                        Protect
-                      </Button>
+                      {(() => {
+                        const key = `${position.symbol}_${position.side}`;
+                        const isProtected = protectionStatus[key];
+                        return (
+                          <Button
+                            variant={isProtected ? "default" : "outline"}
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleProtectPosition(position);
+                            }}
+                            className={`h-7 px-2 text-xs ${isProtected ? 'bg-green-600 hover:bg-green-700 text-white' : ''}`}
+                          >
+                            <Shield className="h-3 w-3 mr-1" />
+                            {isProtected ? 'Scaling' : 'Scale Out'}
+                          </Button>
+                        );
+                      })()}
                       <Button
                         variant="destructive"
                         size="sm"
@@ -803,9 +907,9 @@ export default function PositionTable({
         </DialogContent>
       </Dialog>
 
-      {/* Protect Position Modal */}
+      {/* Scale Out Modal */}
       {protectPositionModal.position && (
-        <ProtectPositionModal
+        <ScaleOutModal
           isOpen={protectPositionModal.isOpen}
           onClose={handleProtectCancel}
           onConfirm={handleProtectConfirm}

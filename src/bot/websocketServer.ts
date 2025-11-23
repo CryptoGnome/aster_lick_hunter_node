@@ -85,6 +85,31 @@ export class StatusBroadcaster extends EventEmitter {
                 }
                 break;
 
+              case 'scale_out_position':
+                console.log('🛡️  Scale out requested from web UI:', message.data);
+                this.emit('scale_out_position', message.data);
+                ws.send(JSON.stringify({ 
+                  type: 'scale_out_position_response', 
+                  success: true,
+                  timestamp: Date.now() 
+                }));
+                break;
+
+              case 'deactivate_scale_out':
+                console.log('🛡️  Scale out deactivation requested from web UI:', message.data);
+                this.emit('deactivate_scale_out', message.data);
+                ws.send(JSON.stringify({ 
+                  type: 'deactivate_scale_out_response', 
+                  success: true,
+                  timestamp: Date.now() 
+                }));
+                break;
+
+              case 'check_scale_out_status':
+                console.log('🛡️  Scale out status check requested from web UI:', message.data);
+                this.emit('check_scale_out_status', message.data);
+                break;
+
               case 'ping':
                 ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
                 break;
