@@ -12,8 +12,7 @@ import { errorLogger } from '../services/errorLogger';
 import { getPriceService } from '../services/priceService';
 import { invalidateIncomeCache } from '../api/income';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../utils/timestamp';
-import { paperModeSimulator } from '../services/paperModeSimulator';
-import { getTrancheManager } from '../services/trancheManager';
+import { getProtectiveOrderService } from '../services/protectiveOrderService';
 
 // Minimal local state - only track order IDs linked to positions
 interface PositionOrders {
@@ -187,49 +186,10 @@ logErrorWithTimestamp('PositionManager: Failed to fetch exchange info:', error.m
       // Continue anyway - will use raw values
     }
 
-    // In paper mode, initialize the paper mode simulator instead of real streams
-    if (this.config.global.paperMode) {
-logWithTimestamp('PositionManager: Running in PAPER MODE - initializing simulator');
-
-      // Initialize paper mode simulator
-      paperModeSimulator.initialize(this.config);
-      paperModeSimulator.start();
-
-      // Listen for paper mode events and broadcast to UI
-      paperModeSimulator.on('positionOpened', (data) => {
-        if (this.statusBroadcaster) {
-          this.statusBroadcaster.broadcastPositionUpdate({
-            symbol: data.symbol,
-            side: data.side,
-            quantity: data.quantity,
-            price: data.entryPrice,
-            type: 'opened',
-            paperMode: true
-          });
-        }
-      });
-
-      paperModeSimulator.on('positionClosed', (data) => {
-        if (this.statusBroadcaster) {
-          this.statusBroadcaster.broadcastPositionClosed({
-            symbol: data.symbol,
-            side: data.side,
-            quantity: 0, // Not tracked in paper mode
-            pnl: data.pnlUSDT,
-            reason: data.reason,
-            paperMode: true
-          });
-        }
-      });
-
-      paperModeSimulator.on('pnlUpdate', (data) => {
-        if (this.statusBroadcaster) {
-          this.statusBroadcaster.broadcast('paper_mode_pnl', data);
-        }
-      });
-
-logWithTimestamp('✅ Paper mode simulator active - positions will be tracked and simulated');
-      return; // Don't start real WebSocket streams
+    // Skip user data stream in paper mode with no API keys
+    if (this.config.global.paperMode && (!this.config.api.apiKey || !this.config.api.secretKey)) {
+logWithTimestamp('PositionManager: Running in paper mode without API keys - simulating streams');
+      return;
     }
 
     try {
@@ -246,12 +206,6 @@ logErrorWithTimestamp('PositionManager: Failed to start:', error);
   async stop(): Promise<void> {
     this.isRunning = false;
 logWithTimestamp('PositionManager: Stopping...');
-
-    // Stop paper mode simulator if in paper mode
-    if (this.config.global.paperMode) {
-      paperModeSimulator.stop();
-logWithTimestamp('PositionManager: Paper mode simulator stopped');
-    }
 
     if (this.keepaliveInterval) clearInterval(this.keepaliveInterval);
     if (this.riskCheckInterval) clearInterval(this.riskCheckInterval);
@@ -911,43 +865,6 @@ logErrorWithTimestamp(`PositionManager: Failed to ensure protection for ${symbol
           if (sizeChanged) {
             this.refreshBalance();
           }
-
-          // Sync tranches with exchange position if tranche management is enabled
-          const symbolConfig = this.config.symbols[symbol];
-          if (symbolConfig?.enableTrancheManagement) {
-            try {
-              const trancheManager = getTrancheManager();
-              const trancheSide = positionAmt > 0 ? 'LONG' : 'SHORT';
-
-              // Create exchange position object for sync
-              const exchangePosition: ExchangePosition = {
-                symbol: pos.s,
-                positionAmt: pos.pa,
-                entryPrice: pos.ep,
-                markPrice: pos.mp || '0',
-                unRealizedProfit: pos.up,
-                liquidationPrice: pos.lp || '0',
-                leverage: this.symbolLeverage.get(symbol)?.toString() || '0',
-                marginType: pos.mt,
-                isolatedMargin: pos.iw || '0',
-                isAutoAddMargin: pos.iam || 'false',
-                positionSide: positionSide,
-                updateTime: event.E,
-              };
-
-              // Sync with exchange (3 separate arguments)
-              await trancheManager.syncWithExchange(
-                symbol,
-                trancheSide,
-                exchangePosition
-              );
-
-logWithTimestamp(`PositionManager: Synced tranches for ${symbol} ${trancheSide} with exchange`);
-            } catch (trancheError) {
-logWarnWithTimestamp('PositionManager: Failed to sync tranches with exchange:', trancheError);
-              // Don't fail the position update, just log the warning
-            }
-          }
         }
       });
 
@@ -1003,6 +920,12 @@ logWithTimestamp(`PositionManager: Order cancellation already in progress for ${
           this.positionOrders.delete(key);
           this.previousPositionSizes.delete(key);
 
+          // Clear protective orders for this position
+          const protectiveService = getProtectiveOrderService();
+          if (protectiveService) {
+            protectiveService.clearProtectiveOrders(symbol, position.positionSide);
+          }
+
           // Trigger balance refresh after position closure
           this.refreshBalance();
         }
@@ -1034,8 +957,60 @@ logWithTimestamp(`PositionManager: ORDER_TRADE_UPDATE - Symbol: ${symbol}, Order
     // Check if this is a filled order that affects positions (SL/TP fills)
     if (orderStatus === 'FILLED' && order.rp) { // rp = realized profit (from exchange API)
       logWithTimestamp(`PositionManager: Reduce-only order filled for ${symbol}`);
+      
+      // Check if this was a protective order
+      const clientOrderId = order.c;
+      if (clientOrderId && clientOrderId.startsWith('po_')) {
+        const protectiveService = getProtectiveOrderService();
+        if (protectiveService) {
+          protectiveService.handleOrderFilled(orderId);
+          
+          // Broadcast status update to UI
+          const positionSide = order.ps || 'BOTH';
+          const side = positionSide === 'LONG' ? 'LONG' : positionSide === 'SHORT' ? 'SHORT' : (order.S === 'BUY' ? 'SHORT' : 'LONG');
+          const isActive = protectiveService.isProtectionActive(symbol, side);
+          if (this.statusBroadcaster) {
+            this.statusBroadcaster.broadcast('scale_out_status_update', {
+              symbol,
+              side,
+              isActive,
+              reason: 'order_filled'
+            });
+          }
+        }
+      }
+      
       // Trigger balance refresh after SL/TP execution
       this.refreshBalance();
+    }
+    
+    // Check if this is a canceled protective order
+    if (orderStatus === 'CANCELED') {
+      const clientOrderId = order.c;
+      if (clientOrderId && clientOrderId.startsWith('po_')) {
+        const protectiveService = getProtectiveOrderService();
+        if (protectiveService) {
+          protectiveService.handleOrderFilled(orderId); // Same cleanup for canceled orders
+          
+          // Broadcast status update to UI (but skip if manually deactivating)
+          const positionSide = order.ps || 'BOTH';
+          const side = positionSide === 'LONG' ? 'LONG' : positionSide === 'SHORT' ? 'SHORT' : (order.S === 'BUY' ? 'SHORT' : 'LONG');
+          
+          // Skip status update if this position is being manually deactivated
+          // (the deactivation handler will send its own status update)
+          if (!protectiveService.isDeactivating(symbol, side)) {
+            const isActive = protectiveService.isProtectionActive(symbol, side);
+            if (this.statusBroadcaster) {
+              this.statusBroadcaster.broadcast('scale_out_status_update', {
+                symbol,
+                side,
+                isActive,
+                reason: 'order_canceled'
+              });
+            }
+          }
+        }
+      }
     }
 
     // Track our SL/TP order IDs when they're placed
@@ -1215,46 +1190,6 @@ logWarnWithTimestamp(`PositionManager: Could not find position key for order ${o
 logWithTimestamp(`PositionManager: Using exchange-provided PnL for ${symbol} ${orderType}: $${realizedPnl.toFixed(2)}`);
         }
 
-        // Close tranche if tranche management is enabled
-        const symbolConfig = this.config.symbols[symbol];
-        if (symbolConfig?.enableTrancheManagement) {
-          // Use async IIFE to handle await properly
-          (async () => {
-            try {
-              const trancheManager = getTrancheManager();
-
-              // Find position side from the position that was closed
-              let positionSideForTranche: 'LONG' | 'SHORT' | 'BOTH' = 'BOTH';
-              for (const [key] of this.positionOrders.entries()) {
-                if (key.includes(symbol)) {
-                  const position = this.currentPositions.get(key);
-                  if (position) {
-                    positionSideForTranche = position.positionSide as any;
-                    break;
-                  }
-                }
-              }
-
-              // Process the order fill and close appropriate tranches
-              await trancheManager.processOrderFill({
-                symbol,
-                side, // The order side (BUY or SELL)
-                positionSide: positionSideForTranche,
-                quantityFilled: executedQty,
-                fillPrice: avgPrice,
-                realizedPnl,
-                orderId: orderId.toString(),
-              });
-
-              const trancheSide = side === 'BUY' ? 'SHORT' : 'LONG';
-logWithTimestamp(`PositionManager: Processed tranche close for ${symbol} ${trancheSide}, PnL: $${realizedPnl.toFixed(2)}`);
-            } catch (trancheError) {
-logErrorWithTimestamp('PositionManager: Failed to process tranche close:', trancheError);
-              // Don't fail the position close, just log the error
-            }
-          })();
-        }
-
         // Broadcast order filled event (SL/TP)
         if (this.statusBroadcaster) {
           this.statusBroadcaster.broadcastOrderFilled({
@@ -1338,30 +1273,36 @@ logWithTimestamp(`PositionManager: Position ${key} is closed, removing order tra
   }
 
   // Listen for new positions from Hunter
-  public async onNewPosition(data: { symbol: string; side: string; quantity: number; orderId?: number; paperMode?: boolean }): Promise<void> {
+  public onNewPosition(data: { symbol: string; side: string; quantity: number; orderId?: number }): void {
     // In the new architecture, we wait for ACCOUNT_UPDATE to confirm the position
     // The WebSocket will tell us when the position is actually open
 logWithTimestamp(`PositionManager: Notified of potential new position: ${data.symbol} ${data.side}`);
 
-    // For paper mode, use the paper mode simulator
-    if (this.config.global.paperMode || data.paperMode) {
-      const symbolConfig = this.config.symbols[data.symbol];
-      if (!symbolConfig) {
-logErrorWithTimestamp(`PositionManager: Cannot open paper mode position - ${data.symbol} not in config`);
-        return;
-      }
+    // For paper mode, simulate the position
+    if (this.config.global.paperMode) {
+      // Use the proper position side based on hedge mode
+      const positionSide = this.isHedgeMode ?
+        (data.side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH';
+      const key = `${data.symbol}_${positionSide}`;
 
-logWithTimestamp(`PositionManager: Opening paper mode position for ${data.symbol} ${data.side}`);
-
-      // Open simulated position with proper SL/TP
-      await paperModeSimulator.openPosition({
+      // Simulate the position in our map
+      this.currentPositions.set(key, {
         symbol: data.symbol,
-        side: data.side as 'BUY' | 'SELL',
-        quantity: data.quantity,
-        leverage: symbolConfig.leverage || 10,
-        slPercent: symbolConfig.slPercent || 2,
-        tpPercent: symbolConfig.tpPercent || 5,
+        positionAmt: data.side === 'BUY' ? data.quantity.toString() : (-data.quantity).toString(),
+        entryPrice: '0', // Will be updated by market price
+        markPrice: '0',
+        unRealizedProfit: '0',
+        liquidationPrice: '0',
+        leverage: this.config.symbols[data.symbol]?.leverage?.toString() || '10',
+        marginType: 'isolated',
+        isolatedMargin: '0',
+        isAutoAddMargin: 'false',
+        positionSide: positionSide,
+        updateTime: Date.now()
       });
+
+      // Place SL/TP for paper mode
+      this.ensurePositionProtected(data.symbol, positionSide, data.side === 'BUY' ? data.quantity : -data.quantity);
     }
   }
 
@@ -1370,6 +1311,13 @@ logWithTimestamp(`PositionManager: Opening paper mode position for ${data.symbol
     const symbol = position.symbol;
     const posAmt = parseFloat(position.positionAmt);
     const key = this.getPositionKey(symbol, position.positionSide, posAmt);
+
+    // Check if default TP/SL is disabled for this position via scale out settings
+    const protectiveOrderService = (await import('../services/protectiveOrderService')).getProtectiveOrderService();
+    if (protectiveOrderService?.isDefaultTPSLDisabled(symbol, position.positionSide)) {
+logWithTimestamp(`PositionManager: Skipping default TP/SL management for ${key} - disabled via scale out settings`);
+      return;
+    }
 
     // Check if adjustment is already in progress for this position
     if (this.orderPlacementLocks.has(key)) {
@@ -1463,6 +1411,14 @@ logWarnWithTimestamp(`PositionManager: No config for symbol ${symbol}`);
     }
 
     const posAmt = parseFloat(position.positionAmt);
+    
+    // Check if default TP/SL is disabled for this position via scale out settings
+    const protectiveOrderService = (await import('../services/protectiveOrderService')).getProtectiveOrderService();
+    if (protectiveOrderService?.isDefaultTPSLDisabled(symbol, position.positionSide)) {
+logWithTimestamp(`PositionManager: Skipping default TP/SL placement for ${symbol} ${position.positionSide} - disabled via scale out settings`);
+      return;
+    }
+
     const entryPrice = parseFloat(position.entryPrice);
     const quantity = Math.abs(posAmt);
     const isLong = posAmt > 0;
@@ -2062,6 +2018,11 @@ logWithTimestamp('PositionManager: Checking for orphaned and duplicate orders...
       const openOrders = await this.getOpenOrdersFromExchange();
       const positions = await this.getPositionsFromExchange();
 
+      // Filter out protective orders (they are managed by ProtectiveOrderService)
+      const managedOrders = openOrders.filter(order => {
+        return !order.clientOrderId || !order.clientOrderId.startsWith('po_');
+      });
+
       // Create map of active positions with their position details
       const activePositions = new Map<string, { symbol: string; positionAmt: number; positionSide: string }>();
 
@@ -2093,7 +2054,7 @@ logWithTimestamp('PositionManager: Checking for orphaned and duplicate orders...
 
       // Find orphaned orders (reduce-only orders without matching positions)
       // Enhanced check considers order quantity matching
-      const orphanedOrders = openOrders.filter(order => {
+      const orphanedOrders = managedOrders.filter(order => {
         if (!order.reduceOnly) return false;
 
         const symbolDetails = symbolPositionDetails.get(order.symbol);
@@ -2204,7 +2165,7 @@ logWithTimestamp(`PositionManager: Found stuck entry order for ${order.symbol} -
         }
 
         // Find all SL orders for this specific position
-        const slOrders = openOrders.filter(o => {
+        const slOrders = managedOrders.filter(o => {
           // Must match symbol
           if (o.symbol !== symbol) return false;
           // Must be a stop order type
@@ -2221,7 +2182,7 @@ logWithTimestamp(`PositionManager: Evaluating SL order ${o.orderId} for position
         });
 
         // Find all TP orders for this specific position
-        const tpOrders = openOrders.filter(o => {
+        const tpOrders = managedOrders.filter(o => {
           // Must match symbol
           if (o.symbol !== symbol) return false;
           // Must be a take profit or limit order type
@@ -2851,66 +2812,5 @@ logErrorWithTimestamp('PositionManager: Failed to refresh balance:', error);
   // Get Map of positions for direct access
   public getPositionsMap(): Map<string, ExchangePosition> {
     return this.currentPositions;
-  }
-
-  // Close all open positions (used by bot stop command)
-  public async closeAllPositions(): Promise<void> {
-    const positions = this.getPositions().filter(p => Math.abs(parseFloat(p.positionAmt)) > 0);
-
-    if (positions.length === 0) {
-logWithTimestamp('PositionManager: No positions to close');
-      return;
-    }
-
-logWithTimestamp(`PositionManager: Closing ${positions.length} position(s)...`);
-
-    for (const position of positions) {
-      try {
-        const symbol = position.symbol;
-        const positionAmt = parseFloat(position.positionAmt);
-        const side = positionAmt > 0 ? 'SELL' : 'BUY';
-        const quantity = Math.abs(positionAmt);
-
-        // Cancel any open orders for this position
-        try {
-          const openOrders = await this.getOpenOrdersFromExchange();
-          const ordersForSymbol = openOrders.filter(o => o.symbol === symbol);
-
-          for (const order of ordersForSymbol) {
-            await this.cancelOrderById(symbol, order.orderId);
-logWithTimestamp(`PositionManager: Cancelled order ${order.orderId} for ${symbol}`);
-          }
-        } catch (error) {
-logErrorWithTimestamp(`PositionManager: Failed to cancel orders for ${symbol}:`, error);
-        }
-
-        // Close position with market order
-        const positionSide = position.positionSide === 'LONG' ? 'LONG' : position.positionSide === 'SHORT' ? 'SHORT' : 'BOTH';
-
-        await placeOrder({
-          symbol,
-          side,
-          type: 'MARKET',
-          quantity,
-          positionSide,
-          reduceOnly: true
-        }, this.config.api);
-
-logWithTimestamp(`PositionManager: Closed position ${symbol} ${positionSide} - ${quantity} @ MARKET`);
-
-        if (this.statusBroadcaster) {
-          this.statusBroadcaster.broadcastPositionClosed({
-            symbol,
-            side: positionSide,
-            quantity,
-            reason: 'Bot stopped - position closed by user'
-          });
-        }
-      } catch (error) {
-logErrorWithTimestamp(`PositionManager: Failed to close position ${position.symbol}:`, error);
-      }
-    }
-
-logWithTimestamp('PositionManager: Finished closing all positions');
   }
 }

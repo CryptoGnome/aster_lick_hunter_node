@@ -16,7 +16,6 @@ import { LogOut } from "lucide-react"
 import { useConfig } from "@/components/ConfigProvider"
 import { signOut } from "next-auth/react"
 import { RateLimitBarCompact } from "@/components/RateLimitBar"
-import BotControlButtons from "@/components/BotControlButtons"
 
 interface DashboardLayoutProps {
   children: React.ReactNode
@@ -42,36 +41,25 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-2 md:px-4">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-2 h-4" />
 
           {/* Open Beta Warning */}
-          <div className="hidden md:flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
+          <div className="flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
             <span>⚠️</span>
             <span className="font-medium">OPEN BETA</span>
             <span className="text-muted-foreground">- Only use what you can afford to lose</span>
           </div>
 
-          {/* Mobile Beta Badge */}
-          <div className="flex md:hidden items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
-            <span>⚠️</span>
-            <span className="font-medium text-[10px]">BETA</span>
-          </div>
-
           {/* Rate Limit Compact Bar */}
-          <Separator orientation="vertical" className="mx-1 md:mx-2 h-4" />
-          <div className="hidden lg:block">
-            <RateLimitBarCompact />
-          </div>
+          <Separator orientation="vertical" className="mx-2 h-4" />
+          <RateLimitBarCompact />
 
           <div className="flex flex-1 items-center justify-end">
-            <div className="flex items-center gap-2 md:gap-4">
-              {/* Bot Control Buttons */}
-              <BotControlButtons />
-              <Separator orientation="vertical" className="h-4 hidden md:block" />
+            <div className="flex items-center gap-4">
               {/* External Links */}
-              <div className="hidden md:flex items-center gap-3">
+              <div className="flex items-center gap-3">
                 {/* GitHub */}
                 <Link
                   href="https://github.com/CryptoGnome/aster_lick_hunter_node"
@@ -115,10 +103,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   <span className="text-xs font-medium">AsterDex</span>
                 </Link>
               </div>
-              <Separator orientation="vertical" className="h-4 hidden md:block" />
-              <div className="hidden sm:block">
-                <ThemeToggle />
-              </div>
+              <Separator orientation="vertical" className="h-4" />
+              <ThemeToggle />
               <Button
                 variant="ghost"
                 size="sm"
@@ -126,7 +112,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 className="h-8 w-8 p-0"
                 title="Logout"
               >
-                <LogOut className="h-3 w-3 md:h-4 md:w-4" />
+                <LogOut className="h-4 w-4" />
               </Button>
             </div>
           </div>

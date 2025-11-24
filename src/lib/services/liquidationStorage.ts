@@ -42,7 +42,7 @@ export interface LiquidationStats {
 export class LiquidationStorage {
   async saveLiquidation(event: LiquidationEvent, volumeUSDT: number): Promise<void> {
     const sql = `
-      INSERT INTO liquidations (
+      INSERT OR IGNORE INTO liquidations (
         symbol, side, order_type, quantity, price, average_price,
         volume_usdt, order_status, order_last_filled_quantity,
         order_filled_accumulated_quantity, order_trade_time,
@@ -125,17 +125,23 @@ export class LiquidationStorage {
     return { liquidations, total };
   }
 
-  async cleanupOldLiquidations(): Promise<number> {
-    const sevenDaysAgo = Math.floor(Date.now() / 1000) - (7 * 24 * 60 * 60);
+  async cleanupOldLiquidations(retentionDays: number = 90): Promise<number> {
+    // If retentionDays is 0, disable cleanup entirely
+    if (retentionDays <= 0) {
+      console.log('Liquidation cleanup disabled (retentionDays = 0)');
+      return 0;
+    }
+    
+    const cutoffTime = Math.floor(Date.now() / 1000) - (retentionDays * 24 * 60 * 60);
 
     const countSql = 'SELECT COUNT(*) as count FROM liquidations WHERE created_at < ?';
-    const countResult = await db.get<{ count: number }>(countSql, [sevenDaysAgo]);
+    const countResult = await db.get<{ count: number }>(countSql, [cutoffTime]);
     const deletedCount = countResult?.count || 0;
 
     const sql = 'DELETE FROM liquidations WHERE created_at < ?';
-    await db.run(sql, [sevenDaysAgo]);
+    await db.run(sql, [cutoffTime]);
 
-    console.log(`Cleaned up ${deletedCount} liquidations older than 7 days`);
+    console.log(`Cleaned up ${deletedCount} liquidations older than ${retentionDays} days`);
     return deletedCount;
   }
 
@@ -206,6 +212,22 @@ export class LiquidationStorage {
     `;
 
     return await db.all<StoredLiquidation>(sql, [limit]);
+  }
+
+  async getUniqueSymbols(): Promise<string[]> {
+    try {
+      const sql = `
+        SELECT DISTINCT symbol
+        FROM liquidations
+        ORDER BY symbol ASC
+      `;
+
+      const result = await db.all<{ symbol: string }>(sql, []);
+      return result.map(row => row.symbol);
+    } catch (error) {
+      console.error('Error getting unique symbols:', error);
+      return [];
+    }
   }
 }
 

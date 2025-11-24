@@ -25,9 +25,6 @@
     "test:ws": "tsx tests/core/websocket.test.ts",
     "test:errors": "tsx tests/core/error-logging.test.ts",
     "test:integration": "tsx tests/integration/trading-flow.test.ts",
-    "test:tranche": "tsx tests/tranche-system-test.ts",
-    "test:tranche:integration": "tsx tests/tranche-integration-test.ts",
-    "test:tranche:all": "tsx tests/tranche-system-test.ts && tsx tests/tranche-integration-test.ts",
     "test:watch": "tsx watch tests/**/*.test.ts",
     "optimize:ui": "node optimize-config.js"
   },
@@ -55,7 +52,7 @@
     "clsx": "^2.1.1",
     "ethers": "^6.15.0",
     "gsap": "^3.13.0",
-    "html-to-image": "^1.11.13",
+    "lightweight-charts": "^4.1.3",
     "lucide-react": "^0.544.0",
     "next": "15.5.4",
     "next-auth": "^4.24.11",

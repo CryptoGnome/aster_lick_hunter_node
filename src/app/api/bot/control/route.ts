@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { withAuth } from '@/lib/auth/with-auth';
 import WebSocket from 'ws';
+import { configLoader } from '@/lib/config/configLoader';
 
 // Helper to send control command via WebSocket
 async function sendBotCommand(action: string): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
-    const ws = new WebSocket('ws://localhost:8080');
+    const config = configLoader.getConfig();
+    const wsPort = config?.global?.server?.websocketPort || 8081;
+    const ws = new WebSocket(`ws://localhost:${wsPort}`);
     const timeout = setTimeout(() => {
       ws.close();
       resolve({ success: false, error: 'Connection timeout' });
@@ -37,9 +40,9 @@ export const POST = withAuth(async (request: NextRequest, _user) => {
     const body = await request.json();
     const { action } = body;
 
-    if (!action || !['pause', 'resume'].includes(action)) {
+    if (!action || !['pause', 'resume', 'stop'].includes(action)) {
       return NextResponse.json(
-        { error: 'Invalid action. Must be one of: pause, resume' },
+        { error: 'Invalid action. Must be one of: pause, resume, stop' },
         { status: 400 }
       );
     }

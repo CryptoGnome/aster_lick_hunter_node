@@ -172,6 +172,10 @@ class WebSocketService {
             this.isIntentionalDisconnect = true;
           }
 
+          // Broadcast to all handlers (only log important events to reduce spam)
+          if (['liquidation', 'shutdown', 'error'].includes(message.type)) {
+            console.log(`[WebSocketService] Broadcasting ${message.type} to ${this.handlers.size} handlers`);
+          }
           this.handlers.forEach(handler => {
             try {
               handler(message);

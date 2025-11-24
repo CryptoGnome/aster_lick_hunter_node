@@ -10,7 +10,6 @@ import { liquidationStorage } from '../services/liquidationStorage';
 import { vwapService } from '../services/vwapService';
 import { vwapStreamer } from '../services/vwapStreamer';
 import { thresholdMonitor } from '../services/thresholdMonitor';
-import { getTrancheManager } from '../services/trancheManager';
 import { symbolPrecision } from '../utils/symbolPrecision';
 import {
   parseExchangeError,
@@ -29,7 +28,6 @@ export class Hunter extends EventEmitter {
   private ws: WebSocket | null = null;
   private config: Config;
   private isRunning = false;
-  private isPaused = false;
   private statusBroadcaster: any; // Will be injected
   private isHedgeMode: boolean;
   private positionTracker: PositionTracker | null = null;
@@ -38,6 +36,12 @@ export class Hunter extends EventEmitter {
   private cleanupInterval: NodeJS.Timeout | null = null; // Periodic cleanup timer
   private syncInterval: NodeJS.Timeout | null = null; // Position mode sync timer
   private lastModeSync: number = Date.now(); // Track last mode sync time
+  private wsKeepAliveInterval: NodeJS.Timeout | null = null; // WebSocket keepalive ping timer
+  private wsInactivityTimeout: NodeJS.Timeout | null = null; // WebSocket inactivity detector
+  private lastLiquidationTime: number = Date.now(); // Track last liquidation received
+  private statusLogInterval: NodeJS.Timeout | null = null; // Periodic status logging
+  private shouldReconnect: boolean = true; // Flag to control automatic reconnection
+  private reconnectTimeout: NodeJS.Timeout | null = null; // Track scheduled reconnection
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -308,9 +312,9 @@ logErrorWithTimestamp('Hunter: Failed to initialize symbol precision manager:', 
       // Continue anyway, will use default precision values
     }
 
-    // In paper mode, simulate liquidation events (regardless of API keys)
-    if (this.config.global.paperMode) {
-logWithTimestamp('Hunter: Running in PAPER MODE - simulating liquidations with real market prices');
+    // In paper mode with no API keys, simulate liquidation events
+    if (this.config.global.paperMode && (!this.config.api.apiKey || !this.config.api.secretKey)) {
+logWithTimestamp('Hunter: Running in paper mode without API keys - simulating liquidations');
       this.simulateLiquidations();
     } else {
       this.connectWebSocket();
@@ -319,7 +323,13 @@ logWithTimestamp('Hunter: Running in PAPER MODE - simulating liquidations with r
 
   stop(): void {
     this.isRunning = false;
-    this.isPaused = false;
+    this.shouldReconnect = false; // Disable auto-reconnect on shutdown
+
+    // Cancel any scheduled reconnections
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
 
     // Stop periodic cleanup
     this.stopPeriodicCleanup();
@@ -328,46 +338,112 @@ logWithTimestamp('Hunter: Running in PAPER MODE - simulating liquidations with r
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
-logWithTimestamp('Hunter: Stopped periodic position mode sync');
+      logWithTimestamp('Hunter: Stopped periodic position mode sync');
     }
+
+    // Clean up WebSocket keepalive and inactivity timers
+    this.cleanupWebSocketTimers();
 
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
-  }
 
-  pause(): void {
-    if (!this.isRunning || this.isPaused) {
-logWithTimestamp('Hunter: Cannot pause - not running or already paused');
-      return;
-    }
-    this.isPaused = true;
-logWithTimestamp('Hunter: Paused - no new trades will be placed');
-  }
-
-  resume(): void {
-    if (!this.isRunning || !this.isPaused) {
-logWithTimestamp('Hunter: Cannot resume - not running or not paused');
-      return;
-    }
-    this.isPaused = false;
-logWithTimestamp('Hunter: Resumed - trading active');
+    // Remove all event listeners to prevent memory leaks and duplicate event handlers
+    this.removeAllListeners();
   }
 
   private connectWebSocket(): void {
+    // Cancel any pending reconnection attempts
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+
+    // Clean up any existing keepalive/inactivity timers
+    if (this.wsKeepAliveInterval) {
+      clearInterval(this.wsKeepAliveInterval);
+      this.wsKeepAliveInterval = null;
+    }
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+      this.wsInactivityTimeout = null;
+    }
+    if (this.statusLogInterval) {
+      clearInterval(this.statusLogInterval);
+      this.statusLogInterval = null;
+    }
+
+    // CRITICAL: Close and remove all listeners from old WebSocket before creating new one
+    // This prevents duplicate event handlers from accumulating
+    if (this.ws) {
+      try {
+        // Temporarily disable auto-reconnect to prevent close event from triggering reconnection
+        const wasAutoReconnectEnabled = this.shouldReconnect;
+        this.shouldReconnect = false;
+        
+        this.ws.removeAllListeners();
+        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+          this.ws.close();
+        }
+        
+        // Restore auto-reconnect flag
+        this.shouldReconnect = wasAutoReconnectEnabled;
+      } catch (error) {
+        logErrorWithTimestamp('Hunter: Error closing old WebSocket:', error);
+      }
+      this.ws = null;
+    }
+
     this.ws = new WebSocket('wss://fstream.asterdex.com/ws/!forceOrder@arr');
 
     this.ws.on('open', () => {
-logWithTimestamp('Hunter WS connected');
+      logWithTimestamp('Hunter WS connected');
+      this.lastLiquidationTime = Date.now();
+      
+      // Start ping/pong keepalive - send ping every 30 seconds
+      this.wsKeepAliveInterval = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.ping();
+        }
+      }, 30000);
+      
+      // Start inactivity monitor - reconnect if no liquidations for 5 minutes
+      this.startInactivityMonitor();
+      
+      // Start periodic status logging - every 2 minutes
+      this.statusLogInterval = setInterval(() => {
+        const timeSinceLastLiq = Date.now() - this.lastLiquidationTime;
+        const minutesInactive = Math.floor(timeSinceLastLiq / 60000);
+        const secondsInactive = Math.floor((timeSinceLastLiq % 60000) / 1000);
+        
+        if (minutesInactive >= 1) {
+          logWithTimestamp(`📊 Hunter: Monitoring | Last liquidation: ${minutesInactive}m ${secondsInactive}s ago`);
+        } else {
+          logWithTimestamp(`📊 Hunter: Monitoring | Last liquidation: ${secondsInactive}s ago`);
+        }
+      }, 120000); // Every 2 minutes
+    });
+
+    this.ws.on('ping', () => {
+      // Server sent ping, respond with pong (ws library handles this automatically)
+    });
+
+    this.ws.on('pong', () => {
+      // Received pong response from server - connection is alive
     });
 
     this.ws.on('message', (data: Buffer) => {
       try {
         const event = JSON.parse(data.toString());
+        
+        // Update last liquidation time for any valid message
+        this.lastLiquidationTime = Date.now();
+        this.startInactivityMonitor(); // Reset inactivity timer
+        
         this.handleLiquidationEvent(event);
       } catch (error) {
-logErrorWithTimestamp('Hunter: WS message parse error:', error);
+        logErrorWithTimestamp('Hunter: WS message parse error:', error);
         // Log to error database
         errorLogger.logError(error instanceof Error ? error : new Error(String(error)), {
           type: 'websocket',
@@ -393,7 +469,7 @@ logErrorWithTimestamp('Hunter: WS message parse error:', error);
     });
 
     this.ws.on('error', (error) => {
-logErrorWithTimestamp('Hunter WS error:', error);
+      logErrorWithTimestamp('Hunter WS error:', error);
       // Log to error database
       errorLogger.logWebSocketError(
         'wss://fstream.asterdex.com/ws/!forceOrder@arr',
@@ -411,30 +487,75 @@ logErrorWithTimestamp('Hunter WS error:', error);
           }
         );
       }
-      // Reconnect after delay
-      setTimeout(() => this.connectWebSocket(), 5000);
+      // Clean up timers before reconnecting
+      this.cleanupWebSocketTimers();
+      // Reconnect after delay (only if auto-reconnect is enabled)
+      if (this.shouldReconnect && this.isRunning) {
+        this.reconnectTimeout = setTimeout(() => this.connectWebSocket(), 5000);
+      }
     });
 
     this.ws.on('close', () => {
-logWithTimestamp('Hunter WS closed');
-      if (this.isRunning) {
-        // Broadcast reconnection attempt to UI
-        if (this.statusBroadcaster) {
-          this.statusBroadcaster.broadcastWebSocketError(
-            'Hunter WebSocket Closed',
-            'Liquidation stream disconnected. Reconnecting in 5 seconds...',
-            {
-              component: 'Hunter',
-            }
-          );
-        }
-        setTimeout(() => this.connectWebSocket(), 5000);
+      logWithTimestamp('Hunter WS closed');
+      // Clean up timers
+      this.cleanupWebSocketTimers();
+      
+      // Only reconnect if auto-reconnect is enabled and bot is running
+      // This prevents reconnection loops during manual disconnects
+      if (this.shouldReconnect && this.isRunning) {
+        this.reconnectTimeout = setTimeout(() => this.connectWebSocket(), 5000);
       }
     });
   }
 
+  private startInactivityMonitor(): void {
+    // Clear any existing inactivity timeout
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+    }
+    
+    // Set up new inactivity timeout - 5 minutes without liquidations
+    this.wsInactivityTimeout = setTimeout(() => {
+      const timeSinceLastLiq = Date.now() - this.lastLiquidationTime;
+      const minutesInactive = Math.floor(timeSinceLastLiq / 60000);
+      
+      logWarnWithTimestamp(`⚠️ Hunter: No liquidations for ${minutesInactive} minutes. Reconnecting stream...`);
+      
+      // Force reconnection (this is intentional, so we allow it)
+      if (this.ws) {
+        // Temporarily disable auto-reconnect to prevent close handler from double-reconnecting
+        this.shouldReconnect = false;
+        this.ws.close();
+        this.ws = null;
+        this.shouldReconnect = true;
+      }
+      this.connectWebSocket();
+    }, 5 * 60 * 1000); // 5 minutes
+  }
+
+  private cleanupWebSocketTimers(): void {
+    if (this.wsKeepAliveInterval) {
+      clearInterval(this.wsKeepAliveInterval);
+      this.wsKeepAliveInterval = null;
+    }
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+      this.wsInactivityTimeout = null;
+    }
+    if (this.statusLogInterval) {
+      clearInterval(this.statusLogInterval);
+      this.statusLogInterval = null;
+    }
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+  }
+
   private async handleLiquidationEvent(event: any): Promise<void> {
     if (event.e !== 'forceOrder') return; // Not a liquidation event
+    
+    console.log(`[Hunter] handleLiquidationEvent START: ${event.o.s} @ ${Date.now()}`);
 
     const liquidation: LiquidationEvent = {
       symbol: event.o.s,
@@ -452,6 +573,10 @@ logWithTimestamp('Hunter WS closed');
       time: event.E, // Keep for backward compatibility
     };
 
+    // Log liquidation received with basic info
+    const volumeUSDT = liquidation.qty * liquidation.price;
+    logWithTimestamp(`💥 Liquidation: ${liquidation.symbol} ${liquidation.side} ${liquidation.qty.toFixed(4)} @ $${liquidation.price.toLocaleString()} ($${volumeUSDT.toFixed(2)})`);
+
     // Check if threshold system is enabled globally and for this symbol
     const useThresholdSystem = this.config.global.useThresholdSystem === true &&
                               this.config.symbols[liquidation.symbol]?.useThreshold === true;
@@ -460,15 +585,15 @@ logWithTimestamp('Hunter WS closed');
     const thresholdStatus = useThresholdSystem ? thresholdMonitor.processLiquidation(liquidation) : null;
 
     // Emit liquidation event to WebSocket clients (all liquidations) with threshold info
+    console.log(`[Hunter] About to emit liquidationDetected for ${liquidation.symbol}`);
     this.emit('liquidationDetected', {
       ...liquidation,
       thresholdStatus
     });
+    console.log(`[Hunter] Finished emitting liquidationDetected for ${liquidation.symbol}`);
 
     const symbolConfig = this.config.symbols[liquidation.symbol];
     if (!symbolConfig) return; // Symbol not in config
-
-    const volumeUSDT = liquidation.qty * liquidation.price;
 
     // Store liquidation in database (non-blocking)
     liquidationStorage.saveLiquidation(liquidation, volumeUSDT).catch(error => {
@@ -592,12 +717,6 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
   }
 
   private async analyzeAndTrade(liquidation: LiquidationEvent, symbolConfig: SymbolConfig, _forcedSide?: 'BUY' | 'SELL'): Promise<void> {
-    // Check if bot is paused
-    if (this.isPaused) {
-logWithTimestamp(`Hunter: Skipping trade - bot is paused (${liquidation.symbol} ${liquidation.side})`);
-      return;
-    }
-
     try {
       // Get mark price and recent 1m kline
       const [markPriceData] = Array.isArray(await getMarkPrice(liquidation.symbol)) ?
@@ -755,46 +874,6 @@ logErrorWithTimestamp('Hunter: Analysis error:', error);
     let order: any; // Declare order variable for error handling
 
     try {
-      // Check tranche management limits (if enabled)
-      if (symbolConfig.enableTrancheManagement) {
-        try {
-          const trancheManager = getTrancheManager();
-          const trancheSide = side === 'BUY' ? 'LONG' : 'SHORT';
-
-          // Update P&L and check isolation conditions
-          const markPriceData = await getMarkPrice(symbol);
-          const price = parseFloat(Array.isArray(markPriceData) ? markPriceData[0].markPrice : markPriceData.markPrice);
-          await trancheManager.updateUnrealizedPnl(symbol, price);
-
-          // Check if we can open a new tranche
-          const canOpen = trancheManager.canOpenNewTranche(symbol, trancheSide);
-          if (!canOpen.allowed) {
-            logWithTimestamp(`Hunter: ${canOpen.reason}`);
-
-            // Broadcast to UI
-            if (this.statusBroadcaster) {
-              this.statusBroadcaster.broadcastTradingError(
-                `Tranche Limit Reached - ${symbol}`,
-                canOpen.reason || 'Cannot open new tranche',
-                {
-                  component: 'Hunter',
-                  symbol,
-                  details: {
-                    activeTranches: trancheManager.getTranches(symbol, trancheSide).length,
-                    maxTranches: symbolConfig.maxTranches || 3,
-                  }
-                }
-              );
-            }
-
-            return; // Block the trade
-          }
-        } catch (trancheError) {
-          // If TrancheManager is not initialized, log warning but continue
-          logWarnWithTimestamp('Hunter: TrancheManager check failed (not initialized?), continuing with trade:', trancheError);
-        }
-      }
-
       // Check position limits before placing trade
       if (this.positionTracker && !this.config.global.paperMode) {
         // Check if we already have a pending order for this symbol
@@ -1171,6 +1250,7 @@ logWarnWithTimestamp('Hunter: Cannot determine correct mode. Since we cannot ver
         // Create tranche if tranche management is enabled
         if (symbolConfig.enableTrancheManagement) {
           try {
+            const { getTrancheManager } = await import('../services/trancheManager');
             const trancheManager = getTrancheManager();
             const _trancheSide = side === 'BUY' ? 'LONG' : 'SHORT';
 
@@ -1630,73 +1710,34 @@ logWithTimestamp('Hunter: No symbols configured for simulation');
       return;
     }
 
-    // Generate realistic liquidation events using actual market prices
-    const generateEvent = async () => {
+    // Generate random liquidation events every 5-10 seconds
+    const generateEvent = () => {
       if (!this.isRunning) return;
 
-      try {
-        // Pick a random symbol from config
-        const symbol = symbols[Math.floor(Math.random() * symbols.length)];
-        const symbolConfig = this.config.symbols[symbol];
+      const symbol = symbols[Math.floor(Math.random() * symbols.length)];
+      const side = Math.random() > 0.5 ? 'SELL' : 'BUY';
+      const price = symbol === 'BTCUSDT' ? 40000 + Math.random() * 5000 : 2000 + Math.random() * 500;
+      const qty = Math.random() * 10;
 
-        // Fetch real market price
-        const markPriceData = await getMarkPrice(symbol);
-        const currentPrice = parseFloat(
-          Array.isArray(markPriceData) ? markPriceData[0].markPrice : markPriceData.markPrice
-        );
+      const mockEvent = {
+        o: {
+          s: symbol,
+          S: side,
+          p: price.toString(),
+          q: qty.toString(),
+          T: Date.now()
+        }
+      };
 
-        // Random side with slight bias
-        const side = Math.random() > 0.5 ? 'SELL' : 'BUY';
+logWithTimestamp(`Hunter: Simulated liquidation - ${symbol} ${side} ${qty.toFixed(4)} @ $${price.toFixed(2)}`);
+      this.handleLiquidationEvent(mockEvent);
 
-        // Simulate price with small variance (±0.5%)
-        const priceVariance = 0.005;
-        const simulatedPrice = currentPrice * (1 + (Math.random() - 0.5) * priceVariance);
-
-        // Calculate realistic quantity based on configured thresholds
-        const thresholdUSDT = side === 'SELL'
-          ? (symbolConfig.longVolumeThresholdUSDT || 1000)
-          : (symbolConfig.shortVolumeThresholdUSDT || 1000);
-
-        // Generate quantity that's 1-3x the threshold
-        const volumeMultiplier = 1 + Math.random() * 2;
-        const volumeUSDT = thresholdUSDT * volumeMultiplier;
-        const qty = volumeUSDT / simulatedPrice;
-
-        const mockEvent = {
-          e: 'forceOrder',
-          o: {
-            s: symbol,
-            S: side,
-            o: 'LIMIT',
-            p: simulatedPrice.toString(),
-            q: qty.toString(),
-            ap: simulatedPrice.toString(),
-            X: 'FILLED',
-            l: qty.toString(),
-            z: qty.toString(),
-            T: Date.now()
-          },
-          E: Date.now()
-        };
-
-logWithTimestamp(
-          `Hunter: [PAPER MODE] Simulated liquidation - ${symbol} ${side} ` +
-          `${volumeUSDT.toFixed(0)} USDT @ $${simulatedPrice.toFixed(4)}`
-        );
-
-        // Handle the simulated liquidation event
-        await this.handleLiquidationEvent(mockEvent);
-      } catch (error) {
-logErrorWithTimestamp('Hunter: Error generating simulated liquidation:', error);
-      }
-
-      // Schedule next event (random interval 10-30 seconds for more realistic behavior)
-      const delay = 10000 + Math.random() * 20000;
+      // Schedule next event
+      const delay = 5000 + Math.random() * 5000; // 5-10 seconds
       setTimeout(generateEvent, delay);
     };
 
-    // Start generating events after 3 seconds
-    setTimeout(generateEvent, 3000);
-logWithTimestamp('Hunter: Simulation started - will generate liquidations every 10-30 seconds using real market prices');
+    // Start generating events after 2 seconds
+    setTimeout(generateEvent, 2000);
   }
 }

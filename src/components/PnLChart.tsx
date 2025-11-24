@@ -533,31 +533,31 @@ export default function PnLChart() {
 
   return (
     <Card>
-      <CardHeader className="pb-2 px-3 md:px-6">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
           <button
             onClick={() => setIsCollapsed(!isCollapsed)}
             className="flex items-center gap-2 hover:opacity-80 transition-opacity"
           >
-            <CardTitle className="text-sm md:text-base font-medium flex items-center gap-2">
-              <BarChart3 className="h-3.5 w-3.5 md:h-4 md:w-4" />
+            <CardTitle className="text-base font-medium flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" />
               Performance
             </CardTitle>
-            <ChevronDown className={`h-3 w-3 md:h-3.5 md:w-3.5 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
           </button>
           {!isCollapsed && (
-            <div className="flex items-center gap-1 md:gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1.5">
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6 md:h-7 md:w-7"
+                className="h-7 w-7"
                 onClick={() => fetchPnLData(true)}
                 disabled={isRefreshing}
               >
-                <RefreshCw className={`h-3 w-3 md:h-3.5 md:w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
               </Button>
               <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
-                <SelectTrigger className="h-6 md:h-7 w-16 md:w-24 text-[10px] md:text-xs">
+                <SelectTrigger className="h-7 w-24 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -570,11 +570,11 @@ export default function PnLChart() {
                 </SelectContent>
               </Select>
               <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)}>
-                <TabsList className="h-6 md:h-7">
-                  <TabsTrigger value="daily" className="h-5 md:h-6 text-[10px] md:text-xs px-2 md:px-3">Daily</TabsTrigger>
-                  <TabsTrigger value="cumulative" className="h-5 md:h-6 text-[10px] md:text-xs px-2 md:px-3">Total</TabsTrigger>
-                  <TabsTrigger value="breakdown" className="h-5 md:h-6 text-[10px] md:text-xs px-2 md:px-3 hidden sm:inline-flex">Breakdown</TabsTrigger>
-                  <TabsTrigger value="symbols" className="h-5 md:h-6 text-[10px] md:text-xs px-2 md:px-3 hidden sm:inline-flex">Per Symbol</TabsTrigger>
+                <TabsList className="h-7">
+                  <TabsTrigger value="daily" className="h-6 text-xs">Daily</TabsTrigger>
+                  <TabsTrigger value="cumulative" className="h-6 text-xs">Total</TabsTrigger>
+                  <TabsTrigger value="breakdown" className="h-6 text-xs">Breakdown</TabsTrigger>
+                  <TabsTrigger value="symbols" className="h-6 text-xs">Per Symbol</TabsTrigger>
                 </TabsList>
               </Tabs>
             </div>
@@ -595,19 +595,19 @@ export default function PnLChart() {
 
         {/* Performance Summary - Minimal inline design */}
         {safeMetrics && (
-          <div className="flex flex-wrap items-center gap-2 md:gap-3 mb-3 pb-3 border-b text-xs md:text-sm">
-            <div className="flex items-center gap-1 md:gap-1.5">
+          <div className="flex flex-wrap items-center gap-3 mb-3 pb-3 border-b">
+            <div className="flex items-center gap-1.5">
               {safeMetrics.totalPnl >= 0 ? (
-                <TrendingUp className="h-3 w-3 md:h-3.5 md:w-3.5 text-green-600" />
+                <TrendingUp className="h-3.5 w-3.5 text-green-600" />
               ) : (
-                <TrendingDown className="h-3 w-3 md:h-3.5 md:w-3.5 text-red-600" />
+                <TrendingDown className="h-3.5 w-3.5 text-red-600" />
               )}
-              <span className={`text-xs md:text-sm font-semibold ${safeMetrics.totalPnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+              <span className={`text-sm font-semibold ${safeMetrics.totalPnl >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                 {formatTooltipValue(safeMetrics.totalPnl)}
               </span>
               <Badge
                 variant={safeMetrics.totalPnl >= 0 ? "outline" : "destructive"}
-                className={`h-3.5 md:h-4 text-[9px] md:text-[10px] px-0.5 md:px-1 ${safeMetrics.totalPnl >= 0 ? 'border-green-600 text-green-600 dark:border-green-400 dark:text-green-400' : ''}`}
+                className={`h-4 text-[10px] px-1 ${safeMetrics.totalPnl >= 0 ? 'border-green-600 text-green-600 dark:border-green-400 dark:text-green-400' : ''}`}
               >
                 {pnlPercentage >= 0 ? '+' : ''}{pnlPercentage.toFixed(2)}%
               </Badge>
@@ -615,17 +615,17 @@ export default function PnLChart() {
 
             <div className="w-px h-4 bg-border" />
 
-            <div className="flex items-center gap-0.5 md:gap-1">
-              <Target className="h-3 w-3 md:h-3.5 md:w-3.5 text-muted-foreground" />
-              <span className="text-[10px] md:text-xs text-muted-foreground">Win</span>
-              <Badge variant="secondary" className="h-3.5 md:h-4 text-[9px] md:text-[10px] px-0.5 md:px-1">
+            <div className="flex items-center gap-1">
+              <Target className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Win</span>
+              <Badge variant="secondary" className="h-4 text-[10px] px-1">
                 {safeMetrics.winRate.toFixed(1)}%
               </Badge>
             </div>
 
-            <div className="w-px h-4 bg-border hidden sm:block" />
+            <div className="w-px h-4 bg-border" />
 
-            <div className="hidden sm:flex items-center gap-1">
+            <div className="flex items-center gap-1">
               <Percent className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">APR</span>
               <Badge
@@ -636,7 +636,7 @@ export default function PnLChart() {
               </Badge>
             </div>
 
-            <div className="hidden md:flex ml-auto items-center gap-2 text-[10px] text-muted-foreground">
+            <div className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
               <span>Best: <span className="text-green-600">{safeMetrics.bestDay ? formatTooltipValue(safeMetrics.bestDay.netPnl) : '-'}</span></span>
               <span>Worst: <span className="text-red-600">{safeMetrics.worstDay ? formatTooltipValue(safeMetrics.worstDay.netPnl) : '-'}</span></span>
               <span>Avg: {formatTooltipValue(safeMetrics.avgDailyPnl)}</span>
@@ -656,19 +656,19 @@ export default function PnLChart() {
           ) : chartType === 'symbols' ? (
             <PerSymbolPerformanceTable timeRange={timeRange} />
           ) : (
-            <ResponsiveContainer width="100%" height={180}>
+            <ResponsiveContainer width="100%" height={200}>
               {chartType === 'daily' ? (
-              <BarChart data={chartData} margin={{ left: -10, right: 5, top: 5, bottom: 5 }}>
+              <BarChart data={chartData} margin={{ left: 0, right: 10, top: 5, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis
                   dataKey="date"
-                  tick={{ fontSize: 9 }}
+                  tick={{ fontSize: 10 }}
                   tickFormatter={formatDateTick}
-                  padding={{ left: 5, right: 5 }}
+                  padding={{ left: 10, right: 10 }}
                   interval={chartData.length <= 5 ? 0 : chartData.length <= 20 ? 'preserveStartEnd' : 'preserveStart'}
                   minTickGap={chartData.length <= 10 ? 10 : 20}
                 />
-                <YAxis tick={{ fontSize: 9 }} width={35} />
+                <YAxis tick={{ fontSize: 10 }} width={40} />
                 <Tooltip content={<CustomTooltip />} />
                 <ReferenceLine y={0} stroke="#666" />
                 <Bar
@@ -681,17 +681,16 @@ export default function PnLChart() {
                 </Bar>
               </BarChart>
             ) : (
-              <AreaChart data={chartData} margin={{ left: -10, right: 5, top: 5, bottom: 5 }}>
+              <AreaChart data={chartData} margin={{ left: 0, right: 10, top: 5, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis
                   dataKey="date"
-                  tick={{ fontSize: 9 }}
+                  tick={{ fontSize: 10 }}
                   tickFormatter={formatDateTick}
-                  padding={{ left: 5, right: 5 }}
                   interval={chartData.length <= 5 ? 0 : chartData.length <= 20 ? 'preserveStartEnd' : 'preserveStart'}
                   minTickGap={chartData.length <= 10 ? 10 : 20}
                 />
-                <YAxis tick={{ fontSize: 9 }} width={35} />
+                <YAxis tick={{ fontSize: 10 }} width={40} />
                 <Tooltip content={<CustomTooltip />} />
                 <ReferenceLine y={0} stroke="#666" />
                 <Area
