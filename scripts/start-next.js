@@ -6,12 +6,16 @@ const { getConfigPorts } = require('./get-config-ports');
 
 // Get mode from command line arguments
 const mode = process.argv[2] || 'dev';
-const { dashboardPort } = getConfigPorts();
+const { dashboardPort, websocketHost } = getConfigPorts();
 
 console.log(`Starting Next.js on port ${dashboardPort}...`);
 
 // Set the PORT environment variable
 process.env.PORT = String(dashboardPort);
+
+// Don't set NEXTAUTH_URL - let NextAuth auto-detect from the request
+// This allows the app to work from any hostname/IP (localhost, LAN IP, domain, etc.)
+console.log(`NextAuth will auto-detect URL from incoming requests`);
 
 // Determine the command based on mode
 const isWindows = process.platform === 'win32';

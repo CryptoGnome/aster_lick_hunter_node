@@ -430,45 +430,51 @@ export default function PnLChart() {
               onClick={() => setIsCollapsed(!isCollapsed)}
               className="flex items-center gap-2 hover:opacity-80 transition-opacity"
             >
-              <CardTitle className="text-base font-medium flex items-center gap-2">
-                <BarChart3 className="h-4 w-4" />
-                Performance
-              </CardTitle>
+              <BarChart3 className="h-4 w-4" />
+              <CardTitle className="text-base font-medium">Performance</CardTitle>
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
             </button>
             {!isCollapsed && !isApiKeysMissing && (
-              <div className="flex items-center gap-1.5">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => fetchPnLData(true)}
-                  disabled={isRefreshing}
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                </Button>
+              <div className="flex items-center gap-2">
+                <div className="text-xs text-muted-foreground font-medium">Timeframe:</div>
                 <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
-                  <SelectTrigger className="h-7 w-24 text-xs">
+                  <SelectTrigger className="h-8 w-[80px] text-xs font-medium">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="24h">24h</SelectItem>
-                    <SelectItem value="7d">7d</SelectItem>
-                    <SelectItem value="30d">30d</SelectItem>
-                    <SelectItem value="90d">90d</SelectItem>
-                    <SelectItem value="1y">1y</SelectItem>
-                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="24h">24 Hours</SelectItem>
+                    <SelectItem value="7d">7 Days</SelectItem>
+                    <SelectItem value="30d">30 Days</SelectItem>
+                    <SelectItem value="90d">90 Days</SelectItem>
+                    <SelectItem value="1y">1 Year</SelectItem>
+                    <SelectItem value="all">All Time</SelectItem>
                   </SelectContent>
                 </Select>
-                <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)}>
-                  <TabsList className="h-7">
-                    <TabsTrigger value="daily" className="h-6 text-xs">Daily</TabsTrigger>
-                    <TabsTrigger value="cumulative" className="h-6 text-xs">Total</TabsTrigger>
-                  </TabsList>
-                </Tabs>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => fetchPnLData(true)}
+                  disabled={isRefreshing}
+                  title="Refresh data"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                </Button>
               </div>
             )}
           </div>
+          {!isCollapsed && !isApiKeysMissing && (
+            <div className="mt-3 pt-3 border-t">
+              <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)} className="w-full">
+                <TabsList className="h-8 w-full grid grid-cols-4">
+                  <TabsTrigger value="daily" className="h-7 text-[11px] px-1.5">Daily</TabsTrigger>
+                  <TabsTrigger value="cumulative" className="h-7 text-[11px] px-1.5">Total</TabsTrigger>
+                  <TabsTrigger value="breakdown" className="h-7 text-[11px] px-1.5">Break</TabsTrigger>
+                  <TabsTrigger value="symbols" className="h-7 text-[11px] px-1.5">Sym</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+          )}
         </CardHeader>
         {!isCollapsed && (
           <CardContent>
@@ -534,34 +540,35 @@ export default function PnLChart() {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="flex items-center gap-2 hover:opacity-80 transition-opacity w-full"
-        >
-          <BarChart3 className="h-4 w-4" />
-          <CardTitle className="text-base font-medium">Performance</CardTitle>
-          <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
-        </button>
-        {!isCollapsed && (
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mt-3 pt-3 border-t">
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+          >
+            <BarChart3 className="h-4 w-4" />
+            <CardTitle className="text-base font-medium">Performance</CardTitle>
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+          </button>
+          {!isCollapsed && (
             <div className="flex items-center gap-2">
+              <div className="text-xs text-muted-foreground font-medium">Timeframe:</div>
               <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
-                <SelectTrigger className="h-7 w-[70px] text-xs">
+                <SelectTrigger className="h-8 w-[80px] text-xs font-medium">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="24h">24h</SelectItem>
-                  <SelectItem value="7d">7d</SelectItem>
-                  <SelectItem value="30d">30d</SelectItem>
-                  <SelectItem value="90d">90d</SelectItem>
-                  <SelectItem value="1y">1y</SelectItem>
-                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="24h">24 Hours</SelectItem>
+                  <SelectItem value="7d">7 Days</SelectItem>
+                  <SelectItem value="30d">30 Days</SelectItem>
+                  <SelectItem value="90d">90 Days</SelectItem>
+                  <SelectItem value="1y">1 Year</SelectItem>
+                  <SelectItem value="all">All Time</SelectItem>
                 </SelectContent>
               </Select>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 shrink-0"
+                className="h-8 w-8"
                 onClick={() => fetchPnLData(true)}
                 disabled={isRefreshing}
                 title="Refresh data"
@@ -569,12 +576,16 @@ export default function PnLChart() {
                 <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
               </Button>
             </div>
-            <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)} className="w-full sm:w-auto">
-              <TabsList className="h-7 w-full sm:w-auto grid grid-cols-4 sm:inline-flex">
-                <TabsTrigger value="daily" className="h-6 text-[11px] px-2">Daily</TabsTrigger>
-                <TabsTrigger value="cumulative" className="h-6 text-[11px] px-2">Total</TabsTrigger>
-                <TabsTrigger value="breakdown" className="h-6 text-[11px] px-2">Break</TabsTrigger>
-                <TabsTrigger value="symbols" className="h-6 text-[11px] px-2">Symbol</TabsTrigger>
+          )}
+        </div>
+        {!isCollapsed && (
+          <div className="mt-3 pt-3 border-t">
+            <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)} className="w-full">
+              <TabsList className="h-8 w-full grid grid-cols-4">
+                <TabsTrigger value="daily" className="h-7 text-[11px] px-1.5">Daily</TabsTrigger>
+                <TabsTrigger value="cumulative" className="h-7 text-[11px] px-1.5">Total</TabsTrigger>
+                <TabsTrigger value="breakdown" className="h-7 text-[11px] px-1.5">Break</TabsTrigger>
+                <TabsTrigger value="symbols" className="h-7 text-[11px] px-1.5">Sym</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>

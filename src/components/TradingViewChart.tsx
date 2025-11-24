@@ -1069,24 +1069,15 @@ export default function TradingViewChart({
             <div className="flex flex-col gap-2 sm:hidden">
               {/* Refresh + Auto-refresh */}
               <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleRefresh}
-                  disabled={isRefreshing || loading}
-                  className="h-7 w-7 shrink-0"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                </Button>
-
                 <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5 flex-1">
+                  <span className="text-sm font-medium text-muted-foreground">Refresh:</span>
                   <Checkbox
                     id="auto-refresh"
                     checked={autoRefresh}
                     onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
                     className="h-4 w-4"
                   />
-                  <Label htmlFor="auto-refresh" className="text-sm cursor-pointer font-medium min-w-[45px]">
+                  <Label htmlFor="auto-refresh" className="text-sm cursor-pointer font-medium">
                     Auto
                   </Label>
                   {autoRefresh && (
@@ -1109,6 +1100,17 @@ export default function TradingViewChart({
                     </Select>
                   )}
                 </div>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || loading}
+                  className="h-9 px-3 shrink-0"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  Now
+                </Button>
               </div>
 
               {/* Timeframe */}
@@ -1204,23 +1206,8 @@ export default function TradingViewChart({
             <div className="hidden sm:flex items-center justify-between gap-4">
               {/* Left side: Refresh, Auto-refresh, Timeframe */}
               <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleRefresh}
-                  disabled={isRefreshing || loading}
-                  className="h-7 w-7 shrink-0"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                </Button>
-                {lastUpdate && (
-                  <span className="text-[10px] text-muted-foreground">
-                    {lastUpdate.toLocaleTimeString()}
-                  </span>
-                )}
-
-                <div className="h-4 w-px bg-border" />
-
+                <span className="text-sm font-medium text-muted-foreground">Refresh:</span>
+                
                 <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
                   <Checkbox
                     id="auto-refresh-desktop"
@@ -1228,7 +1215,7 @@ export default function TradingViewChart({
                     onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
                     className="h-4 w-4"
                   />
-                  <Label htmlFor="auto-refresh-desktop" className="text-sm cursor-pointer font-medium min-w-[45px]">
+                  <Label htmlFor="auto-refresh-desktop" className="text-sm cursor-pointer font-medium">
                     Auto
                   </Label>
                   {autoRefresh && (
@@ -1251,6 +1238,23 @@ export default function TradingViewChart({
                     </Select>
                   )}
                 </div>
+                
+                {lastUpdate && (
+                  <span className="text-[10px] text-muted-foreground">
+                    {lastUpdate.toLocaleTimeString()}
+                  </span>
+                )}
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || loading}
+                  className="h-9 px-3"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  Now
+                </Button>
 
                 <div className="h-4 w-px bg-border" />
 
