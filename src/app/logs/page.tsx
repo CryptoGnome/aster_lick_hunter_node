@@ -52,7 +52,7 @@ export default function LogsPage() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const lastTimestamp = useRef<number>(0);
 
-  const fetchLogs = async (since?: number) => {
+  const fetchLogs = async (_since?: number) => {
     try {
       const params = new URLSearchParams();
       if (filters.component) params.append('component', filters.component);

@@ -46,7 +46,7 @@ async function sendProtectCommand(data: any): Promise<{ success: boolean; error?
           ws.close();
           resolve({ success: false, error: response.data?.error || 'Unknown error' });
         }
-      } catch (error) {
+      } catch (_error) {
         // Ignore parse errors, keep waiting
       }
     });
@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
         trimLevels: settings.trimLevels.length,
       },
     });
-  } catch (error) {
+  } catch (_error) {
     console.error('[API] Error activating scale out:', error);
     return NextResponse.json(
       {

@@ -3,7 +3,6 @@ import { Config } from '../types';
 import { placeOrder } from '../api/orders';
 import { symbolPrecision } from '../utils/symbolPrecision';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../utils/timestamp';
-import { errorLogger } from './errorLogger';
 
 // Exchange position interface (from positionManager)
 interface ExchangePosition {

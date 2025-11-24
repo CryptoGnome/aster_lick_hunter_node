@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useState, useRef, useLayoutEffect } from 'react';
-import logger from '@/lib/utils/logger';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Activity, Flame, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';

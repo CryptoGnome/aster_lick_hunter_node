@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
         if (asterProcess) {
           processName = asterProcess.name;
         }
-      } catch (listError) {
+      } catch (_listError) {
         // If we can't parse the list, try common names
         const names = ['aster-3', 'aster-2', 'aster-1', 'aster'];
         for (const name of names) {
@@ -126,7 +126,7 @@ export async function GET(request: NextRequest) {
       parsedLogs = lines
         .map(parseLogLine)
         .filter((log): log is LogEntry => log !== null);
-    } catch (pm2Error) {
+    } catch (_pm2Error) {
       // PM2 not available or process not running - return empty logs with message
       console.log('[API] PM2 not available, logs feature requires PM2 to be running');
       return NextResponse.json({

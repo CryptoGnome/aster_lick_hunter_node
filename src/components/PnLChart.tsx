@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import logger from '@/lib/utils/logger';
 import {
   Area,
   AreaChart,

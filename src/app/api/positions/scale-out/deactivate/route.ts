@@ -46,7 +46,7 @@ async function sendDeactivateCommand(data: any): Promise<{ success: boolean; err
           ws.close();
           resolve({ success: false, error: response.data?.error || 'Unknown error' });
         }
-      } catch (error) {
+      } catch (_error) {
         // Ignore parse errors, keep waiting
       }
     });
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
       success: true,
       message: 'Scale out deactivated successfully',
     });
-  } catch (error) {
+  } catch (_error) {
     console.error('[API] Error deactivating scale out:', error);
     return NextResponse.json(
       {

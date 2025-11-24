@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
       success: true,
       isActive: result.isActive || false,
     });
-  } catch (error) {
+  } catch (_error) {
     console.error('[API] Error checking scale out status:', error);
     return NextResponse.json(
       {
@@ -80,7 +80,7 @@ async function checkScaleOutStatus(data: any): Promise<{ success: boolean; isAct
           ws.close();
           resolve({ success: true, isActive: response.data?.isActive || false });
         }
-      } catch (error) {
+      } catch (_error) {
         // Ignore parse errors, keep waiting
       }
     });
