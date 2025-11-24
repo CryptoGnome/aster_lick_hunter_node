@@ -67,6 +67,15 @@ export interface RateLimitConfig {
   maxConcurrentRequests?: number; // Maximum number of concurrent requests (default: 3)
 }
 
+export interface PaperTradingConfig {
+  startingBalance?: number;     // Initial virtual balance in USDT (default: 1000)
+  slippageBps?: number;         // Simulated slippage in basis points (default: 0)
+  partialFillPercent?: number;  // Chance of partial fills 0-100 (default: 0)
+  latencyMs?: number;           // Simulated network latency in ms (default: 0)
+  rejectionRate?: number;       // Chance of order rejection 0-100 (default: 0)
+  enableRealisticFills?: boolean; // Simulate more realistic order fills (default: false)
+}
+
 export interface GlobalConfig {
   riskPercent: number;     // Max risk per trade as % of account balance
   paperMode: boolean;      // If true, simulate trades without executing
@@ -77,6 +86,7 @@ export interface GlobalConfig {
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration
   liquidationDatabase?: LiquidationDatabaseConfig; // Liquidation data retention settings
+  paperTrading?: PaperTradingConfig; // Paper trading configuration
 }
 
 export interface Config {

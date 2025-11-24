@@ -17,6 +17,7 @@ import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../lib/utils/timestamp';
+import { getPaperTradingManager } from '../lib/paperTrading';
 
 // Helper function to kill all child processes (synchronous for exit handler)
 function killAllProcesses() {
@@ -181,6 +182,113 @@ logErrorWithTimestamp('❌ Cannot run in LIVE mode without API keys!');
         }
       }
 
+      // Initialize Paper Trading if in paper mode (before API-dependent services)
+      if (this.config.global.paperMode) {
+        try {
+          // Get starting balance from config, default to 1000 USDT
+          const startingBalance = this.config.global.paperTrading?.startingBalance || 1000;
+          const paperTrading = getPaperTradingManager(startingBalance);
+          
+          // Check if balance has changed and paper trading needs to be reset
+          if (paperTrading.isActive() && paperTrading.getStartingBalance() !== startingBalance) {
+            logWithTimestamp(`📄 Paper Trading: Starting balance changed from ${paperTrading.getStartingBalance()} to ${startingBalance} USDT`);
+            logWithTimestamp(`📄 Paper Trading: ⚠️  Resetting paper trading system - all positions and history will be cleared`);
+            await paperTrading.resetWithNewBalance(startingBalance);
+          } else if (!paperTrading.isActive()) {
+            await paperTrading.initialize();
+          }
+
+          // Pass paper trading configuration to order simulator
+          if (this.config.global.paperTrading) {
+            paperTrading.setSimulationConfig(this.config.global.paperTrading);
+          }
+
+          // Connect paper trading events to status broadcaster
+          paperTrading.on('balanceUpdate', (balance) => {
+            this.statusBroadcaster.broadcast('paper_balance_update', balance);
+            // Update pnlService with paper trading data
+            pnlService.updateFromPaperTrading(balance);
+          });
+
+          paperTrading.on('positionOpened', (position) => {
+            this.statusBroadcaster.broadcast('paper_position_opened', position);
+          });
+
+          paperTrading.on('positionClosed', (data) => {
+            this.statusBroadcaster.broadcast('paper_position_closed', data);
+          });
+
+          paperTrading.on('protectiveOrderTriggered', (data) => {
+            this.statusBroadcaster.broadcast('paper_protective_triggered', data);
+            logWithTimestamp(`📄 Paper Trading: ${data.position.symbol} ${data.position.side} TP/SL triggered - PnL: ${data.pnl.toFixed(2)} USDT`);
+          });
+
+logWithTimestamp(`✅ Paper Trading system initialized with ${startingBalance} USDT starting balance`);
+          
+          // Log paper trading configuration
+          if (this.config.global.paperTrading) {
+            const pt = this.config.global.paperTrading;
+            if (pt.slippageBps && pt.slippageBps > 0) {
+              logWithTimestamp(`📄 Paper Trading: Slippage simulation enabled (${pt.slippageBps} bps = ${(pt.slippageBps / 100).toFixed(2)}%)`);
+            }
+            if (pt.latencyMs && pt.latencyMs > 0) {
+              logWithTimestamp(`📄 Paper Trading: Network latency simulation enabled (${pt.latencyMs}ms)`);
+            }
+            if (pt.partialFillPercent && pt.partialFillPercent > 0) {
+              logWithTimestamp(`📄 Paper Trading: Partial fill simulation enabled (${pt.partialFillPercent}% chance)`);
+            }
+            if (pt.rejectionRate && pt.rejectionRate > 0) {
+              logWithTimestamp(`📄 Paper Trading: Order rejection simulation enabled (${pt.rejectionRate}% chance)`);
+            }
+            if (pt.enableRealisticFills) {
+              logWithTimestamp(`📄 Paper Trading: Realistic fill simulation enabled`);
+            }
+          }
+        } catch (error: any) {
+logErrorWithTimestamp('⚠️  Paper Trading failed to initialize:', error.message);
+        }
+      }
+
+      // Initialize Price Service for real-time mark prices (needed for both live and paper trading)
+      try {
+        await initializePriceService();
+logWithTimestamp('✅ Real-time price service started');
+
+        // Listen for mark price updates and broadcast to web UI
+        const priceService = getPriceService();
+        if (priceService) {
+          priceService.on('markPriceUpdate', (priceUpdates) => {
+            // Broadcast price updates to web UI for live PnL calculation
+            this.statusBroadcaster.broadcast('mark_price_update', priceUpdates);
+
+            // If in paper mode, update paper trading with real prices
+            if (this.config.global.paperMode) {
+              const paperTrading = getPaperTradingManager();
+              if (paperTrading.isActive()) {
+                for (const [symbol, price] of Object.entries(priceUpdates)) {
+                  paperTrading.updateMarketPrice(symbol, price as number);
+                }
+              }
+            }
+          });
+
+          // Subscribe to price updates for paper trading positions
+          if (this.config.global.paperMode) {
+            const paperTrading = getPaperTradingManager();
+            if (paperTrading.isActive()) {
+              const paperSymbols = paperTrading.getOpenPositionSymbols();
+              if (paperSymbols.length > 0) {
+                priceService.subscribeToSymbols(paperSymbols);
+                logWithTimestamp(`📊 Price streaming enabled for paper trading positions: ${paperSymbols.join(', ')}`);
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+logErrorWithTimestamp('⚠️  Price service failed to start:', error.message);
+        this.statusBroadcaster.addError(`Price Service: ${error.message}`);
+      }
+
       if (hasValidApiKeys) {
         // Initialize balance service and set up WebSocket broadcasting
         try {
@@ -297,26 +405,6 @@ logErrorWithTimestamp('[Bot] Balance service error stack:', error instanceof Err
 logWithTimestamp('[Bot] Bot will continue without real-time balance updates');
         }
 
-        // Initialize Price Service for real-time mark prices
-        try {
-          await initializePriceService();
-logWithTimestamp('✅ Real-time price service started');
-
-          // Listen for mark price updates and broadcast to web UI
-          const priceService = getPriceService();
-          if (priceService) {
-            priceService.on('markPriceUpdate', (priceUpdates) => {
-              // Broadcast price updates to web UI for live PnL calculation
-              this.statusBroadcaster.broadcast('mark_price_update', priceUpdates);
-            });
-
-            // Note: We'll subscribe to position symbols after position manager starts
-          }
-        } catch (error: any) {
-logErrorWithTimestamp('⚠️  Price service failed to start:', error.message);
-          this.statusBroadcaster.addError(`Price Service: ${error.message}`);
-        }
-
         // Initialize VWAP Streamer for real-time VWAP calculations
         try {
           await vwapStreamer.start(this.config);
@@ -361,6 +449,18 @@ logWithTimestamp('✅ Position Manager started');
           if (positionSymbols.length > 0) {
             priceService.subscribeToSymbols(positionSymbols);
 logWithTimestamp(`📊 Price streaming enabled for open positions: ${positionSymbols.join(', ')}`);
+          }
+        }
+
+        // In paper mode, subscribe to paper trading position symbols
+        if (this.config.global.paperMode && priceService) {
+          const paperTrading = getPaperTradingManager();
+          if (paperTrading.isActive()) {
+            const paperSymbols = paperTrading.getOpenPositionSymbols();
+            if (paperSymbols.length > 0) {
+              priceService.subscribeToSymbols(paperSymbols);
+logWithTimestamp(`📊 Price streaming enabled for paper trading positions: ${paperSymbols.join(', ')}`);
+            }
           }
         }
       } catch (error: any) {

@@ -96,16 +96,11 @@ logWithTimestamp('Hunter: Switching from paper mode to live mode');
           this.connectWebSocket();
         }
       }
-      // If switching from live mode to paper mode without API keys
-      else if (!oldConfig.global.paperMode && newConfig.global.paperMode && !newConfig.api.apiKey) {
-logWithTimestamp('Hunter: Switching from live mode to paper mode');
-        if (this.ws) {
-          this.ws.close();
-          this.ws = null;
-        }
-        if (this.isRunning) {
-          this.simulateLiquidations();
-        }
+      // If switching from live mode to paper mode, keep WebSocket connection
+      // Paper mode uses real liquidations, only simulates order execution
+      else if (!oldConfig.global.paperMode && newConfig.global.paperMode) {
+logWithTimestamp('Hunter: Switching to paper mode - continuing to monitor real liquidations');
+        // Keep WebSocket connected to receive real liquidation data
       }
     }
 
@@ -312,13 +307,9 @@ logErrorWithTimestamp('Hunter: Failed to initialize symbol precision manager:', 
       // Continue anyway, will use default precision values
     }
 
-    // In paper mode with no API keys, simulate liquidation events
-    if (this.config.global.paperMode && (!this.config.api.apiKey || !this.config.api.secretKey)) {
-logWithTimestamp('Hunter: Running in paper mode without API keys - simulating liquidations');
-      this.simulateLiquidations();
-    } else {
-      this.connectWebSocket();
-    }
+    // Always connect to real liquidation WebSocket feed
+    // Paper mode only affects order execution, not the liquidation data source
+    this.connectWebSocket();
   }
 
   stop(): void {
@@ -971,15 +962,25 @@ logWarnWithTimestamp(`Hunter: Proceeding with trade anyway - exchange will rejec
       }
 
       if (this.config.global.paperMode) {
-logWithTimestamp(`Hunter: PAPER MODE - Would place ${side} order for ${symbol}, quantity: ${symbolConfig.tradeSize}, leverage: ${symbolConfig.leverage}`);
-        this.emit('positionOpened', {
-          symbol,
-          side,
-          quantity: symbolConfig.tradeSize,
-          price: entryPrice,
-          leverage: symbolConfig.leverage,
-          paperMode: true
-        });
+logWithTimestamp(`Hunter: PAPER MODE - Placing ${side} order for ${symbol}, quantity: ${symbolConfig.tradeSize}, leverage: ${symbolConfig.leverage}`);
+        
+        // Actually place the paper trade through the order API
+        // This will route to the paper trading system
+        try {
+          const { placeOrder } = await import('../api/orders');
+          await placeOrder({
+            symbol,
+            side,
+            type: 'MARKET', // Use market order for paper trading
+            quantity: symbolConfig.tradeSize,
+            positionSide: this.config.global.positionMode === 'HEDGE' ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH',
+          }, this.config.api);
+          
+logWithTimestamp(`📄 Paper Trading: Order placed for ${symbol} ${side}`);
+        } catch (error) {
+logErrorWithTimestamp(`📄 Paper Trading: Failed to place order:`, error);
+        }
+        
         return;
       }
 
@@ -1701,43 +1702,4 @@ logErrorWithTimestamp(`Hunter: Fallback order failed for ${symbol} (${fallbackTr
         }
       }
     }
-
-  private simulateLiquidations(): void {
-    // Simulate liquidation events for paper mode testing
-    const symbols = Object.keys(this.config.symbols);
-    if (symbols.length === 0) {
-logWithTimestamp('Hunter: No symbols configured for simulation');
-      return;
-    }
-
-    // Generate random liquidation events every 5-10 seconds
-    const generateEvent = () => {
-      if (!this.isRunning) return;
-
-      const symbol = symbols[Math.floor(Math.random() * symbols.length)];
-      const side = Math.random() > 0.5 ? 'SELL' : 'BUY';
-      const price = symbol === 'BTCUSDT' ? 40000 + Math.random() * 5000 : 2000 + Math.random() * 500;
-      const qty = Math.random() * 10;
-
-      const mockEvent = {
-        o: {
-          s: symbol,
-          S: side,
-          p: price.toString(),
-          q: qty.toString(),
-          T: Date.now()
-        }
-      };
-
-logWithTimestamp(`Hunter: Simulated liquidation - ${symbol} ${side} ${qty.toFixed(4)} @ $${price.toFixed(2)}`);
-      this.handleLiquidationEvent(mockEvent);
-
-      // Schedule next event
-      const delay = 5000 + Math.random() * 5000; // 5-10 seconds
-      setTimeout(generateEvent, delay);
-    };
-
-    // Start generating events after 2 seconds
-    setTimeout(generateEvent, 2000);
-  }
 }

@@ -101,8 +101,10 @@ export default function PnLChart() {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
 
-  // Check if API keys are configured
+  // Check if API keys are configured OR if we're in paper mode
   const hasApiKeys = config?.api?.apiKey && config?.api?.secretKey;
+  const isPaperMode = config?.global?.paperMode === true;
+  const canShowData = hasApiKeys || isPaperMode;
 
   // Animate loading progress
   useEffect(() => {
@@ -179,17 +181,17 @@ export default function PnLChart() {
 
   // Fetch historical PnL data on mount and when timeRange changes
   useEffect(() => {
-    if (hasApiKeys) {
+    if (canShowData) {
       fetchPnLData();
     } else {
       setIsLoading(false);
       setPnlData(null);
     }
-  }, [timeRange, hasApiKeys, fetchPnLData]);
+  }, [timeRange, canShowData, fetchPnLData]);
 
   // Fetch initial real-time session data and balance
   useEffect(() => {
-    if (!hasApiKeys) return;
+    if (!canShowData) return;
 
     const fetchRealtimeData = async () => {
       try {
@@ -212,7 +214,7 @@ export default function PnLChart() {
     };
 
     fetchRealtimeData();
-  }, [hasApiKeys]);
+  }, [canShowData]);
 
   // Subscribe to real-time PnL updates
   useEffect(() => {
@@ -420,7 +422,7 @@ export default function PnLChart() {
 
   // Handle empty data state
   if (!pnlData || chartData.length === 0) {
-    const isApiKeysMissing = !hasApiKeys;
+    const isApiKeysMissing = !canShowData;
 
     return (
       <Card>

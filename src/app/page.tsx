@@ -5,7 +5,6 @@ import logger from '@/lib/utils/logger';
 import { DashboardLayout } from '@/components/dashboard-layout';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   DollarSign,
   TrendingUp,
@@ -23,6 +22,7 @@ import PerformanceCardInline from '@/components/PerformanceCardInline';
 import SessionPerformanceCard from '@/components/SessionPerformanceCard';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
 import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
+import { PaperTradingDashboard } from '@/components/PaperTradingDashboard';
 import { useConfig } from '@/components/ConfigProvider';
 import websocketService from '@/lib/services/websocketService';
 import { useOrderNotifications } from '@/hooks/useOrderNotifications';
@@ -42,10 +42,10 @@ export default function DashboardPage() {
   const { config } = useConfig();
   const wsUrl = useWebSocketUrl();
   const [accountInfo, setAccountInfo] = useState<AccountInfo>({
-    totalBalance: 10000,
-    availableBalance: 8500,
-    totalPositionValue: 1500,
-    totalPnL: 60,
+    totalBalance: 0,
+    availableBalance: 0,
+    totalPositionValue: 0,
+    totalPnL: 0,
   });
   const [balanceStatus, setBalanceStatus] = useState<BalanceStatus>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -128,7 +128,8 @@ export default function DashboardPage() {
 
     // Set up WebSocket listener for real-time updates
     const handleWebSocketMessage = (message: any) => {
-      // Forward to data store for centralized handling
+      // Forward all messages to data store for centralized handling
+      // (including paper_balance_update, paper_position_opened, etc.)
       dataStore.handleWebSocketMessage(message);
     };
 
@@ -294,10 +295,15 @@ export default function DashboardPage() {
       <MinimalBotStatus />
 
       <div className="flex h-full overflow-hidden">
-        {/* Main Content */}
-        <div className="flex-1 p-6 space-y-6 overflow-y-auto">
-          {/* Account Summary - Minimal Design */}
-          <div className="flex flex-wrap items-center gap-3">
+      {/* Main Content */}
+      <div className="flex-1 p-6 space-y-6 overflow-y-auto">
+        {/* Paper Trading Dashboard - Show only in paper mode */}
+        {config?.global?.paperMode && (
+          <PaperTradingDashboard />
+        )}
+
+        {/* Account Summary - Minimal Design */}
+        <div className="flex flex-wrap items-center gap-3">
             {/* Total Balance */}
             <div className="flex items-center gap-2">
               <Wallet className="h-4 w-4 text-muted-foreground" />

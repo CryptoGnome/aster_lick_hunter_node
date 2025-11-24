@@ -492,6 +492,229 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 </div>
               )}
 
+              {/* Paper Trading Configuration - appears directly below Paper Mode toggle */}
+              {config.global.paperMode && (
+                <div className="space-y-4 p-4 border border-blue-200 dark:border-blue-900 rounded-lg bg-blue-50/30 dark:bg-blue-950/10">
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="startingBalance">Starting Balance (USDT)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="startingBalance"
+                          type="number"
+                          value={config.global.paperTrading?.startingBalance || 1000}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              startingBalance: isNaN(value) ? 1000 : Math.max(100, value)
+                            });
+                          }}
+                          className="w-32"
+                          min="100"
+                          max="1000000"
+                          step="100"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          Initial virtual balance for paper trading
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Set this to match your real account balance for realistic testing (requires bot restart)
+                      </p>
+                    </div>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    <div className="space-y-2">
+                      <Label htmlFor="slippageBps">Simulated Slippage (Basis Points)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="slippageBps"
+                          type="number"
+                          value={config.global.paperTrading?.slippageBps || 0}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              slippageBps: isNaN(value) ? 0 : Math.max(0, Math.min(500, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="500"
+                          step="1"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          {config.global.paperTrading?.slippageBps 
+                            ? `~${(config.global.paperTrading.slippageBps / 100).toFixed(2)}% slippage` 
+                            : 'No slippage simulation'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Simulates price slippage on order fills (10 bps = 0.1%, 50 bps = 0.5%). Recommended: 5-20 bps for realistic testing.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="latencyMs">Simulated Network Latency (ms)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="latencyMs"
+                          type="number"
+                          value={config.global.paperTrading?.latencyMs || 0}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              latencyMs: isNaN(value) ? 0 : Math.max(0, Math.min(5000, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="5000"
+                          step="10"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          Delay before order execution
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Simulates network delay between order placement and fill. Recommended: 50-200ms for realistic testing.
+                      </p>
+                    </div>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    <div className="space-y-2">
+                      <Label htmlFor="partialFillPercent">Partial Fill Chance (%)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="partialFillPercent"
+                          type="number"
+                          value={config.global.paperTrading?.partialFillPercent || 0}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              partialFillPercent: isNaN(value) ? 0 : Math.max(0, Math.min(100, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="100"
+                          step="1"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          % chance of partial order fills
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Probability that limit orders only partially fill. 0 = always full fills, 100 = always partial.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="rejectionRate">Order Rejection Rate (%)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="rejectionRate"
+                          type="number"
+                          value={config.global.paperTrading?.rejectionRate || 0}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              rejectionRate: isNaN(value) ? 0 : Math.max(0, Math.min(100, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="100"
+                          step="0.1"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          % chance of order rejection
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Simulates occasional order rejections (insufficient margin, rate limits, etc.). Keep low (0.1-2%).
+                      </p>
+                    </div>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="enableRealisticFills">Realistic Fill Simulation</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Use orderbook depth for more accurate fill simulation
+                        </p>
+                      </div>
+                      <Switch
+                        id="enableRealisticFills"
+                        checked={config.global.paperTrading?.enableRealisticFills || false}
+                        onCheckedChange={(checked) => {
+                          handleGlobalChange('paperTrading', {
+                            ...config.global.paperTrading,
+                            enableRealisticFills: checked
+                          });
+                        }}
+                      />
+                    </div>
+
+                    <Alert>
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>
+                        <strong>Paper Trading Active:</strong> These settings help simulate real trading conditions. 
+                        Start with conservative settings (low slippage, minimal latency) and gradually increase for stress testing.
+                      </AlertDescription>
+                    </Alert>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    {/* Reset Paper Trading Button */}
+                    <div className="space-y-2">
+                      <Label>Reset Paper Trading</Label>
+                      <div className="flex items-center gap-4">
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          onClick={async () => {
+                            if (!confirm('This will delete all paper trading positions and reset your balance. Continue?')) {
+                              return;
+                            }
+                            try {
+                              const response = await fetch('/api/paper-trading/reset', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                  newBalance: config.global.paperTrading?.startingBalance || 1000 
+                                }),
+                              });
+                              if (response.ok) {
+                                toast.success('Paper trading reset successfully');
+                                window.location.reload();
+                              } else {
+                                toast.error('Failed to reset paper trading');
+                              }
+                            } catch (error) {
+                              toast.error('Error resetting paper trading');
+                            }
+                          }}
+                        >
+                          Reset Paper Trading
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                          Clear all positions and reset balance to {config.global.paperTrading?.startingBalance || 1000} USDT
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <Separator />
 
               <div className="flex items-center justify-between">

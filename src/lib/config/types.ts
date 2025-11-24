@@ -64,9 +64,19 @@ export const rateLimitConfigSchema = z.object({
   maxConcurrentRequests: z.number().min(1).max(10).optional(),
 }).optional();
 
+export const paperTradingConfigSchema = z.object({
+  startingBalance: z.number().min(100).optional(),
+  slippageBps: z.number().min(0).max(500).optional(),
+  latencyMs: z.number().min(0).max(5000).optional(),
+  partialFillPercent: z.number().min(0).max(100).optional(),
+  rejectionRate: z.number().min(0).max(100).optional(),
+  enableRealisticFills: z.boolean().optional(),
+}).optional();
+
 export const globalConfigSchema = z.object({
   riskPercent: z.number().min(0).max(100),
   paperMode: z.boolean(),
+  paperTrading: paperTradingConfigSchema,
   positionMode: z.enum(['ONE_WAY', 'HEDGE']).optional(),
   maxOpenPositions: z.number().min(1).optional(),
   useThresholdSystem: z.boolean().optional(),

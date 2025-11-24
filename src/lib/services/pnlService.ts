@@ -77,6 +77,59 @@ class PnLService extends EventEmitter {
     this.lastUpdateTime = Date.now();
   }
 
+  public updateFromPaperTrading(balanceData: any): void {
+    const now = Date.now();
+
+    // Initialize start balance if this is the first update
+    if (this.sessionPnL.startBalance === 0) {
+      this.sessionPnL.startBalance = balanceData.sessionStartBalance || balanceData.totalBalance;
+      this.sessionPnL.peak = this.sessionPnL.startBalance;
+    }
+
+    // Update current balance and PnL
+    this.sessionPnL.currentBalance = balanceData.totalBalance;
+    this.sessionPnL.unrealizedPnl = balanceData.unrealizedPnL || 0;
+    this.sessionPnL.realizedPnl = balanceData.realizedPnL || 0;
+    this.sessionPnL.totalPnl = balanceData.totalPnL || 0;
+    
+    // Update trade statistics
+    if (balanceData.trades !== undefined) {
+      this.sessionPnL.tradeCount = balanceData.trades;
+    }
+    if (balanceData.wins !== undefined) {
+      this.sessionPnL.winCount = balanceData.wins;
+    }
+    if (balanceData.losses !== undefined) {
+      this.sessionPnL.lossCount = balanceData.losses;
+    }
+
+    // Update peak and drawdown
+    if (this.sessionPnL.currentBalance > this.sessionPnL.peak) {
+      this.sessionPnL.peak = this.sessionPnL.currentBalance;
+    }
+
+    const drawdown = this.sessionPnL.peak - this.sessionPnL.currentBalance;
+    if (drawdown > this.sessionPnL.maxDrawdown) {
+      this.sessionPnL.maxDrawdown = drawdown;
+    }
+
+    // Throttle snapshot creation (once per 10 seconds)
+    if (now - this.lastUpdateTime >= 10000) {
+      this.lastUpdateTime = now;
+      this.addSnapshot({
+        timestamp: now,
+        balance: this.sessionPnL.currentBalance,
+        realizedPnl: this.sessionPnL.realizedPnl,
+        unrealizedPnl: this.sessionPnL.unrealizedPnl,
+        totalPnl: this.sessionPnL.totalPnl,
+      });
+
+      this.emit('snapshot', this.getLatestSnapshot());
+    }
+
+    this.emit('update', this.sessionPnL);
+  }
+
   public updateFromAccountEvent(event: any): void {
     const now = Date.now();
 

@@ -83,17 +83,22 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [showTutorial, setShowTutorial] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
 
-  // Check if API keys are configured
-  const checkApiKeysConfigured = async () => {
+  // Check if setup is complete (API keys OR paper mode configured)
+  const checkSetupComplete = async () => {
     try {
       const response = await fetch('/api/config');
       if (response.ok) {
         const config = await response.json();
         const hasApiKeys = config?.api?.apiKey && config?.api?.secretKey;
-        return hasApiKeys;
+        const isPaperMode = config?.global?.paperMode === true;
+        
+        // Setup is complete if either:
+        // 1. API keys are configured (for live trading)
+        // 2. Paper mode is enabled (for paper trading)
+        return hasApiKeys || isPaperMode;
       }
     } catch (error) {
-      console.error('Failed to check API keys:', error);
+      console.error('Failed to check setup status:', error);
     }
     return false;
   };
@@ -105,14 +110,14 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       const isComplete = localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true';
       const hasSetup = localStorage.getItem('aster_setup_complete') === 'true';
 
-      // Check if API keys are configured
-      const hasApiKeys = await checkApiKeysConfigured();
+      // Check if setup is complete (API keys OR paper mode)
+      const setupComplete = await checkSetupComplete();
 
-      if (!hasApiKeys) {
-        // No API keys configured - force onboarding
+      if (!setupComplete) {
+        // No API keys and not in paper mode - force onboarding
         setIsNewUser(true);
         setIsOnboarding(true);
-        setCurrentStep(1); // Start at API key step
+        setCurrentStep(0); // Start at welcome step
         return;
       }
 
