@@ -169,11 +169,11 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (_error) {
-    console.error('[API] Error activating scale out:', error);
+    console.error('[API] Error activating scale out:', _error);
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to activate scale out',
+        error: _error instanceof Error ? _error.message : 'Failed to activate scale out',
       },
       { status: 500 }
     );

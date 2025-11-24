@@ -12,13 +12,12 @@ const nextConfig: NextConfig = {
     },
   },
   eslint: {
-    // Warning: This allows production builds to successfully complete even if
-    // your project has ESLint errors.
+    // Allow builds with minor linting warnings (unused vars, exhaustive-deps)
     ignoreDuringBuilds: true,
   },
   typescript: {
-    // Warning: This allows production builds to successfully complete even if
-    // your project has TypeScript errors.
+    // Ignore TypeScript errors in bot code during Next.js build
+    // (bot runs separately with tsx and has its own type checking)
     ignoreBuildErrors: true,
   },
 };

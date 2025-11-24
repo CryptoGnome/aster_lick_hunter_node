@@ -105,11 +105,11 @@ export async function POST(request: NextRequest) {
       message: 'Scale out deactivated successfully',
     });
   } catch (_error) {
-    console.error('[API] Error deactivating scale out:', error);
+    console.error('[API] Error deactivating scale out:', _error);
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to deactivate scale out',
+        error: _error instanceof Error ? _error.message : 'Failed to deactivate scale out',
       },
       { status: 500 }
     );

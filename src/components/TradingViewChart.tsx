@@ -794,27 +794,6 @@ export default function TradingViewChart({
     }
   }, [positions, openOrders, showPositions, debouncedUpdatePositions]);
 
-  // Manual refresh handler
-  const handleRefresh = useCallback(() => {
-    console.log('[TradingViewChart] Manual refresh triggered');
-    if (fetchKlineDataRef.current) fetchKlineDataRef.current(true);
-    if (fetchLiquidationDataRef.current) fetchLiquidationDataRef.current();
-    if (fetchOpenOrdersRef.current) fetchOpenOrdersRef.current();
-  }, []);
-
-  if (!symbol) {
-    return (
-      <Card className={className}>
-        <CardContent className="flex items-center justify-center h-96">
-          <div className="text-center">
-            <AlertCircle className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-            <p className="text-muted-foreground">Select a symbol to view chart</p>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
   // --- Recent orders overlay logic ---
   // Use filled orders from orderStore (same as RecentOrdersTable)
   const [filledOrders, setFilledOrders] = React.useState<any[]>([]);
@@ -1029,6 +1008,27 @@ export default function TradingViewChart({
       }
     };
   }, [showVWAP, symbol]);
+
+  // Manual refresh handler
+  const handleRefresh = useCallback(() => {
+    console.log('[TradingViewChart] Manual refresh triggered');
+    if (fetchKlineDataRef.current) fetchKlineDataRef.current(true);
+    if (fetchLiquidationDataRef.current) fetchLiquidationDataRef.current();
+    if (fetchOpenOrdersRef.current) fetchOpenOrdersRef.current();
+  }, []);
+
+  if (!symbol) {
+    return (
+      <Card className={className}>
+        <CardContent className="flex items-center justify-center h-96">
+          <div className="text-center">
+            <AlertCircle className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+            <p className="text-muted-foreground">Select a symbol to view chart</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className={className}>

@@ -36,12 +36,12 @@ export async function GET(request: NextRequest) {
       isActive: result.isActive || false,
     });
   } catch (_error) {
-    console.error('[API] Error checking scale out status:', error);
+    console.error('[API] Error checking scale out status:', _error);
     return NextResponse.json(
       {
         success: false,
         isActive: false,
-        error: error instanceof Error ? error.message : 'Failed to check status',
+        error: _error instanceof Error ? _error.message : 'Failed to check status',
       },
       { status: 200 } // Return 200 to avoid errors in UI
     );
