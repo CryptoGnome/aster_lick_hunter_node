@@ -40,7 +40,7 @@ export class ProtectiveOrderService extends EventEmitter {
   private isRunning = false;
   private monitorInterval?: NodeJS.Timeout;
   private deactivatingKeys: Set<string> = new Set(); // Track positions being manually deactivated
-  private trailingStops: Map<string, { trailPercent: number; highestPrice: number; orderId: string; entryPrice: number; enableDCA: boolean }> = new Map();
+  private trailingStops: Map<string, { trailPercent: number; highestPrice: number; orderId: string; entryPrice: number; enableDCA: boolean; activationPercent: number; activated: boolean }> = new Map();
   private trailingStopMonitor?: NodeJS.Timeout;
   private disabledDefaultTPSL: Set<string> = new Set(); // Track positions with disabled default TP/SL (key: "BTCUSDT_LONG")
 
@@ -347,102 +347,43 @@ export class ProtectiveOrderService extends EventEmitter {
     const posAmt = parseFloat(position.positionAmt);
     const isLong = posAmt > 0;
 
-    // Calculate activation price (when trailing starts)
-    const stopDistance = trailPercent / 100;
-    const activationDistance = activationPercent / 100;
+    // NOTE: We DON'T place the TP order immediately!
+    // The monitoring loop will place it once activation threshold is reached
+    // This prevents placing a TP at breakeven when activation > trail distance
     
+    // Just track the trailing TP configuration - no order placed yet
+    const activationDistance = activationPercent / 100;
     const activationPrice = activationPercent > 0
       ? (isLong ? entryPrice * (1 + activationDistance) : entryPrice * (1 - activationDistance))
       : entryPrice;
-    
-    // Calculate initial TP price - NEVER below entry for profit protection
-    const idealTpPrice = isLong
-      ? activationPrice * (1 - stopDistance)
-      : activationPrice * (1 + stopDistance);
-    
-    // Enforce minimum TP at entry price (break-even) to prevent losses
-    const initialTpPrice = isLong
-      ? Math.max(idealTpPrice, entryPrice)
-      : Math.min(idealTpPrice, entryPrice);
 
-    // Full position quantity for the stop
-    const stopQuantity = Math.abs(posAmt);
-    const formattedQty = symbolPrecision.formatQuantity(symbol, stopQuantity);
+    // Track trailing TP state WITHOUT placing order yet
+    // The monitoring loop will create the order once activation is reached
+    this.trailingStops.set(key, {
+      trailPercent,
+      highestPrice: entryPrice, // Track from entry, not activation
+      orderId: '', // No order yet - will be created on activation
+      entryPrice,
+      enableDCA,
+      activationPercent,
+      activated: false, // Will be set to true once activation threshold is reached
+    });
 
-    try {
-      const side = isLong ? 'SELL' : 'BUY';
-      const clientOrderId = `po_trail_${symbol}_${Date.now()}`;
+    logWithTimestamp(
+      `ProtectiveOrderService: ✅ Trailing TP configured for ${symbol}: activates at ${activationPercent}% profit (${activationPrice.toFixed(2)}), then trails ${trailPercent}% with min 0.5% profit buffer`
+    );
 
-      const orderParams: any = {
-        symbol,
-        side,
-        type: 'STOP_MARKET',
-        quantity: formattedQty,
-        stopPrice: symbolPrecision.formatPrice(symbol, initialTpPrice),
-        positionSide: position.positionSide,
-        newClientOrderId: clientOrderId,
-        workingType: 'MARK_PRICE', // Use mark price to avoid liquidation wick manipulation
-      };
+    // Start monitoring - will place order when activation threshold is reached
+    this.startTrailingTakeProfitMonitoring();
 
-      // In one-way mode, use reduceOnly. In hedge mode, don't use it.
-      if (this.config.global.positionMode !== 'HEDGE') {
-        orderParams.reduceOnly = true;
-      }
-
-      logWithTimestamp(
-        `ProtectiveOrderService: Placing trailing TP for ${symbol}:`,
-        JSON.stringify({ ...orderParams, apiKey: '***' }, null, 2)
-      );
-
-      const order = await placeOrder(orderParams, this.config.api);
-
-      logWithTimestamp(
-        `ProtectiveOrderService: ✅ Binance response for trailing TP:`,
-        JSON.stringify(order, null, 2)
-      );
-
-      const protectiveOrder: ProtectiveOrder = {
-        orderId: order.orderId,
-        symbol,
-        side,
-        positionSide: position.positionSide,
-        triggerType: 'trailing_tp',
-        triggerPercent: 0,
-        quantity: stopQuantity,
-        price: initialTpPrice,
-        createdAt: Date.now(),
-        trailPercent,
-      };
-
-      if (!this.activeOrders.has(key)) {
-        this.activeOrders.set(key, []);
-      }
-      this.activeOrders.get(key)!.push(protectiveOrder);
-
-      // Track trailing TP state
-      this.trailingStops.set(key, {
-        trailPercent,
-        highestPrice: activationPrice, // Start tracking from activation price
-        orderId: order.orderId,
-        entryPrice,
-        enableDCA,
-      });
-
-      logWithTimestamp(
-        `ProtectiveOrderService: ✅ Placed trailing TP #${order.orderId} for ${symbol} at ${initialTpPrice.toFixed(2)} (activates at ${activationPercent}% profit, trails ${trailPercent}%, break-even protected)`
-      );
-
-      // Start monitoring if not already running
-      this.startTrailingTakeProfitMonitoring();
-
-      this.emit('protectiveOrderPlaced', protectiveOrder);
-    } catch (error: any) {
-      logErrorWithTimestamp(
-        `ProtectiveOrderService: Failed to place trailing stop for ${symbol}:`,
-        error?.response?.data || error?.message
-      );
-      throw error;
-    }
+    // Emit event for UI feedback (no order ID yet)
+    this.emit('protectiveOrderConfigured', {
+      symbol,
+      positionSide: position.positionSide,
+      triggerType: 'trailing_tp',
+      activationPercent,
+      trailPercent,
+    });
   }
 
   // DEPRECATED: Old config-based methods (not used - protective orders are now on-demand via UI)
@@ -861,6 +802,10 @@ export class ProtectiveOrderService extends EventEmitter {
       const markPrices = (await getMarkPrice()) as any[];
       const priceMap = new Map<string, number>(markPrices.map((p: any) => [p.symbol, parseFloat(p.markPrice)]));
 
+      // Also get current positions to fetch quantity
+      const { getPositions } = await import('../api/market');
+      const positions = await getPositions(this.config.api);
+
       for (const [key, trailData] of this.trailingStops.entries()) {
         const [symbol, positionSide] = key.split('_');
         const currentPrice = priceMap.get(symbol);
@@ -869,7 +814,74 @@ export class ProtectiveOrderService extends EventEmitter {
 
         const isLong = positionSide === 'LONG';
         
-        // Check if we have a new high (for LONG) or new low (for SHORT)
+        // STEP 1: Check if activation threshold has been reached
+        if (!trailData.activated) {
+          const activationDistance = trailData.activationPercent / 100;
+          const activationPrice = trailData.activationPercent > 0
+            ? (isLong ? trailData.entryPrice * (1 + activationDistance) : trailData.entryPrice * (1 - activationDistance))
+            : trailData.entryPrice;
+          
+          const activationReached = isLong
+            ? currentPrice >= activationPrice
+            : currentPrice <= activationPrice;
+          
+          if (activationReached) {
+            // Activation threshold reached! Place the initial TP order
+            logWithTimestamp(
+              `ProtectiveOrderService: 🎯 Activation threshold reached for ${symbol} at ${currentPrice.toFixed(2)} (target: ${activationPrice.toFixed(2)})`
+            );
+            
+            // Find position to get quantity
+            const position = positions.find(p => p.symbol === symbol);
+            if (!position) {
+              logWarnWithTimestamp(`ProtectiveOrderService: Position ${symbol} not found, skipping TP placement`);
+              continue;
+            }
+            
+            const posAmt = parseFloat(position.positionAmt);
+            const stopQuantity = Math.abs(posAmt);
+            
+            // Calculate initial TP with MINIMUM 0.5% profit buffer
+            const minProfitBuffer = 0.005; // 0.5% minimum profit
+            const stopDistance = trailData.trailPercent / 100;
+            
+            const idealTpPrice = isLong
+              ? currentPrice * (1 - stopDistance)
+              : currentPrice * (1 + stopDistance);
+            
+            // Enforce MINIMUM 0.5% profit (not just breakeven)
+            const minProfitPrice = isLong
+              ? trailData.entryPrice * (1 + minProfitBuffer)
+              : trailData.entryPrice * (1 - minProfitBuffer);
+            
+            const initialTpPrice = isLong
+              ? Math.max(idealTpPrice, minProfitPrice)
+              : Math.min(idealTpPrice, minProfitPrice);
+            
+            // Place the TP order
+            const orderId = await this.placeTrailingTPOrder(
+              symbol,
+              positionSide,
+              position.positionSide,
+              stopQuantity,
+              initialTpPrice,
+              isLong
+            );
+            
+            if (orderId) {
+              trailData.orderId = orderId;
+              trailData.activated = true;
+              trailData.highestPrice = currentPrice; // Start tracking from activation point
+              
+              logWithTimestamp(
+                `ProtectiveOrderService: ✅ Placed initial trailing TP #${orderId} at ${initialTpPrice.toFixed(2)} (min 0.5% profit: ${minProfitPrice.toFixed(2)})`
+              );
+            }
+          }
+          continue; // Don't trail until activated
+        }
+        
+        // STEP 2: Trail the TP if price moves in favorable direction
         let needsAdjustment = false;
         let newHighestPrice = trailData.highestPrice;
 
@@ -882,26 +894,103 @@ export class ProtectiveOrderService extends EventEmitter {
         }
 
         if (needsAdjustment) {
-          // Calculate new TP price
+          // Calculate new TP price with minimum 0.5% profit
+          const minProfitBuffer = 0.005; // 0.5% minimum profit
           const stopDistance = trailData.trailPercent / 100;
+          
           const idealTpPrice = isLong
             ? newHighestPrice * (1 - stopDistance)
             : newHighestPrice * (1 + stopDistance);
           
-          // Enforce break-even: never let TP go below entry price
+          const minProfitPrice = isLong
+            ? trailData.entryPrice * (1 + minProfitBuffer)
+            : trailData.entryPrice * (1 - minProfitBuffer);
+          
           const newTpPrice = isLong
-            ? Math.max(idealTpPrice, trailData.entryPrice)
-            : Math.min(idealTpPrice, trailData.entryPrice);
+            ? Math.max(idealTpPrice, minProfitPrice)
+            : Math.min(idealTpPrice, minProfitPrice);
 
           // Update the TP order
           await this.adjustTrailingTakeProfit(symbol, positionSide, trailData.orderId, newTpPrice);
           
           // Update tracking
           trailData.highestPrice = newHighestPrice;
+          
+          logWithTimestamp(
+            `ProtectiveOrderService: 📈 Trailed TP for ${symbol} to ${newTpPrice.toFixed(2)} (high: ${newHighestPrice.toFixed(2)}, min profit: ${minProfitPrice.toFixed(2)})`
+          );
         }
       }
     } catch (error: any) {
       logErrorWithTimestamp('ProtectiveOrderService: Error checking trailing TPs:', error.message);
+    }
+  }
+
+  /**
+   * Place the initial trailing TP order when activation threshold is reached
+   */
+  private async placeTrailingTPOrder(
+    symbol: string,
+    positionSide: string,
+    positionSideAPI: string,
+    quantity: number,
+    stopPrice: number,
+    isLong: boolean
+  ): Promise<string> {
+    try {
+      const side = isLong ? 'SELL' : 'BUY';
+      const clientOrderId = `po_trail_${symbol}_${Date.now()}`;
+      
+      const orderParams: any = {
+        symbol,
+        side,
+        type: 'STOP_MARKET',
+        quantity: symbolPrecision.formatQuantity(symbol, quantity),
+        stopPrice: symbolPrecision.formatPrice(symbol, stopPrice),
+        positionSide: positionSideAPI,
+        newClientOrderId: clientOrderId,
+        workingType: 'MARK_PRICE',
+      };
+
+      if (this.config.global.positionMode !== 'HEDGE') {
+        orderParams.reduceOnly = true;
+      }
+
+      logWithTimestamp(
+        `ProtectiveOrderService: Placing trailing TP order for ${symbol}:`,
+        JSON.stringify({ ...orderParams, apiKey: '***' }, null, 2)
+      );
+
+      const order = await placeOrder(orderParams, this.config.api);
+
+      // Track the order
+      const key = this.getPositionKey(symbol, positionSide);
+      const protectiveOrder: ProtectiveOrder = {
+        orderId: order.orderId,
+        symbol,
+        side,
+        positionSide: positionSideAPI,
+        triggerType: 'trailing_tp',
+        triggerPercent: 0, // Activation already reached
+        quantity,
+        price: stopPrice,
+        createdAt: Date.now(),
+      };
+
+      if (!this.activeOrders.has(key)) {
+        this.activeOrders.set(key, []);
+      }
+      this.activeOrders.get(key)!.push(protectiveOrder);
+
+      this.emit('protectiveOrderPlaced', protectiveOrder);
+
+      return order.orderId;
+    } catch (error: any) {
+      logErrorWithTimestamp(
+        `ProtectiveOrderService: Failed to place trailing TP order for ${symbol}:`,
+        error?.response?.data || error?.message
+      );
+      return '';
     }
   }
 
