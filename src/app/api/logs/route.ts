@@ -79,6 +79,7 @@ function parseLogLine(line: string): LogEntry | null {
 /**
  * GET /api/logs
  * Fetch logs from PM2 with optional filtering
+ * Falls back to empty logs if PM2 is not available
  */
 export async function GET(request: NextRequest) {
   try {
@@ -87,13 +88,61 @@ export async function GET(request: NextRequest) {
     const level = searchParams.get('level') as 'info' | 'warn' | 'error' | undefined;
     const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!, 10) : 500;
 
-    // Get PM2 logs
-    const { stdout } = await execAsync(`pm2 logs aster --lines ${limit} --nostream --raw 2>&1 | grep "\\[BOT\\]"  || true`);
-    
-    const lines = stdout.split('\n').filter(l => l.trim());
-    const parsedLogs = lines
-      .map(parseLogLine)
-      .filter((log): log is LogEntry => log !== null);
+    let parsedLogs: LogEntry[] = [];
+
+    try {
+      // Check if PM2 is available
+      await execAsync('which pm2');
+      
+      // Try to detect the PM2 process name (aster, aster-1, aster-2, aster-3, etc.)
+      let processName = 'aster';
+      try {
+        const { stdout: listOutput } = await execAsync('pm2 jlist');
+        const processes = JSON.parse(listOutput);
+        const asterProcess = processes.find((p: any) => 
+          p.name && (p.name === 'aster' || p.name.startsWith('aster-'))
+        );
+        if (asterProcess) {
+          processName = asterProcess.name;
+        }
+      } catch (listError) {
+        // If we can't parse the list, try common names
+        const names = ['aster-3', 'aster-2', 'aster-1', 'aster'];
+        for (const name of names) {
+          try {
+            await execAsync(`pm2 describe ${name}`);
+            processName = name;
+            break;
+          } catch {
+            continue;
+          }
+        }
+      }
+      
+      // Get PM2 logs
+      const { stdout } = await execAsync(`pm2 logs ${processName} --lines ${limit} --nostream --raw 2>&1 | grep "\\[BOT\\]"  || true`);
+      
+      const lines = stdout.split('\n').filter(l => l.trim());
+      parsedLogs = lines
+        .map(parseLogLine)
+        .filter((log): log is LogEntry => log !== null);
+    } catch (pm2Error) {
+      // PM2 not available or process not running - return empty logs with message
+      console.log('[API] PM2 not available, logs feature requires PM2 to be running');
+      return NextResponse.json({
+        success: true,
+        logs: [{
+          id: 'info_pm2',
+          timestamp: Date.now(),
+          timestampFormatted: new Date().toLocaleTimeString(),
+          level: 'info' as const,
+          component: 'System',
+          message: 'Logs are only available when the bot is running with PM2. Start with: npm run pm2:start'
+        }],
+        components: ['System'],
+        count: 1,
+      });
+    }
 
     // Filter by component
     let filteredLogs = parsedLogs;
@@ -111,7 +160,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      logs: filteredLogs.reverse(), // Most recent first
+      logs: filteredLogs, // Oldest first (newest at bottom)
       components,
       count: filteredLogs.length,
     });
@@ -131,11 +180,46 @@ export async function GET(request: NextRequest) {
 
 /**
  * DELETE /api/logs
- * Clear PM2 logs
+ * Clear PM2 logs (only works if PM2 is available)
  */
 export async function DELETE() {
   try {
-    await execAsync('pm2 flush aster');
+    // Check if PM2 is available
+    try {
+      await execAsync('which pm2');
+    } catch {
+      return NextResponse.json({
+        success: false,
+        error: 'PM2 is not available. This feature requires PM2 to be running.',
+      }, { status: 400 });
+    }
+
+    // Detect the PM2 process name
+    let processName = 'aster';
+    try {
+      const { stdout: listOutput } = await execAsync('pm2 jlist');
+      const processes = JSON.parse(listOutput);
+      const asterProcess = processes.find((p: any) => 
+        p.name && (p.name === 'aster' || p.name.startsWith('aster-'))
+      );
+      if (asterProcess) {
+        processName = asterProcess.name;
+      }
+    } catch {
+      // Fallback to trying common names
+      const names = ['aster-3', 'aster-2', 'aster-1', 'aster'];
+      for (const name of names) {
+        try {
+          await execAsync(`pm2 describe ${name}`);
+          processName = name;
+          break;
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    await execAsync(`pm2 flush ${processName}`);
     return NextResponse.json({
       success: true,
       message: 'PM2 logs cleared',

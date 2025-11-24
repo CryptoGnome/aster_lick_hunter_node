@@ -57,23 +57,13 @@ export default function LogsPage() {
       const params = new URLSearchParams();
       if (filters.component) params.append('component', filters.component);
       if (filters.level) params.append('level', filters.level);
-      if (since) params.append('since', since.toString());
       
       const response = await fetch(`/api/logs?${params}`);
       const data = await response.json();
 
       if (data.success) {
-        if (since) {
-          // Append new logs to the end (newest at bottom)
-          setLogs(prev => {
-            const combined = [...prev, ...data.logs];
-            // Keep max 1000 logs, trim from the top (oldest)
-            return combined.length > 1000 ? combined.slice(-1000) : combined;
-          });
-        } else {
-          // Full refresh - reverse so newest is at bottom
-          setLogs(data.logs);
-        }
+        // Always do full refresh (API doesn't support incremental)
+        setLogs(data.logs);
         setComponents(data.components);
         
         // Update last timestamp
@@ -97,9 +87,7 @@ export default function LogsPage() {
 
     // Poll for new logs every 2 seconds
     const interval = setInterval(() => {
-      if (lastTimestamp.current > 0) {
-        fetchLogs(lastTimestamp.current);
-      }
+      fetchLogs();
     }, 2000);
 
     return () => clearInterval(interval);
