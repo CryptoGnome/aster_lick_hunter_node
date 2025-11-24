@@ -23,6 +23,18 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Aster Liquidation Hunter",
   description: "Advanced cryptocurrency futures trading bot",
+  viewport: {
+    width: "device-width",
+    initialScale: 1,
+    maximumScale: 1,
+    userScalable: false,
+  },
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Aster Hunter",
+  },
 };
 
 export default function RootLayout({

@@ -1065,56 +1065,61 @@ export default function TradingViewChart({
         {/* Controls Row */}
         {isVisible && (
           <div className="flex flex-col gap-2 pt-3 border-t">
-            {/* Mobile: Stacked vertically */}
-            <div className="flex flex-col gap-2 sm:hidden">
-              {/* Refresh + Auto-refresh */}
+            {/* Top Row: Refresh, Auto-refresh, Timeframe */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 flex-wrap">
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5 flex-1">
-                  <span className="text-sm font-medium text-muted-foreground">Refresh:</span>
-                  <Checkbox
-                    id="auto-refresh"
-                    checked={autoRefresh}
-                    onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
-                    className="h-4 w-4"
-                  />
-                  <Label htmlFor="auto-refresh" className="text-sm cursor-pointer font-medium">
-                    Auto
-                  </Label>
-                  {autoRefresh && (
-                    <Select
-                      value={refreshInterval.toString()}
-                      onValueChange={(value) => setRefreshInterval(parseInt(value))}
-                    >
-                      <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="5">5s</SelectItem>
-                        <SelectItem value="10">10s</SelectItem>
-                        <SelectItem value="15">15s</SelectItem>
-                        <SelectItem value="30">30s</SelectItem>
-                        <SelectItem value="60">1m</SelectItem>
-                        <SelectItem value="120">2m</SelectItem>
-                        <SelectItem value="300">5m</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
-                
                 <Button
-                  variant="outline"
-                  size="sm"
+                  variant="ghost"
+                  size="icon"
                   onClick={handleRefresh}
                   disabled={isRefreshing || loading}
-                  className="h-9 px-3 shrink-0"
+                  className="h-7 w-7 shrink-0"
                 >
-                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                  Now
+                  <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
                 </Button>
+                {lastUpdate && (
+                  <span className="text-[10px] text-muted-foreground hidden sm:inline">
+                    {lastUpdate.toLocaleTimeString()}
+                  </span>
+                )}
               </div>
 
-              {/* Timeframe */}
-              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
+              <div className="h-4 w-px bg-border hidden sm:block" />
+
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5 w-full sm:w-auto">
+                <Checkbox
+                  id="auto-refresh"
+                  checked={autoRefresh}
+                  onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="auto-refresh" className="text-sm cursor-pointer font-medium min-w-[45px]">
+                  Auto
+                </Label>
+                {autoRefresh && (
+                  <Select
+                    value={refreshInterval.toString()}
+                    onValueChange={(value) => setRefreshInterval(parseInt(value))}
+                  >
+                    <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="5">5s</SelectItem>
+                      <SelectItem value="10">10s</SelectItem>
+                      <SelectItem value="15">15s</SelectItem>
+                      <SelectItem value="30">30s</SelectItem>
+                      <SelectItem value="60">1m</SelectItem>
+                      <SelectItem value="120">2m</SelectItem>
+                      <SelectItem value="300">5m</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              <div className="h-4 w-px bg-border hidden sm:block" />
+
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5 w-full sm:w-auto">
                 <Label className="text-sm text-muted-foreground font-medium min-w-[80px]">Timeframe</Label>
                 <Select value={timeframe} onValueChange={setTimeframe}>
                   <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
@@ -1129,225 +1134,80 @@ export default function TradingViewChart({
                   </SelectContent>
                 </Select>
               </div>
-
-              {/* Overlays */}
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="show-recent-orders"
-                      checked={showRecentOrders}
-                      onCheckedChange={(checked) => setShowRecentOrders(checked as boolean)}
-                      className="h-4 w-4"
-                    />
-                    <Label htmlFor="show-recent-orders" className="text-sm cursor-pointer font-medium">
-                      Orders
-                    </Label>
-                  </div>
-
-                  <div className="h-4 w-px bg-border" />
-
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="show-positions"
-                      checked={showPositions}
-                      onCheckedChange={(checked) => setShowPositions(checked as boolean)}
-                      className="h-4 w-4"
-                    />
-                    <Label htmlFor="show-positions" className="text-sm cursor-pointer font-medium">
-                      TP/SL
-                    </Label>
-                  </div>
-
-                  <div className="h-4 w-px bg-border" />
-
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="show-vwap"
-                      checked={showVWAP}
-                      onCheckedChange={(checked) => setShowVWAP(checked as boolean)}
-                      className="h-4 w-4"
-                    />
-                    <Label htmlFor="show-vwap" className="text-sm cursor-pointer font-medium">
-                      VWAP
-                    </Label>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
-                  <Checkbox 
-                    id="show-liquidations" 
-                    checked={showLiquidations}
-                    onCheckedChange={(checked) => setShowLiquidations(checked as boolean)}
-                    className="h-4 w-4"
-                  />
-                  <Label htmlFor="show-liquidations" className="text-sm cursor-pointer font-medium min-w-[40px]">
-                    Liqs
-                  </Label>
-                  {showLiquidations && (
-                    <Select value={liquidationGrouping} onValueChange={setLiquidationGrouping}>
-                      <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {LIQUIDATION_GROUPINGS.map(group => (
-                          <SelectItem key={group.value} value={group.value}>
-                            {group.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
-              </div>
             </div>
 
-            {/* Desktop: Full width with justified layout */}
-            <div className="hidden sm:flex items-center justify-between gap-4">
-              {/* Left side: Refresh, Auto-refresh, Timeframe */}
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-muted-foreground">Refresh:</span>
-                
-                <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
+            {/* Bottom Row: Overlays */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wide hidden sm:inline">Overlays:</span>
+              
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
+                <div className="flex items-center gap-2">
                   <Checkbox
-                    id="auto-refresh-desktop"
-                    checked={autoRefresh}
-                    onCheckedChange={(checked) => setAutoRefresh(checked as boolean)}
+                    id="show-recent-orders"
+                    checked={showRecentOrders}
+                    onCheckedChange={(checked) => setShowRecentOrders(checked as boolean)}
                     className="h-4 w-4"
                   />
-                  <Label htmlFor="auto-refresh-desktop" className="text-sm cursor-pointer font-medium">
-                    Auto
+                  <Label htmlFor="show-recent-orders" className="text-sm cursor-pointer font-medium">
+                    Orders
                   </Label>
-                  {autoRefresh && (
-                    <Select
-                      value={refreshInterval.toString()}
-                      onValueChange={(value) => setRefreshInterval(parseInt(value))}
-                    >
-                      <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="5">5s</SelectItem>
-                        <SelectItem value="10">10s</SelectItem>
-                        <SelectItem value="15">15s</SelectItem>
-                        <SelectItem value="30">30s</SelectItem>
-                        <SelectItem value="60">1m</SelectItem>
-                        <SelectItem value="120">2m</SelectItem>
-                        <SelectItem value="300">5m</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  )}
                 </div>
-                
-                {lastUpdate && (
-                  <span className="text-[10px] text-muted-foreground">
-                    {lastUpdate.toLocaleTimeString()}
-                  </span>
-                )}
-
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRefresh}
-                  disabled={isRefreshing || loading}
-                  className="h-9 px-3"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                  Now
-                </Button>
 
                 <div className="h-4 w-px bg-border" />
 
-                <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
-                  <Label className="text-sm text-muted-foreground font-medium">Timeframe</Label>
-                  <Select value={timeframe} onValueChange={setTimeframe}>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="show-positions"
+                    checked={showPositions}
+                    onCheckedChange={(checked) => setShowPositions(checked as boolean)}
+                    className="h-4 w-4"
+                  />
+                  <Label htmlFor="show-positions" className="text-sm cursor-pointer font-medium">
+                    TP/SL
+                  </Label>
+                </div>
+
+                <div className="h-4 w-px bg-border" />
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="show-vwap"
+                    checked={showVWAP}
+                    onCheckedChange={(checked) => setShowVWAP(checked as boolean)}
+                    className="h-4 w-4"
+                  />
+                  <Label htmlFor="show-vwap" className="text-sm cursor-pointer font-medium">
+                    VWAP
+                  </Label>
+                </div>
+              </div>
+
+              <div className="h-4 w-px bg-border hidden sm:block" />
+
+              <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
+                <Checkbox 
+                  id="show-liquidations" 
+                  checked={showLiquidations}
+                  onCheckedChange={(checked) => setShowLiquidations(checked as boolean)}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="show-liquidations" className="text-sm cursor-pointer font-medium min-w-[40px]">
+                  Liqs
+                </Label>
+                {showLiquidations && (
+                  <Select value={liquidationGrouping} onValueChange={setLiquidationGrouping}>
                     <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {TIMEFRAMES.map(tf => (
-                        <SelectItem key={tf.value} value={tf.value}>
-                          {tf.label}
+                      {LIQUIDATION_GROUPINGS.map(group => (
+                        <SelectItem key={group.value} value={group.value}>
+                          {group.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-              </div>
-
-              {/* Right side: Overlays */}
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground uppercase tracking-wide">Overlays:</span>
-                
-                <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="show-recent-orders-desktop"
-                      checked={showRecentOrders}
-                      onCheckedChange={(checked) => setShowRecentOrders(checked as boolean)}
-                      className="h-4 w-4"
-                    />
-                    <Label htmlFor="show-recent-orders-desktop" className="text-sm cursor-pointer font-medium">
-                      Orders
-                    </Label>
-                  </div>
-
-                  <div className="h-4 w-px bg-border" />
-
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="show-positions-desktop"
-                      checked={showPositions}
-                      onCheckedChange={(checked) => setShowPositions(checked as boolean)}
-                      className="h-4 w-4"
-                    />
-                    <Label htmlFor="show-positions-desktop" className="text-sm cursor-pointer font-medium">
-                      TP/SL
-                    </Label>
-                  </div>
-
-                  <div className="h-4 w-px bg-border" />
-
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="show-vwap-desktop"
-                      checked={showVWAP}
-                      onCheckedChange={(checked) => setShowVWAP(checked as boolean)}
-                      className="h-4 w-4"
-                    />
-                    <Label htmlFor="show-vwap-desktop" className="text-sm cursor-pointer font-medium">
-                      VWAP
-                    </Label>
-                  </div>
-                </div>
-
-                <div className="h-4 w-px bg-border" />
-
-                <div className="flex items-center gap-2 bg-muted/30 rounded-md px-2.5 py-1.5">
-                  <Checkbox 
-                    id="show-liquidations-desktop" 
-                    checked={showLiquidations}
-                    onCheckedChange={(checked) => setShowLiquidations(checked as boolean)}
-                    className="h-4 w-4"
-                  />
-                  <Label htmlFor="show-liquidations-desktop" className="text-sm cursor-pointer font-medium min-w-[40px]">
-                    Liqs
-                  </Label>
-                  {showLiquidations && (
-                    <Select value={liquidationGrouping} onValueChange={setLiquidationGrouping}>
-                      <SelectTrigger className="h-9 w-[100px] text-base font-medium border-2 bg-background">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {LIQUIDATION_GROUPINGS.map(group => (
-                          <SelectItem key={group.value} value={group.value}>
-                            {group.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
+                )}
               </div>
             </div>
           </div>

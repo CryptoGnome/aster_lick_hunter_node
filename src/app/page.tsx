@@ -23,6 +23,7 @@ import PerformanceCardInline from '@/components/PerformanceCardInline';
 import SessionPerformanceCard from '@/components/SessionPerformanceCard';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
 import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
+import { PullToRefresh } from '@/components/PullToRefresh';
 import { useConfig } from '@/components/ConfigProvider';
 import websocketService from '@/lib/services/websocketService';
 import { useOrderNotifications } from '@/hooks/useOrderNotifications';
@@ -144,7 +145,7 @@ export default function DashboardPage() {
   }, []); // No dependencies - only run once on mount
 
   // Refresh data manually if needed
-  const _refreshData = async () => {
+  const handleRefresh = async () => {
     try {
       const [balanceData, positionsData] = await Promise.all([
         dataStore.fetchBalance(true), // Force refresh
@@ -295,8 +296,10 @@ export default function DashboardPage() {
 
       <div className="flex h-full overflow-hidden">
         {/* Main Content */}
-        <div className="flex-1 p-6 space-y-6 overflow-y-auto">
-          {/* Account Summary - Minimal Design */}
+        <div className="flex-1 overflow-hidden">
+          <PullToRefresh onRefresh={handleRefresh}>
+            <div className="p-6 space-y-6">
+              {/* Account Summary - Minimal Design */}
           <div className="flex flex-wrap items-center gap-3">
             {/* Total Balance */}
             <div className="flex items-center gap-2">
@@ -322,7 +325,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Available Balance */}
             <div className="flex items-center gap-2">
@@ -337,7 +340,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Position Value */}
             <div className="flex items-center gap-2">
@@ -352,7 +355,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Unrealized PnL */}
             <div className="flex items-center gap-2">
@@ -390,17 +393,17 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* 24h Performance - Inline */}
             <PerformanceCardInline />
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Live Session Performance */}
             <SessionPerformanceCard />
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Active Trading Symbols */}
             <div className="flex items-center gap-2">
@@ -452,6 +455,8 @@ export default function DashboardPage() {
 
           {/* Recent Orders Table */}
           <RecentOrdersTable maxRows={100} />
+          </div>
+          </PullToRefresh>
         </div>
 
         {/* Liquidation Sidebar */}

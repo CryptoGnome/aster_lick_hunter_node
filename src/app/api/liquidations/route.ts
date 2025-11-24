@@ -31,10 +31,12 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('API error - get liquidations:', error);
+    console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
     return NextResponse.json(
       {
         success: false,
         error: 'Failed to fetch liquidations',
+        details: error instanceof Error ? error.message : String(error),
       },
       { status: 500 }
     );

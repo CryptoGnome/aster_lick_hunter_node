@@ -24,10 +24,12 @@ function getConfigPorts() {
 
   const dashboardPort = config.global?.server?.dashboardPort || 3000;
   const websocketPort = config.global?.server?.websocketPort || 8080;
+  const websocketHost = config.global?.server?.websocketHost || 'localhost';
 
   return {
     dashboardPort,
-    websocketPort
+    websocketPort,
+    websocketHost
   };
 }
 

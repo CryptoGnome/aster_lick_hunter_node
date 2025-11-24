@@ -412,8 +412,35 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
           <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
         </button>
         {!isCollapsed && (
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-3 border-t">
-            <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-3 border-t">
+            {/* Left side: Statistics */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Win Rate:</span>
+                <span className="font-medium">
+                  {statistics.closedTrades > 0
+                    ? `${statistics.winRate.toFixed(1)}% (${statistics.wins}W/${statistics.losses}L)`
+                    : 'N/A'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Net PnL:</span>
+                <span className={`font-medium ${statistics.netPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {statistics.netPnL >= 0 ? '+' : '-'}${Math.abs(statistics.netPnL).toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Closed:</span>
+                <span className="font-medium">{statistics.closedTrades}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Open:</span>
+                <span className="font-medium">{statistics.open}</span>
+              </div>
+            </div>
+
+            {/* Right side: Filters */}
+            <div className="flex items-center gap-2 flex-wrap sm:ml-auto">
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="w-[110px] h-7 text-xs">
                   <SelectValue />
@@ -454,32 +481,6 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
             </div>
           </div>
         )}
-
-        {/* Statistics Bar */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-4 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Win Rate:</span>
-            <span className="font-medium">
-              {statistics.closedTrades > 0
-                ? `${statistics.winRate.toFixed(1)}% (${statistics.wins}W/${statistics.losses}L)`
-                : 'N/A'}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Net PnL:</span>
-            <span className={`font-medium ${statistics.netPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {statistics.netPnL >= 0 ? '+' : '-'}${Math.abs(statistics.netPnL).toFixed(2)}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Closed:</span>
-            <span className="font-medium">{statistics.closedTrades}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Open:</span>
-            <span className="font-medium">{statistics.open}</span>
-          </div>
-        </div>
       </CardHeader>
 
       {!isCollapsed && (
