@@ -56,6 +56,29 @@ export const authOptions: NextAuthOptions = {
     signIn: '/login',
   },
   callbacks: {
+    async redirect({ url, baseUrl }) {
+      // Handle relative URLs
+      if (url.startsWith('/')) {
+        return url;
+      }
+      // Handle same-origin URLs
+      if (url.startsWith(baseUrl)) {
+        return url;
+      }
+      // Extract path from URL if it's a full URL (e.g., http://localhost:3000/path)
+      try {
+        const urlObj = new URL(url);
+        const baseUrlObj = new URL(baseUrl);
+        // If the path is valid, redirect to the path on the current host
+        if (urlObj.pathname) {
+          return urlObj.pathname + (urlObj.search || '');
+        }
+      } catch {
+        // Invalid URL, fall through to default
+      }
+      // Default to home page
+      return '/';
+    },
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
