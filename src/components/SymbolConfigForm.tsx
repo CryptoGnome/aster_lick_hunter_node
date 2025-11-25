@@ -1501,10 +1501,12 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                     <div className="space-y-2">
                                       <Label>Time Window (seconds)</Label>
                                       <NumberInput
-                                        value={config.symbols[selectedSymbol].thresholdTimeWindow ? config.symbols[selectedSymbol].thresholdTimeWindow / 1000 : ''}
+                                        value={config.symbols[selectedSymbol].thresholdTimeWindow !== undefined 
+                                          ? config.symbols[selectedSymbol].thresholdTimeWindow / 1000 
+                                          : 60}
                                         onChange={(value) => {
-                                          if (value === '') {
-                                            // Remove the field if empty - will use default from config.default.json
+                                          if (value === '' || value === 60) {
+                                            // Remove the field if empty or set to default - will use default from config.default.json
                                             const { thresholdTimeWindow: _thresholdTimeWindow, ...rest } = config.symbols[selectedSymbol];
                                             setConfig({
                                               ...config,
@@ -1530,10 +1532,12 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                     <div className="space-y-2">
                                       <Label>Cooldown Period (seconds)</Label>
                                       <NumberInput
-                                        value={config.symbols[selectedSymbol].thresholdCooldown ? config.symbols[selectedSymbol].thresholdCooldown / 1000 : ''}
+                                        value={config.symbols[selectedSymbol].thresholdCooldown !== undefined 
+                                          ? config.symbols[selectedSymbol].thresholdCooldown / 1000 
+                                          : 30}
                                         onChange={(value) => {
-                                          if (value === '') {
-                                            // Remove the field if empty - will use default from config.default.json
+                                          if (value === '' || value === 30) {
+                                            // Remove the field if empty or set to default - will use default from config.default.json
                                             const { thresholdCooldown: _thresholdCooldown, ...rest } = config.symbols[selectedSymbol];
                                             setConfig({
                                               ...config,
