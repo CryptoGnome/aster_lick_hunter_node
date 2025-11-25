@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { configLoader } from '@/lib/config/configLoader';
 import { configSchema } from '@/lib/config/types';
+import { DEFAULT_CONFIG } from '@/lib/config/defaults';
 
 
 export async function GET() {
@@ -18,26 +19,8 @@ export async function GET() {
   } catch (error) {
     console.error('Failed to load config:', error);
 
-    // Return default server config if loading fails
-    const defaultConfig = {
-      global: {
-        riskPercent: 2,
-        paperMode: true,
-        positionMode: 'HEDGE',
-        maxOpenPositions: 10,
-        server: {
-          dashboardPassword: 'admin',
-          dashboardPort: 3000,
-          websocketPort: 8080,
-          useRemoteWebSocket: false,
-          websocketHost: null
-        }
-      },
-      symbols: {},
-      version: '1.0.0'
-    };
-
-    return NextResponse.json(defaultConfig);
+    // Return default config from defaults.ts instead of hardcoding
+    return NextResponse.json(DEFAULT_CONFIG);
   }
 }
 

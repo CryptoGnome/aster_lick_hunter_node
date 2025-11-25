@@ -51,6 +51,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
   const [flashingOrders, setFlashingOrders] = useState<Set<number>>(new Set());
   const [hasMore, setHasMore] = useState(true);
   const [currentLimit, setCurrentLimit] = useState(50); // Start with 50 orders
+  const [isCollapsed, setIsCollapsed] = useState(false);
   const LOAD_MORE_INCREMENT = 50; // Load 50 more each time
 
   // Get available symbols from orders (not just configured symbols)
@@ -130,7 +131,9 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
 
   // Initial load
   useEffect(() => {
-    loadOrders();
+    // Clear cache and force initial load
+    orderStore.clearCache();
+    loadOrders(true);
   }, [loadOrders]);
 
   // Subscribe to order updates
@@ -397,84 +400,90 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
 
   return (
     <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            Recent Orders
-            <Badge variant="outline" className="ml-2">
-              {orders.length} {hasMore ? `of ${currentLimit}+` : ''} orders
-            </Badge>
-          </CardTitle>
-          <div className="flex items-center gap-2">
-            {/* Status Filter */}
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All Status</SelectItem>
-                <SelectItem value="FILLED">Filled</SelectItem>
-                <SelectItem value="REDUCE">Reduce</SelectItem>
-                <SelectItem value="NEW">Open</SelectItem>
-                <SelectItem value="PARTIALLY_FILLED">Partial</SelectItem>
-                <SelectItem value="CANCELED">Canceled</SelectItem>
-              </SelectContent>
-            </Select>
+      <CardHeader className="pb-3">
+        <button
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="flex items-center gap-2 hover:opacity-80 transition-opacity w-full mb-3"
+        >
+          <CardTitle className="text-base font-medium">Recent Orders</CardTitle>
+          <Badge variant="outline" className="h-5 text-[10px] hidden sm:inline-flex">
+            {orders.length} {hasMore ? `of ${currentLimit}+` : ''}
+          </Badge>
+          <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+        </button>
+        {!isCollapsed && (
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-3 border-t">
+            {/* Left side: Statistics */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Win Rate:</span>
+                <span className="font-medium">
+                  {statistics.closedTrades > 0
+                    ? `${statistics.winRate.toFixed(1)}% (${statistics.wins}W/${statistics.losses}L)`
+                    : 'N/A'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Net PnL:</span>
+                <span className={`font-medium ${statistics.netPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {statistics.netPnL >= 0 ? '+' : '-'}${Math.abs(statistics.netPnL).toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Closed:</span>
+                <span className="font-medium">{statistics.closedTrades}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Open:</span>
+                <span className="font-medium">{statistics.open}</span>
+              </div>
+            </div>
 
-            {/* Symbol Filter */}
-            <Select value={symbolFilter} onValueChange={setSymbolFilter}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All Symbols</SelectItem>
-                {availableSymbols.map(symbol => (
-                  <SelectItem key={symbol} value={symbol}>
-                    {symbol}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* Right side: Filters */}
+            <div className="flex items-center gap-2 flex-wrap sm:ml-auto">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[110px] h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Status</SelectItem>
+                  <SelectItem value="FILLED">Filled</SelectItem>
+                  <SelectItem value="REDUCE">Reduce</SelectItem>
+                  <SelectItem value="NEW">Open</SelectItem>
+                  <SelectItem value="PARTIALLY_FILLED">Partial</SelectItem>
+                  <SelectItem value="CANCELED">Canceled</SelectItem>
+                </SelectContent>
+              </Select>
 
-            {/* Refresh Button */}
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => loadOrders(true)}
-              disabled={loading}
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            </Button>
-          </div>
-        </div>
+              <Select value={symbolFilter} onValueChange={setSymbolFilter}>
+                <SelectTrigger className="w-[110px] h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Symbols</SelectItem>
+                  {availableSymbols.map(symbol => (
+                    <SelectItem key={symbol} value={symbol}>
+                      {symbol}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-        {/* Statistics Bar */}
-        <div className="flex items-center gap-4 mt-4 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Win Rate:</span>
-            <span className="font-medium">
-              {statistics.closedTrades > 0
-                ? `${statistics.winRate.toFixed(1)}% (${statistics.wins}W/${statistics.losses}L)`
-                : 'N/A'}
-            </span>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => loadOrders(true)}
+                disabled={loading}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Net PnL:</span>
-            <span className={`font-medium ${statistics.netPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {statistics.netPnL >= 0 ? '+' : '-'}${Math.abs(statistics.netPnL).toFixed(2)}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Closed:</span>
-            <span className="font-medium">{statistics.closedTrades}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Open:</span>
-            <span className="font-medium">{statistics.open}</span>
-          </div>
-        </div>
+        )}
       </CardHeader>
 
+      {!isCollapsed && (
       <CardContent>
         {loading && orders.length === 0 ? (
           <div className="space-y-2">
@@ -494,7 +503,60 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
           </div>
         ) : (
           <>
-            <div className="rounded-md border">
+            {/* Mobile Card View */}
+            <div className="sm:hidden space-y-2">
+              {displayedOrders.map((order) => {
+                const pnl = formatPnL(order.realizedProfit);
+                const isFlashing = flashingOrders.has(order.orderId);
+                
+                return (
+                  <div key={order.orderId} className={`border rounded-lg p-2.5 space-y-1.5 ${isFlashing ? 'animate-pulse bg-blue-500/5' : ''}`}>
+                    {/* Header: Symbol, Side, Time */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold text-sm">{order.symbol.replace('USDT', '')}</span>
+                        <Badge variant="outline" className={`h-4 text-[10px] px-1 ${order.side === OrderSide.BUY ? 'text-green-600 border-green-600' : 'text-red-600 border-red-600'}`}>
+                          {order.side === OrderSide.BUY ? <TrendingUp className="w-2.5 h-2.5 mr-0.5" /> : <TrendingDown className="w-2.5 h-2.5 mr-0.5" />}
+                          {order.side}
+                        </Badge>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">{formatTime(order.updateTime)}</span>
+                    </div>
+                    
+                    {/* Action & Type */}
+                    <div className="flex items-center gap-1.5">
+                      {getPositionActionBadge(order)}
+                      {getTypeBadge(order.type)}
+                      {getStatusBadge(order.status)}
+                    </div>
+                    
+                    {/* Price & Quantity */}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <div className="text-muted-foreground text-[10px]">Price</div>
+                        <div className="font-mono font-medium">${formatPrice(order.avgPrice || order.price)}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground text-[10px]">Filled</div>
+                        <div className="font-mono font-medium">{formatQuantity(order.executedQty)}/{formatQuantity(order.origQty)}</div>
+                      </div>
+                    </div>
+                    
+                    {/* PnL if exists */}
+                    {pnl && (
+                      <div className="pt-1 border-t">
+                        <span className={`text-sm font-semibold ${pnl.value >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {pnl.formatted}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            
+            {/* Desktop Table View */}
+            <div className="hidden sm:block overflow-x-auto rounded-md border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -611,6 +673,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
           </>
         )}
       </CardContent>
+      )}
     </Card>
   );
 }

@@ -522,9 +522,11 @@ export default function ErrorsPage() {
                         })()}
                       </div>
                       <div className="font-mono text-sm mb-1">{error.message}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {new Date(error.timestamp).toLocaleString()}
-                        {error.error_code && ` • Code: ${error.error_code}`}
+                      <div className="text-xs text-muted-foreground flex flex-col sm:flex-row sm:gap-1">
+                        <span className="whitespace-nowrap">{new Date(error.timestamp).toLocaleTimeString()}</span>
+                        <span className="hidden sm:inline">•</span>
+                        <span className="whitespace-nowrap">{new Date(error.timestamp).toLocaleDateString()}</span>
+                        {error.error_code && <><span className="hidden sm:inline">•</span><span>Code: {error.error_code}</span></>}
                       </div>
                     </div>
                     <div className="flex gap-1">

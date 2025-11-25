@@ -14,6 +14,8 @@ import {
   RefreshCw,
   Bug,
   Target,
+  Layers,
+  FileText,
 } from "lucide-react"
 
 import { RateLimitSidebar } from "@/components/RateLimitSidebar"
@@ -51,6 +53,11 @@ const navigation = [
     href: "/config",
   },
   {
+    title: "Tranches",
+    icon: Layers,
+    href: "/tranches",
+  },
+  {
     title: "Optimizer",
     icon: Target,
     href: "/optimizer",
@@ -59,6 +66,11 @@ const navigation = [
     title: "Wiki & Help",
     icon: BookOpen,
     href: "/wiki",
+  },
+  {
+    title: "System Logs",
+    icon: FileText,
+    href: "/logs",
   },
   {
     title: "Error Logs",
@@ -138,6 +150,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
+        {/* Navigation */}
         <SidebarGroup>
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
@@ -160,16 +173,13 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-      </SidebarContent>
+        <SidebarSeparator className="my-2" />
 
-      <SidebarSeparator />
-
-      {/* Bot Status Section */}
-      <SidebarContent>
+        {/* Bot Status Section */}
         <SidebarGroup>
           <SidebarGroupLabel>Bot Status</SidebarGroupLabel>
           <SidebarGroupContent>
-            <div className="space-y-3 px-2">
+            <div className="space-y-2.5 px-2">
               {/* Connection Status */}
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Status</span>
@@ -202,27 +212,25 @@ export function AppSidebar() {
 
               {/* Rate Limits */}
               {isConnected && (
-                <div className="mt-3 pt-3 border-t border-sidebar-border">
+                <div className="mt-2 pt-2 border-t border-sidebar-border">
                   <RateLimitSidebar />
                 </div>
               )}
             </div>
           </SidebarGroupContent>
         </SidebarGroup>
-      </SidebarContent>
 
-      <SidebarSeparator />
+        <SidebarSeparator className="my-2" />
 
-      {/* Help Section */}
-      <SidebarContent>
+        {/* Help Section */}
         <SidebarGroup>
           <SidebarGroupLabel>Help & Resources</SidebarGroupLabel>
           <SidebarGroupContent>
-            <div className="space-y-2 px-2">
+            <div className="space-y-1 px-2">
               <Button
                 variant="ghost"
                 size="sm"
-                className="w-full justify-start"
+                className="w-full justify-start h-8"
                 onClick={() => {
                   // Trigger tutorial restart
                   const event = new CustomEvent('restart-tutorial');
@@ -236,7 +244,7 @@ export function AppSidebar() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="w-full justify-start"
+                  className="w-full justify-start h-8"
                 >
                   <HelpCircle className="mr-2 h-4 w-4" />
                   Getting Started

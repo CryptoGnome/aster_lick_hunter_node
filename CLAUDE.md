@@ -39,14 +39,17 @@ npm run lint                # Run ESLint
 npx tsc --noEmit           # Check TypeScript types
 
 # Testing
-npm test                    # Run all tests
-npm run test:hunter         # Test Hunter component
-npm run test:position       # Test PositionManager
-npm run test:rate          # Test rate limiting
-npm run test:ws            # Test WebSocket functionality
-npm run test:errors        # Test error logging
-npm run test:integration   # Test trading flow integration
-npm run test:watch         # Run tests in watch mode
+npm test                        # Run all tests
+npm run test:hunter             # Test Hunter component
+npm run test:position           # Test PositionManager
+npm run test:rate               # Test rate limiting
+npm run test:ws                 # Test WebSocket functionality
+npm run test:errors             # Test error logging
+npm run test:integration        # Test trading flow integration
+npm run test:tranche            # Test tranche system (basic)
+npm run test:tranche:integration # Test tranche integration (comprehensive)
+npm run test:tranche:all        # Run all tranche tests
+npm run test:watch              # Run tests in watch mode
 
 # Utilities
 npm run optimize:ui         # Run configuration optimizer
@@ -80,9 +83,56 @@ npm run optimize:ui         # Run configuration optimizer
 |-----------|----------|---------|
 | **Hunter** | `src/lib/bot/hunter.ts` | Monitors liquidation streams, triggers trades |
 | **PositionManager** | `src/lib/bot/positionManager.ts` | Manages positions, SL/TP orders, user data streams |
+| **TrancheManager** | `src/lib/services/trancheManager.ts` | Tracks multiple position entries (tranches) per symbol |
 | **AsterBot** | `src/bot/index.ts` | Main orchestrator coordinating Hunter and PositionManager |
 | **StatusBroadcaster** | `src/bot/websocketServer.ts` | WebSocket server for real-time UI updates |
 | **ProcessManager** | `scripts/process-manager.js` | Cross-platform process lifecycle management |
+
+### Multi-Tranche Position Management
+
+The bot includes an advanced **multi-tranche system** that tracks multiple virtual position entries per symbol:
+
+**What are Tranches?**
+- Virtual position entries tracked locally while exchange sees one combined position
+- Allows isolation of underwater positions (>5% loss by default)
+- Continue trading fresh positions without adding to losers
+- Better margin utilization and risk management
+
+**Key Components:**
+- **Database Layer** (`src/lib/db/trancheDb.ts`): Tranche and event storage with SQLite
+- **TrancheManager Service** (`src/lib/services/trancheManager.ts`): Core tranche lifecycle management
+- **Hunter Integration**: Pre-trade limit checks, post-order tranche creation
+- **PositionManager Integration**: Tranche closing on SL/TP fills, exchange synchronization
+- **UI Dashboard** (`/tranches`): Real-time tranche visualization and management
+
+**Configuration (per symbol):**
+```json
+{
+  "enableTrancheManagement": true,
+  "trancheIsolationThreshold": 5,        // % loss before isolation
+  "maxTranches": 3,                      // Max active tranches
+  "maxIsolatedTranches": 2,              // Max isolated tranches
+  "trancheStrategy": {
+    "closingStrategy": "FIFO",           // FIFO, LIFO, WORST_FIRST, BEST_FIRST
+    "slTpStrategy": "NEWEST",            // NEWEST, OLDEST, BEST_ENTRY, AVERAGE
+    "isolationAction": "HOLD"            // Action when isolated
+  },
+  "allowTrancheWhileIsolated": true,    // Continue trading with isolated tranches
+  "trancheAutoCloseIsolated": false     // Auto-close when recovered
+}
+```
+
+**Testing:**
+```bash
+npm run test:tranche              # Basic system tests
+npm run test:tranche:integration  # Full integration tests (100% passing)
+npm run test:tranche:all          # Run all tranche tests
+```
+
+**Documentation:**
+- Implementation Plan: `docs/TRANCHE_IMPLEMENTATION_PLAN.md`
+- Testing Guide: `docs/TRANCHE_TESTING.md`
+- User Guide: `docs/TRANCHE_USER_GUIDE.md` (for end users)
 
 ### Services (`src/lib/services/`)
 
@@ -93,6 +143,7 @@ npm run optimize:ui         # Run configuration optimizer
 - **configManager.ts**: Hot-reload configuration management
 - **pnlService.ts**: Real-time P&L tracking and session metrics
 - **thresholdMonitor.ts**: 60-second rolling volume threshold tracking
+- **trancheManager.ts**: Multi-tranche position tracking and lifecycle management
 
 ### API Layer (`src/lib/api/`)
 
@@ -264,6 +315,13 @@ config.default.json      # Default configuration template
 - Persists all application errors with full context
 - Includes stack traces, timestamps, and trading data
 - Accessible via web UI at `/errors`
+
+**Tranche Database** (`src/lib/db/trancheDb.ts`):
+- Stores all tranche entries and lifecycle events
+- Tracks active, isolated, and closed tranches
+- Audit trail via `tranche_events` table
+- Indexed for performance (symbol, side, status, entry_time)
+- Automatic cleanup of old closed tranches
 
 ## Error Handling
 

@@ -208,7 +208,7 @@ export default function PerSymbolPerformanceTable({ timeRange }: PerSymbolPerfor
           <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       )}
-      <div className="rounded-md border">
+      <div className="overflow-x-auto rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>

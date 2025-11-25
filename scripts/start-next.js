@@ -6,12 +6,22 @@ const { getConfigPorts } = require('./get-config-ports');
 
 // Get mode from command line arguments
 const mode = process.argv[2] || 'dev';
-const { dashboardPort } = getConfigPorts();
+const { dashboardPort, websocketPort, websocketHost } = getConfigPorts();
 
 console.log(`Starting Next.js on port ${dashboardPort}...`);
+console.log(`WebSocket on port ${websocketPort}...`);
 
 // Set the PORT environment variable
 process.env.PORT = String(dashboardPort);
+
+// Set NEXT_PUBLIC_WS_PORT so client knows WebSocket port
+process.env.NEXT_PUBLIC_WS_PORT = String(websocketPort);
+
+// Set NEXTAUTH_URL to prevent localhost:3000 default
+// Use the websocketHost (real IP) with the dashboard port
+const authUrl = `http://${websocketHost}:${dashboardPort}`;
+process.env.NEXTAUTH_URL = authUrl;
+console.log(`NextAuth URL: ${authUrl}`);
 
 // Determine the command based on mode
 const isWindows = process.platform === 'win32';

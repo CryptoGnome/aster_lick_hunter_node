@@ -24,8 +24,10 @@ import {
   AlertCircle,
   Settings2,
   BarChart3,
+  Database,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { TrancheSettingsSection } from './TrancheSettingsSection';
 
 interface SymbolConfigFormProps {
   onSave: (config: Config) => void;
@@ -51,8 +53,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
           useThresholdSystem: false,
           server: {
             dashboardPassword: '',
-            dashboardPort: 3000,
-            websocketPort: 8080,
+            dashboardPort: 0,
+            websocketPort: 0,
             useRemoteWebSocket: false,
             websocketHost: null
           },
@@ -92,8 +94,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         useThresholdSystem: false,
         server: {
           dashboardPassword: 'admin',
-          dashboardPort: 3000,
-          websocketPort: 8080,
+          dashboardPort: 0,
+          websocketPort: 0,
           useRemoteWebSocket: false,
           websocketHost: null
         },
@@ -143,6 +145,14 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       vwapProtection: false,  // VWAP protection disabled by default
       vwapTimeframe: '1m',    // Default to 1 minute timeframe
       vwapLookback: 100,      // Default to 100 candles
+      // Multi-Tranche defaults (disabled by default)
+      enableTrancheManagement: false,
+      trancheIsolationThreshold: 5,
+      maxTranches: 3,
+      maxIsolatedTranches: 2,
+      allowTrancheWhileIsolated: true,
+      trancheAutoCloseIsolated: false,
+      trancheRecoveryThreshold: 0.5,
     };
   };
 
@@ -284,8 +294,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         [selectedSymbol]: hasLongSize || hasShortSize
       }));
 
-      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize).toString());
-      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize).toString());
+      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize ?? 100).toString());
+      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize ?? 100).toString());
     } else {
       setSymbolDetails(null);
     }
@@ -481,6 +491,22 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   </p>
                 </div>
               )}
+
+              <Separator />
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="debugMode">Debug Mode</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Enable verbose console logging for troubleshooting
+                  </p>
+                </div>
+                <Switch
+                  id="debugMode"
+                  checked={config.global.debugMode || false}
+                  onCheckedChange={(checked) => handleGlobalChange('debugMode', checked)}
+                />
+              </div>
 
               <Separator />
 
@@ -686,6 +712,85 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 <AlertDescription>
                   <strong>Note:</strong> After changing ports, you&apos;ll need to restart the application and access it at the new port.
                   {config.global.server?.dashboardPassword && " Password protection is active - you'll need to login to access the dashboard."}
+                </AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
+
+          {/* Liquidation Database Settings Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Liquidation Database
+              </CardTitle>
+              <CardDescription>
+                Configure how long to keep liquidation data for chart analysis
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="retentionDays">Data Retention (Days)</Label>
+                <div className="flex items-center space-x-4">
+                  <Input
+                    id="retentionDays"
+                    type="number"
+                    value={config.global.liquidationDatabase?.retentionDays ?? 90}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value);
+                      handleGlobalChange('liquidationDatabase', {
+                        ...config.global.liquidationDatabase,
+                        retentionDays: isNaN(value) ? 90 : Math.max(0, value)
+                      });
+                    }}
+                    className="w-24"
+                    min="0"
+                    max="3650"
+                    step="1"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    Days to keep liquidation data (0 = never delete)
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  More data means better chart analysis but uses more disk space. 
+                  Set to 0 to keep all liquidation data permanently.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cleanupInterval">Cleanup Interval (Hours)</Label>
+                <div className="flex items-center space-x-4">
+                  <Input
+                    id="cleanupInterval"
+                    type="number"
+                    value={config.global.liquidationDatabase?.cleanupIntervalHours ?? 24}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value);
+                      handleGlobalChange('liquidationDatabase', {
+                        ...config.global.liquidationDatabase,
+                        cleanupIntervalHours: isNaN(value) ? 24 : Math.max(1, value)
+                      });
+                    }}
+                    className="w-24"
+                    min="1"
+                    max="168"
+                    step="1"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    How often to run database cleanup (default: 24)
+                  </span>
+                </div>
+              </div>
+
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Current settings:</strong> {
+                    (config.global.liquidationDatabase?.retentionDays ?? 90) === 0 
+                      ? "All liquidation data will be kept permanently" 
+                      : `Liquidation data older than ${config.global.liquidationDatabase?.retentionDays ?? 90} days will be automatically deleted every ${config.global.liquidationDatabase?.cleanupIntervalHours ?? 24} hours`
+                  }
                 </AlertDescription>
               </Alert>
             </CardContent>
@@ -1233,11 +1338,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                     value={config.symbols[selectedSymbol].vwapLookback || 100}
                                     onChange={(e) => {
                                       const value = parseInt(e.target.value);
-                                      handleSymbolChange(
-                                        selectedSymbol,
-                                        'vwapLookback',
-                                        isNaN(value) ? 100 : value
-                                      );
+                                      if (e.target.value === '' || isNaN(value)) {
+                                        // Remove the field if empty - will use default from config.default.json
+                                        const { vwapLookback: _vwapLookback, ...rest } = config.symbols[selectedSymbol];
+                                        setConfig({
+                                          ...config,
+                                          symbols: {
+                                            ...config.symbols,
+                                            [selectedSymbol]: rest,
+                                          },
+                                        });
+                                      } else {
+                                        handleSymbolChange(selectedSymbol, 'vwapLookback', value);
+                                      }
                                     }}
                                     min="10"
                                     max="500"
@@ -1294,8 +1407,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                         value={(config.symbols[selectedSymbol].thresholdTimeWindow || 60000) / 1000}
                                         onChange={(e) => {
                                           const seconds = parseFloat(e.target.value);
-                                          const ms = isNaN(seconds) ? 60000 : seconds * 1000;
-                                          handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', ms);
+                                          if (e.target.value === '' || isNaN(seconds)) {
+                                            // Remove the field if empty - will use default from config.default.json
+                                            const { thresholdTimeWindow: _thresholdTimeWindow, ...rest } = config.symbols[selectedSymbol];
+                                            setConfig({
+                                              ...config,
+                                              symbols: {
+                                                ...config.symbols,
+                                                [selectedSymbol]: rest,
+                                              },
+                                            });
+                                          } else {
+                                            handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', seconds * 1000);
+                                          }
                                         }}
                                         min="10"
                                         max="300"
@@ -1313,8 +1437,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                         value={(config.symbols[selectedSymbol].thresholdCooldown || 30000) / 1000}
                                         onChange={(e) => {
                                           const seconds = parseFloat(e.target.value);
-                                          const ms = isNaN(seconds) ? 30000 : seconds * 1000;
-                                          handleSymbolChange(selectedSymbol, 'thresholdCooldown', ms);
+                                          if (e.target.value === '' || isNaN(seconds)) {
+                                            // Remove the field if empty - will use default from config.default.json
+                                            const { thresholdCooldown: _thresholdCooldown, ...rest } = config.symbols[selectedSymbol];
+                                            setConfig({
+                                              ...config,
+                                              symbols: {
+                                                ...config.symbols,
+                                                [selectedSymbol]: rest,
+                                              },
+                                            });
+                                          } else {
+                                            handleSymbolChange(selectedSymbol, 'thresholdCooldown', seconds * 1000);
+                                          }
                                         }}
                                         min="10"
                                         max="300"
@@ -1338,6 +1473,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                             </div>
                           </div>
                         )}
+
+                        {/* Multi-Tranche Position Management */}
+                        <div className="col-span-2">
+                          <Separator className="my-4" />
+                          <TrancheSettingsSection
+                            symbol={selectedSymbol}
+                            config={config.symbols[selectedSymbol]}
+                            onChange={(field, value) => handleSymbolChange(selectedSymbol, field, value)}
+                          />
+                        </div>
                       </CardContent>
                     </Card>
                   )}

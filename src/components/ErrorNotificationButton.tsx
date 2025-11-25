@@ -2,15 +2,22 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { Bug } from 'lucide-react';
 
 export default function ErrorNotificationButton() {
   const [hasNewErrors, setHasNewErrors] = useState(false);
   const [lastErrorCount, setLastErrorCount] = useState(0);
   const router = useRouter();
+  const { status } = useSession();
 
   useEffect(() => {
     const checkForNewErrors = async () => {
+      // Don't check for errors until authenticated
+      if (status !== 'authenticated') {
+        return;
+      }
+
       try {
         const response = await fetch('/api/errors');
         if (response.ok) {
@@ -37,7 +44,7 @@ export default function ErrorNotificationButton() {
     const interval = setInterval(checkForNewErrors, 10000);
 
     return () => clearInterval(interval);
-  }, [lastErrorCount]);
+  }, [lastErrorCount, status]);
 
   const handleClick = () => {
     setHasNewErrors(false);

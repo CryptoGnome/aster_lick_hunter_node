@@ -9,7 +9,11 @@ export function useWebSocketUrl() {
       .then(res => res.json())
       .then(data => {
         // Fix: API returns config directly, not nested under config property
-        const port = data.global?.server?.websocketPort || 8080;
+        const port = data.global?.server?.websocketPort;
+        if (!port) {
+          console.warn('WebSocket port not configured, skipping connection');
+          return;
+        }
         const useRemoteWebSocket = data.global?.server?.useRemoteWebSocket || false;
         const configHost = data.global?.server?.websocketHost;
 
@@ -45,16 +49,8 @@ export function useWebSocketUrl() {
       })
       .catch(err => {
         console.error('Failed to load WebSocket config:', err);
-        // Use smart defaults
-        let fallbackHost = 'localhost';
-        let fallbackProtocol = 'ws';
-        
-        if (typeof window !== 'undefined') {
-          fallbackHost = window.location.hostname;
-          fallbackProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        }
-        
-        setWsUrl(`${fallbackProtocol}://${fallbackHost}:8080`);
+        // Don't set a fallback URL without knowing the configured port
+        setWsUrl(null);
       });
   }, []);
 

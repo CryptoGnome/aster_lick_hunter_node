@@ -44,6 +44,7 @@ export const DEFAULT_CONFIG: Config = {
     paperMode: true,
     positionMode: 'HEDGE',
     maxOpenPositions: 10,
+    debugMode: false,
     server: {
       dashboardPassword: '',
       dashboardPort: 3000,
