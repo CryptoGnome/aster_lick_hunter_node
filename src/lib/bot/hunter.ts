@@ -11,6 +11,7 @@ import { vwapService } from '../services/vwapService';
 import { vwapStreamer } from '../services/vwapStreamer';
 import { thresholdMonitor } from '../services/thresholdMonitor';
 import { symbolPrecision } from '../utils/symbolPrecision';
+import { calculatePositionSize } from '../utils/positionSizing';
 import {
   parseExchangeError,
   NotionalError,
@@ -917,10 +918,26 @@ logWithTimestamp(`Hunter: Skipping trade - would exceed max margin for ${symbol}
           const availableBalance = parseFloat(accountInfo.availableBalance || '0');
           const usedMargin = totalBalance - availableBalance;
 
-          // Use direction-specific trade size if available
-          const requiredMargin = side === 'BUY'
-            ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
-            : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+          // Calculate position size based on mode (FIXED or PERCENTAGE)
+          let calculatedTradeSize: number;
+          if (symbolConfig.positionSizingMode === 'PERCENTAGE' && symbolConfig.percentageOfBalance) {
+            calculatedTradeSize = calculatePositionSize(totalBalance, {
+              mode: 'PERCENTAGE',
+              fixedSize: symbolConfig.tradeSize,
+              percentageOfBalance: symbolConfig.percentageOfBalance,
+              minPositionSize: symbolConfig.minPositionSize,
+              maxPositionSize: symbolConfig.maxPositionSize,
+            });
+            logWithTimestamp(`Hunter: Dynamic position sizing for ${symbol}: ${calculatedTradeSize.toFixed(2)} USDT (${symbolConfig.percentageOfBalance}% of ${totalBalance.toFixed(2)} USDT balance)`);
+          } else {
+            // Use direction-specific trade size if available, otherwise fallback to general tradeSize
+            calculatedTradeSize = side === 'BUY'
+              ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
+              : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+          }
+
+          // Use the calculated trade size for margin checks
+          const requiredMargin = calculatedTradeSize;
 
 logWithTimestamp(`Hunter: Available margin check for ${symbol}`);
 logWithTimestamp(`  Total balance: ${totalBalance.toFixed(2)} USDT`);
@@ -1042,10 +1059,27 @@ logErrorWithTimestamp(`Hunter: Could not fetch symbol info for ${symbol}`);
       }
 
       // Calculate proper quantity based on USDT margin value
-      // Use direction-specific trade size if available, otherwise fall back to general tradeSize
-      tradeSizeUSDT = side === 'BUY'
-        ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
-        : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+      // Use dynamic position sizing if enabled, otherwise use direction-specific or general trade size
+      if (symbolConfig.positionSizingMode === 'PERCENTAGE' && symbolConfig.percentageOfBalance) {
+        // Dynamic sizing - recalculate based on current balance
+        const accountInfo = await getAccountInfo(this.config.api);
+        const totalBalance = parseFloat(accountInfo.totalWalletBalance || '0');
+        
+        tradeSizeUSDT = calculatePositionSize(totalBalance, {
+          mode: 'PERCENTAGE',
+          fixedSize: symbolConfig.tradeSize,
+          percentageOfBalance: symbolConfig.percentageOfBalance,
+          minPositionSize: symbolConfig.minPositionSize,
+          maxPositionSize: symbolConfig.maxPositionSize,
+        });
+        
+        logWithTimestamp(`Hunter: Using dynamic position size for ${symbol}: ${tradeSizeUSDT.toFixed(2)} USDT (${symbolConfig.percentageOfBalance}% of ${totalBalance.toFixed(2)} USDT balance)`);
+      } else {
+        // Fixed sizing - use direction-specific trade size if available
+        tradeSizeUSDT = side === 'BUY'
+          ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
+          : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+      }
 
       notionalUSDT = tradeSizeUSDT * symbolConfig.leverage;
 

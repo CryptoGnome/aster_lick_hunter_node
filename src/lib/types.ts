@@ -9,6 +9,12 @@ export interface SymbolConfig {
   longTradeSize?: number;              // Optional: Specific margin in USDT for long positions
   shortTradeSize?: number;             // Optional: Specific margin in USDT for short positions
   maxPositionMarginUSDT?: number;     // Max margin exposure for this symbol (position size × leverage × price)
+  
+  // Dynamic position sizing
+  positionSizingMode?: 'FIXED' | 'PERCENTAGE'; // Position sizing mode (default: FIXED)
+  percentageOfBalance?: number;        // Percentage of balance to use for position sizing (0.1-100%)
+  minPositionSize?: number;            // Minimum position size in USDT (safety floor)
+  maxPositionSize?: number;            // Maximum position size in USDT (safety ceiling)
 
   // Risk parameters
   leverage: number;            // Leverage (1-125)

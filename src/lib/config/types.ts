@@ -11,6 +11,12 @@ export const symbolConfigSchema = z.object({
   longTradeSize: z.number().min(0.00001).optional(),
   shortTradeSize: z.number().min(0.00001).optional(),
   maxPositionMarginUSDT: z.number().min(0).optional(),
+  
+  // Dynamic position sizing
+  positionSizingMode: z.enum(['FIXED', 'PERCENTAGE']).optional(), // Fixed USDT or % of balance
+  percentageOfBalance: z.number().min(0.1).max(100).optional(), // % of balance for position sizing (when mode=PERCENTAGE)
+  minPositionSize: z.number().min(0.00001).optional(), // Minimum position size in USDT
+  maxPositionSize: z.number().min(0.00001).optional(), // Maximum position size in USDT
 
   // Risk parameters
   leverage: z.number().min(1).max(125),
