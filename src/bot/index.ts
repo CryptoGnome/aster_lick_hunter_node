@@ -17,6 +17,7 @@ import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../lib/utils/timestamp';
+import { updateDynamicPositionSizes } from '../lib/utils/positionSizing';
 
 // Helper function to kill all child processes (synchronous for exit handler)
 function killAllProcesses() {
@@ -42,6 +43,7 @@ class AsterBot {
   private isHedgeMode: boolean = false;
   private tradeSizeWarnings: any[] = [];
   private cleanupScheduler: any = null;
+  private positionSizingInterval: NodeJS.Timeout | null = null;
 
   constructor() {
     // Will be initialized with config port
@@ -652,6 +654,22 @@ logWithTimestamp('✅ Liquidation Hunter started');
         logWithTimestamp('✅ Database cleanup scheduler started (retention disabled)');
       }
 
+      // Start dynamic position sizing updater (every 5 minutes)
+      this.positionSizingInterval = setInterval(async () => {
+        try {
+          await updateDynamicPositionSizes();
+        } catch (error) {
+          logErrorWithTimestamp('[PositionSizing] Error updating dynamic position sizes:', error);
+        }
+      }, 5 * 60 * 1000); // 5 minutes
+      
+      // Run once immediately on startup
+      updateDynamicPositionSizes().catch(error => {
+        logErrorWithTimestamp('[PositionSizing] Error on initial position size update:', error);
+      });
+      
+      logWithTimestamp('✅ Dynamic position sizing updater started (updates every 5 minutes)');
+
       this.isRunning = true;
       this.statusBroadcaster.setRunning(true);
 logWithTimestamp('🟢 Bot is now running. Press Ctrl+C to stop.');
@@ -808,6 +826,12 @@ logWithTimestamp('✅ Price service stopped');
         this.cleanupScheduler.stop();
       }
 logWithTimestamp('✅ Cleanup scheduler stopped');
+
+      if (this.positionSizingInterval) {
+        clearInterval(this.positionSizingInterval);
+        this.positionSizingInterval = null;
+      }
+logWithTimestamp('✅ Position sizing updater stopped');
 
       // Flush liquidation buffer to prevent data loss
       const { liquidationStorage } = await import('../lib/services/liquidationStorage');

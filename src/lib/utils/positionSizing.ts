@@ -5,6 +5,10 @@
  * Includes risk assessment and "time to ruin" calculations for martingale strategies.
  */
 
+import { loadConfig, saveConfig } from '../bot/config';
+import { getAccountInfo } from '../api/market';
+import logger from './logger';
+
 export interface PositionSizingConfig {
   mode: 'FIXED' | 'PERCENTAGE';
   fixedSize: number;
@@ -252,4 +256,97 @@ Time to Ruin Estimate:
 
 ${estimate.warnings.length > 0 ? 'Warnings:\n' + estimate.warnings.join('\n') : 'No warnings'}
   `.trim();
+}
+
+/**
+ * Update dynamic position sizes for all symbols configured with PERCENTAGE mode
+ * Should be called periodically (e.g., every 5 minutes) by the bot
+ */
+export async function updateDynamicPositionSizes(): Promise<void> {
+  try {
+    const config = await loadConfig();
+    
+    // Check if any symbols use percentage mode
+    const symbolsUsingPercentage = Object.keys(config.symbols).filter(
+      symbol => config.symbols[symbol].positionSizingMode === 'PERCENTAGE'
+    );
+
+    if (symbolsUsingPercentage.length === 0) {
+      return; // No symbols using dynamic sizing
+    }
+
+    logger.info(`[PositionSizing] Updating dynamic position sizes for ${symbolsUsingPercentage.length} symbol(s)...`);
+
+    // Fetch current account balance
+    const accountInfo = await getAccountInfo({
+      apiKey: config.api.apiKey,
+      secretKey: config.api.secretKey,
+    });
+
+    const totalBalance = parseFloat(accountInfo.totalWalletBalance || '0');
+    const availableBalance = parseFloat(accountInfo.availableBalance || '0');
+
+    if (totalBalance === 0) {
+      logger.warn('[PositionSizing] Account balance is 0, skipping position size update');
+      return;
+    }
+
+    logger.info(`[PositionSizing] Current balance: $${totalBalance.toFixed(2)} (Available: $${availableBalance.toFixed(2)})`);
+
+    let updatedCount = 0;
+
+    // Update each symbol
+    for (const symbol of symbolsUsingPercentage) {
+      const symbolConfig = config.symbols[symbol];
+      const percentageOfBalance = symbolConfig.percentageOfBalance || 1.0;
+      
+      // Calculate new position size
+      const calculatedSize = (totalBalance * percentageOfBalance) / 100;
+      
+      // Apply min/max bounds
+      let newTradeSize = calculatedSize;
+      if (symbolConfig.minPositionSize !== undefined) {
+        newTradeSize = Math.max(newTradeSize, symbolConfig.minPositionSize);
+      }
+      if (symbolConfig.maxPositionSize !== undefined) {
+        newTradeSize = Math.min(newTradeSize, symbolConfig.maxPositionSize);
+      }
+      
+      // Round to 2 decimals
+      newTradeSize = Number(newTradeSize.toFixed(2));
+
+      // Only update if changed by more than $0.01 to avoid unnecessary writes
+      const currentSize = symbolConfig.tradeSize || 0;
+      if (Math.abs(newTradeSize - currentSize) > 0.01) {
+        logger.info(
+          `[PositionSizing] ${symbol}: Updating trade size from $${currentSize.toFixed(2)} to $${newTradeSize.toFixed(2)} ` +
+          `(${percentageOfBalance}% of $${totalBalance.toFixed(2)})`
+        );
+
+        // Update tradeSize
+        config.symbols[symbol].tradeSize = newTradeSize;
+
+        // If using separate long/short sizes, update those too
+        if (symbolConfig.longTradeSize !== undefined) {
+          config.symbols[symbol].longTradeSize = newTradeSize;
+        }
+        if (symbolConfig.shortTradeSize !== undefined) {
+          config.symbols[symbol].shortTradeSize = newTradeSize;
+        }
+
+        updatedCount++;
+      }
+    }
+
+    // Save config if any updates were made
+    if (updatedCount > 0) {
+      await saveConfig(config);
+      logger.info(`[PositionSizing] Updated ${updatedCount} symbol(s) and saved configuration`);
+    } else {
+      logger.info('[PositionSizing] No position size changes needed (variation < $0.01)');
+    }
+
+  } catch (error) {
+    logger.error('[PositionSizing] Failed to update dynamic position sizes:', error);
+  }
 }

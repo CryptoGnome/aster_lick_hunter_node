@@ -1073,17 +1073,17 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                 </div>
 
                                 {/* Risk Warning */}
-                                {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 2 && (
+                                {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 0.5 && (
                                   <Alert variant="destructive">
                                     <AlertCircle className="h-4 w-4" />
                                     <AlertDescription>
                                       <strong>⚠️ HIGH RISK WARNING</strong>
                                       <p className="mt-1 text-xs">
-                                        Above 2% is extremely risky! Remember: positions pyramid (scale in), so total exposure grows much larger than a single trade.
+                                        Above 0.5% is risky! Remember: positions pyramid (scale in), so total exposure grows much larger than a single trade.
                                       </p>
-                                      {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 5 && (
+                                      {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 2 && (
                                         <p className="mt-2 text-xs font-semibold">
-                                          ⚠️ EXTREME RISK: Above 5% can rapidly deplete your account!
+                                          ⚠️ EXTREME RISK: Above 2% can rapidly deplete your account!
                                         </p>
                                       )}
                                     </AlertDescription>
