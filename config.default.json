@@ -35,7 +35,8 @@
       "dashboardPort": 3000,
       "websocketPort": 8080,
       "useRemoteWebSocket": false,
-      "websocketHost": null
+      "websocketHost": null,
+      "setupComplete": false
     },
     "rateLimit": {
       "maxRequestWeight": 2400,

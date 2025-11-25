@@ -83,42 +83,47 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [showTutorial, setShowTutorial] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
 
-  // Check if API keys are configured
-  const checkApiKeysConfigured = async () => {
+  // Check server-side setup state (instead of localStorage)
+  const checkSetupStatus = async () => {
     try {
       const response = await fetch('/api/config');
       if (response.ok) {
         const config = await response.json();
         const hasApiKeys = config?.api?.apiKey && config?.api?.secretKey;
-        return hasApiKeys;
+        const setupComplete = config?.global?.server?.setupComplete === true;
+        return { hasApiKeys, setupComplete };
       }
     } catch (error) {
-      console.error('Failed to check API keys:', error);
+      console.error('Failed to check setup status:', error);
     }
-    return false;
+    return { hasApiKeys: false, setupComplete: false };
   };
 
-  // Load onboarding state from localStorage
+  // Load onboarding state - check server config instead of localStorage
   useEffect(() => {
     const initializeOnboarding = async () => {
-      const savedState = localStorage.getItem(ONBOARDING_STORAGE_KEY);
-      const isComplete = localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true';
-      const hasSetup = localStorage.getItem('aster_setup_complete') === 'true';
+      const { hasApiKeys, setupComplete } = await checkSetupStatus();
 
-      // Check if API keys are configured
-      const hasApiKeys = await checkApiKeysConfigured();
+      // If setup is complete server-side, skip onboarding regardless of browser/device
+      if (setupComplete) {
+        setIsOnboarding(false);
+        return;
+      }
 
+      // If no API keys configured, force onboarding
       if (!hasApiKeys) {
-        // No API keys configured - force onboarding
         setIsNewUser(true);
         setIsOnboarding(true);
         setCurrentStep(1); // Start at API key step
         return;
       }
 
-      if (!isComplete && !hasSetup) {
+      // Fallback: check localStorage for backward compatibility
+      const savedState = localStorage.getItem(ONBOARDING_STORAGE_KEY);
+      const isComplete = localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true';
+
+      if (!isComplete) {
         setIsNewUser(true);
-        // Auto-start onboarding for new users
         setIsOnboarding(true);
       }
 
@@ -186,16 +191,72 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const skipOnboarding = () => {
+  const skipOnboarding = async () => {
     setIsOnboarding(false);
+    
+    // Mark setup as complete in server config (persistent across browsers/devices)
+    try {
+      const response = await fetch('/api/config');
+      if (response.ok) {
+        const config = await response.json();
+        const updatedConfig = {
+          ...config,
+          global: {
+            ...config.global,
+            server: {
+              ...config.global?.server,
+              setupComplete: true
+            }
+          }
+        };
+        
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedConfig)
+        });
+      }
+    } catch (error) {
+      console.error('Failed to update setup status:', error);
+    }
+    
+    // Keep localStorage for backward compatibility
     localStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
     localStorage.setItem('aster_setup_complete', 'true');
   };
 
-  const resetOnboarding = () => {
+  const resetOnboarding = async () => {
     setSteps(initialSteps);
     setCurrentStep(0);
     setIsOnboarding(true);
+    
+    // Clear server-side setup state
+    try {
+      const response = await fetch('/api/config');
+      if (response.ok) {
+        const config = await response.json();
+        const updatedConfig = {
+          ...config,
+          global: {
+            ...config.global,
+            server: {
+              ...config.global?.server,
+              setupComplete: false
+            }
+          }
+        };
+        
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedConfig)
+        });
+      }
+    } catch (error) {
+      console.error('Failed to reset setup status:', error);
+    }
+    
+    // Clear localStorage
     localStorage.removeItem(ONBOARDING_STORAGE_KEY);
     localStorage.removeItem(ONBOARDING_COMPLETE_KEY);
   };

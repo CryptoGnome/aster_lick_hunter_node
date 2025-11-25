@@ -53,6 +53,7 @@ export interface ServerConfig {
   websocketPort?: number;       // Port for the WebSocket server (default: 8080)
   useRemoteWebSocket?: boolean; // Enable remote WebSocket access (default: false)
   websocketHost?: string | null; // Optional WebSocket host override (null for auto-detect)
+  setupComplete?: boolean;      // Track if initial setup/onboarding has been completed (server-side state)
 }
 
 export interface RateLimitConfig {
