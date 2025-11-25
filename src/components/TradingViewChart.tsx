@@ -980,11 +980,7 @@ export default function TradingViewChart({
     // Fetch historical VWAP from API
     const fetchVWAP = async () => {
       try {
-        const configResp = await fetch('/api/config');
-        const configData = await configResp.json();
-        const symbolConfig = configData.symbols?.[symbol] || {};
-        const timeframe = symbolConfig.vwapTimeframe || '1m';
-        
+        // Use the chart's timeframe for VWAP to match candle density
         const vwapResp = await fetch(`/api/vwap/historical?symbol=${symbol}&timeframe=${timeframe}&limit=500`);
         const vwapData = await vwapResp.json();
         
@@ -999,7 +995,7 @@ export default function TradingViewChart({
           vwapSeriesRef.current = chartRef.current.addLineSeries({
             color: '#ffa500',
             lineWidth: 1,
-            title: `VWAP (${timeframe})`,
+            title: `VWAP`,
             priceLineVisible: false,
             lastValueVisible: true,
           });
@@ -1021,12 +1017,18 @@ export default function TradingViewChart({
     
     return () => {
       clearInterval(interval);
-      if (vwapSeriesRef.current && chartRef.current) {
-        chartRef.current.removeSeries(vwapSeriesRef.current);
+      if (vwapSeriesRef.current) {
+        try {
+          if (chartRef.current) {
+            chartRef.current.removeSeries(vwapSeriesRef.current);
+          }
+        } catch (err) {
+          // Chart may have been removed already, ignore
+        }
         vwapSeriesRef.current = null;
       }
     };
-  }, [showVWAP, symbol]);
+  }, [showVWAP, symbol, timeframe]);
 
   // Manual refresh handler
   const handleRefresh = useCallback(() => {
