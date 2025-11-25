@@ -533,16 +533,16 @@ export default function PnLChart() {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="flex items-center gap-2 hover:opacity-80 transition-opacity w-full"
-        >
-          <BarChart3 className="h-4 w-4" />
-          <CardTitle className="text-base font-medium">Performance</CardTitle>
-          <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
-        </button>
-        {!isCollapsed && (
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mt-3 pt-3 border-t">
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+          >
+            <BarChart3 className="h-4 w-4" />
+            <CardTitle className="text-base font-medium">Performance</CardTitle>
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+          </button>
+          {!isCollapsed && (
             <div className="flex items-center gap-2">
               <Button
                 variant="ghost"
@@ -553,7 +553,7 @@ export default function PnLChart() {
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
               </Button>
-              <div className="h-4 w-px bg-border hidden sm:block" />
+              <span className="text-xs text-muted-foreground">Timeframe:</span>
               <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
                 <SelectTrigger className="h-7 w-[70px] text-xs">
                   <SelectValue />
@@ -568,12 +568,15 @@ export default function PnLChart() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="h-4 w-px bg-border hidden sm:block" />
+          )}
+        </div>
+        {!isCollapsed && (
+          <div className="flex items-center justify-end gap-2 mt-3 pt-3 border-t">
             <Tabs value={chartType} onValueChange={(value) => setChartType(value as ChartType)} className="w-full sm:w-auto">
               <TabsList className="h-7 w-full sm:w-auto grid grid-cols-4 sm:inline-flex">
                 <TabsTrigger value="daily" className="h-6 text-[11px] px-2">Daily</TabsTrigger>
                 <TabsTrigger value="cumulative" className="h-6 text-[11px] px-2">Total</TabsTrigger>
-                <TabsTrigger value="breakdown" className="h-6 text-[11px] px-2">Break</TabsTrigger>
+                <TabsTrigger value="breakdown" className="h-6 text-[11px] px-2">Breakdown</TabsTrigger>
                 <TabsTrigger value="symbols" className="h-6 text-[11px] px-2">Symbol</TabsTrigger>
               </TabsList>
             </Tabs>

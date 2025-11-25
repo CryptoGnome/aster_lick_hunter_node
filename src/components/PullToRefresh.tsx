@@ -26,7 +26,8 @@ export function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
     let scrollTop = 0;
 
     const handleTouchStart = (e: TouchEvent) => {
-      scrollTop = container.scrollTop;
+      // Check both container and window scroll position
+      scrollTop = Math.max(container.scrollTop, window.scrollY, document.documentElement.scrollTop);
       touchStartY = e.touches[0].clientY;
       startY.current = touchStartY;
     };
@@ -38,7 +39,7 @@ export function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
       const diff = currentY - touchStartY;
 
       // Only activate pull-to-refresh if at the top of the scroll
-      if (scrollTop <= 0 && diff > 0) {
+      if (scrollTop <= 5 && diff > 0) { // Allow 5px threshold for edge cases
         e.preventDefault();
         setIsPulling(true);
         const distance = Math.min(diff, MAX_PULL);
