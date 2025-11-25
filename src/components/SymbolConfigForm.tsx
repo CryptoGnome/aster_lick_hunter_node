@@ -989,11 +989,116 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
 
                         {/* Trade Size Configuration */}
                         <div className="col-span-2 space-y-4">
+                          <div className="space-y-0.5">
+                            <Label className="text-base">Trade Size Configuration</Label>
+                            <p className="text-sm text-muted-foreground">
+                              Configure how trade sizes are calculated
+                            </p>
+                          </div>
+
+                          {/* Position Sizing Mode */}
+                          <div className="space-y-2 p-4 border rounded-lg bg-muted/30">
+                            <Label htmlFor={`positionSizingMode-${selectedSymbol}`} className="font-semibold">
+                              Position Sizing Mode
+                            </Label>
+                            <Select
+                              value={config.symbols[selectedSymbol].positionSizingMode || 'FIXED'}
+                              onValueChange={(value: 'FIXED' | 'PERCENTAGE') => {
+                                handleSymbolChange(selectedSymbol, 'positionSizingMode', value);
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select sizing mode" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="FIXED">Fixed USDT (Static)</SelectItem>
+                                <SelectItem value="PERCENTAGE">Percentage of Balance (Dynamic)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <p className="text-xs text-muted-foreground">
+                              {config.symbols[selectedSymbol].positionSizingMode === 'PERCENTAGE' 
+                                ? '✨ Trade sizes auto-update every 5 minutes based on your balance'
+                                : 'Trade sizes remain constant until manually changed'}
+                            </p>
+
+                            {/* Percentage mode settings */}
+                            {config.symbols[selectedSymbol].positionSizingMode === 'PERCENTAGE' && (
+                              <div className="space-y-4 pt-2 mt-2 border-t">
+                                <div className="space-y-2">
+                                  <Label htmlFor={`percentageOfBalance-${selectedSymbol}`}>
+                                    Percentage of Balance
+                                  </Label>
+                                  <NumberInput
+                                    id={`percentageOfBalance-${selectedSymbol}`}
+                                    value={config.symbols[selectedSymbol].percentageOfBalance ?? ''}
+                                    onChange={(value) => handleSymbolChange(selectedSymbol, 'percentageOfBalance', value)}
+                                    defaultValue={1.0}
+                                    min="0.1"
+                                    max="100"
+                                    step="0.1"
+                                  />
+                                  <p className="text-xs text-muted-foreground">
+                                    Trade size = Balance × {config.symbols[selectedSymbol].percentageOfBalance || 1.0}%
+                                  </p>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`minPositionSize-${selectedSymbol}`}>
+                                      Min Size (USDT)
+                                    </Label>
+                                    <NumberInput
+                                      id={`minPositionSize-${selectedSymbol}`}
+                                      value={config.symbols[selectedSymbol].minPositionSize ?? ''}
+                                      onChange={(value) => handleSymbolChange(selectedSymbol, 'minPositionSize', value)}
+                                      defaultValue={5}
+                                      min="0.01"
+                                      step="0.01"
+                                    />
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`maxPositionSize-${selectedSymbol}`}>
+                                      Max Size (USDT)
+                                    </Label>
+                                    <NumberInput
+                                      id={`maxPositionSize-${selectedSymbol}`}
+                                      value={config.symbols[selectedSymbol].maxPositionSize ?? ''}
+                                      onChange={(value) => handleSymbolChange(selectedSymbol, 'maxPositionSize', value)}
+                                      defaultValue={1000}
+                                      min="0.01"
+                                      step="0.01"
+                                    />
+                                  </div>
+                                </div>
+
+                                {/* Risk Warning */}
+                                {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 2 && (
+                                  <Alert variant="destructive">
+                                    <AlertCircle className="h-4 w-4" />
+                                    <AlertDescription>
+                                      <strong>⚠️ HIGH RISK WARNING</strong>
+                                      <p className="mt-1 text-xs">
+                                        Above 2% is extremely risky! Remember: positions pyramid (scale in), so total exposure grows much larger than a single trade.
+                                      </p>
+                                      {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 5 && (
+                                        <p className="mt-2 text-xs font-semibold">
+                                          ⚠️ EXTREME RISK: Above 5% can rapidly deplete your account!
+                                        </p>
+                                      )}
+                                    </AlertDescription>
+                                  </Alert>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Use different sizes toggle */}
                           <div className="flex items-center justify-between">
                             <div className="space-y-0.5">
-                              <Label className="text-base">Trade Size Configuration</Label>
+                              <Label>Use Different Sizes for Long and Short</Label>
                               <p className="text-sm text-muted-foreground">
-                                Use different sizes for long and short positions
+                                Set separate trade sizes for long vs short positions
                               </p>
                             </div>
                             <Switch
@@ -1196,122 +1301,6 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                           <p className="text-xs text-muted-foreground">
                             Max total margin exposure for this symbol
                           </p>
-                        </div>
-
-                        {/* Dynamic Position Sizing Section */}
-                        <div className="space-y-4 p-4 border rounded-lg bg-muted/50">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <Label htmlFor={`positionSizingMode-${selectedSymbol}`} className="text-base font-semibold">
-                                Position Sizing Mode
-                              </Label>
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Choose between fixed USDT amounts or percentage of balance
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="space-y-2">
-                            <Select
-                              value={config.symbols[selectedSymbol].positionSizingMode || 'FIXED'}
-                              onValueChange={(value: 'FIXED' | 'PERCENTAGE') => {
-                                handleSymbolChange(selectedSymbol, 'positionSizingMode', value);
-                              }}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select sizing mode" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="FIXED">Fixed USDT (Current)</SelectItem>
-                                <SelectItem value="PERCENTAGE">Percentage of Balance (Dynamic)</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          {config.symbols[selectedSymbol].positionSizingMode === 'PERCENTAGE' && (
-                            <div className="space-y-4 pt-2">
-                              <div className="space-y-2">
-                                <Label htmlFor={`percentageOfBalance-${selectedSymbol}`}>
-                                  Percentage of Balance
-                                </Label>
-                                <NumberInput
-                                  id={`percentageOfBalance-${selectedSymbol}`}
-                                  value={config.symbols[selectedSymbol].percentageOfBalance ?? ''}
-                                  onChange={(value) => handleSymbolChange(selectedSymbol, 'percentageOfBalance', value)}
-                                  defaultValue={1.0}
-                                  min="0.1"
-                                  max="100"
-                                  step="0.1"
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                  Each trade will be {config.symbols[selectedSymbol].percentageOfBalance || 1.0}% of your available balance
-                                </p>
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                  <Label htmlFor={`minPositionSize-${selectedSymbol}`}>
-                                    Min Size (USDT)
-                                  </Label>
-                                  <NumberInput
-                                    id={`minPositionSize-${selectedSymbol}`}
-                                    value={config.symbols[selectedSymbol].minPositionSize ?? ''}
-                                    onChange={(value) => handleSymbolChange(selectedSymbol, 'minPositionSize', value)}
-                                    defaultValue={5}
-                                    min="0.00001"
-                                    step="0.01"
-                                  />
-                                  <p className="text-xs text-muted-foreground">Safety floor</p>
-                                </div>
-
-                                <div className="space-y-2">
-                                  <Label htmlFor={`maxPositionSize-${selectedSymbol}`}>
-                                    Max Size (USDT)
-                                  </Label>
-                                  <NumberInput
-                                    id={`maxPositionSize-${selectedSymbol}`}
-                                    value={config.symbols[selectedSymbol].maxPositionSize ?? ''}
-                                    onChange={(value) => handleSymbolChange(selectedSymbol, 'maxPositionSize', value)}
-                                    defaultValue={1000}
-                                    min="0.00001"
-                                    step="0.01"
-                                  />
-                                  <p className="text-xs text-muted-foreground">Safety ceiling</p>
-                                </div>
-                              </div>
-
-                              {/* Risk Warning */}
-                              {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 2 && (
-                                <Alert variant="destructive">
-                                  <AlertCircle className="h-4 w-4" />
-                                  <AlertDescription>
-                                    <strong>⚠️ HIGH RISK WARNING</strong>
-                                    <p className="mt-1">
-                                      Position sizing above 2% of balance is extremely risky. With pyramiding (scaling in), your total position can grow to consume most of your margin.
-                                    </p>
-                                    {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 5 && (
-                                      <p className="mt-2 font-semibold text-red-600">
-                                        ⚠️ EXTREME RISK: Settings above 5% can lead to rapid account depletion!
-                                      </p>
-                                    )}
-                                  </AlertDescription>
-                                </Alert>
-                              )}
-
-                              <Alert>
-                                <AlertCircle className="h-4 w-4" />
-                                <AlertDescription>
-                                  <p className="font-semibold mb-1">How it works:</p>
-                                  <p className="text-xs">
-                                    Each trade size will be calculated as: <code className="bg-muted px-1 rounded">(Balance × {config.symbols[selectedSymbol].percentageOfBalance || 1.0}%) / 100</code>
-                                  </p>
-                                  <p className="text-xs mt-2">
-                                    As your balance grows, trade sizes automatically increase. As balance shrinks, trade sizes decrease. This enables compounding while preserving capital during drawdowns.
-                                  </p>
-                                </AlertDescription>
-                              </Alert>
-                            </div>
-                          )}
                         </div>
 
                         <div className="space-y-2">
@@ -1525,9 +1514,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                               },
                                             });
                                           } else {
-                                            handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', seconds * 1000);
+                                            handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', value * 1000);
                                           }
                                         }}
+                                        defaultValue={60}
                                         min="10"
                                         max="300"
                                         step="10"
@@ -1553,9 +1543,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                               },
                                             });
                                           } else {
-                                            handleSymbolChange(selectedSymbol, 'thresholdCooldown', seconds * 1000);
+                                            handleSymbolChange(selectedSymbol, 'thresholdCooldown', value * 1000);
                                           }
                                         }}
+                                        defaultValue={30}
                                         min="10"
                                         max="300"
                                         step="10"
