@@ -28,21 +28,14 @@ export async function GET() {
     const { stdout: currentBranch } = await execAsync('git branch --show-current');
     const branch = currentBranch.trim();
 
-    // Fetch latest changes from remote for the current branch
-    await execAsync(`git fetch origin ${branch}`);
-
     // Get current commit hash
     const { stdout: currentCommit } = await execAsync('git rev-parse HEAD');
     const currentCommitShort = currentCommit.trim().substring(0, 7);
 
-    // Get latest commit on origin/{currentBranch}
-    const { stdout: latestCommit } = await execAsync(`git rev-parse origin/${branch}`);
-    const latestCommitShort = latestCommit.trim().substring(0, 7);
-
-    // Check if we're up to date
-    const isUpToDate = currentCommit.trim() === latestCommit.trim();
-
-    // Get commits we're behind (if any)
+    // Try to fetch latest changes from remote (but don't fail if this doesn't work)
+    let latestCommit = currentCommit.trim();
+    let latestCommitShort = currentCommitShort;
+    let isUpToDate = true;
     let commitsBehind = 0;
     let pendingCommits: Array<{
       hash: string;
@@ -52,25 +45,42 @@ export async function GET() {
       date: string;
     }> = [];
 
-    if (!isUpToDate) {
-      // Get commits between current and origin/{currentBranch}
-      const { stdout: commitsOutput } = await execAsync(`git log --oneline --format="%H|%h|%s|%an|%ad" --date=short HEAD..origin/${branch}`);
+    try {
+      // Fetch latest changes from remote for the current branch
+      await execAsync(`git fetch origin ${branch}`, { timeout: 5000 });
 
-      if (commitsOutput.trim()) {
-        const commits = commitsOutput.trim().split('\n');
-        commitsBehind = commits.length;
+      // Get latest commit on origin/{currentBranch}
+      const { stdout: remoteCommit } = await execAsync(`git rev-parse origin/${branch}`);
+      latestCommit = remoteCommit.trim();
+      latestCommitShort = latestCommit.substring(0, 7);
 
-        pendingCommits = commits.map(commit => {
-          const [hash, shortHash, message, author, date] = commit.split('|');
-          return {
-            hash: hash.trim(),
-            shortHash: shortHash.trim(),
-            message: message.trim(),
-            author: author.trim(),
-            date: date.trim()
-          };
-        });
+      // Check if we're up to date
+      isUpToDate = currentCommit.trim() === latestCommit;
+
+      // Get commits we're behind (if any)
+      if (!isUpToDate) {
+        // Get commits between current and origin/{currentBranch}
+        const { stdout: commitsOutput } = await execAsync(`git log --oneline --format="%H|%h|%s|%an|%ad" --date=short HEAD..origin/${branch}`);
+
+        if (commitsOutput.trim()) {
+          const commits = commitsOutput.trim().split('\n');
+          commitsBehind = commits.length;
+
+          pendingCommits = commits.map(commit => {
+            const [hash, shortHash, message, author, date] = commit.split('|');
+            return {
+              hash: hash.trim(),
+              shortHash: shortHash.trim(),
+              message: message.trim(),
+              author: author.trim(),
+              date: date.trim()
+            };
+          });
+        }
       }
+    } catch (fetchError) {
+      // If fetch fails (no network, no remote, etc.), just use local info
+      console.warn('Could not fetch remote updates:', fetchError instanceof Error ? fetchError.message : 'Unknown error');
     }
 
     const versionInfo: VersionInfo = {
@@ -79,7 +89,7 @@ export async function GET() {
       currentBranch: branch,
       isUpToDate,
       commitsBehind,
-      latestCommit: latestCommit.trim(),
+      latestCommit,
       latestCommitShort,
       pendingCommits
     };

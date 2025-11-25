@@ -122,13 +122,17 @@ export function AppSidebar() {
 
 
   const getStatusColor = () => {
-    if (!isConnected) return 'bg-red-500'
+    // On non-dashboard pages, show neutral color instead of red
+    const isNonDashboardPage = pathname !== '/' && pathname !== '';
+    if (!isConnected) return isNonDashboardPage ? 'bg-gray-400' : 'bg-red-500'
     if (!status?.isRunning) return 'bg-yellow-500'
     return 'bg-green-500'
   }
 
   const getStatusText = () => {
-    if (!isConnected) return 'Disconnected'
+    // On non-dashboard pages, show "Idle" instead of alarming "Disconnected"
+    const isNonDashboardPage = pathname !== '/' && pathname !== '';
+    if (!isConnected) return isNonDashboardPage ? 'Idle' : 'Disconnected'
     if (!status?.isRunning) return 'Connected'
     return 'Running'
   }
@@ -269,8 +273,10 @@ export function AppSidebar() {
                   </>
                 ) : (
                   <>
-                    <Activity className="h-3 w-3 text-red-500" />
-                    <span className="text-red-500">Disconnected</span>
+                    <Activity className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-muted-foreground">
+                      {pathname !== '/' && pathname !== '' ? 'Idle' : 'Disconnected'}
+                    </span>
                   </>
                 )}
               </div>
