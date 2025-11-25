@@ -2,6 +2,7 @@
 
 import React, { createContext, useState, useEffect, useContext, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { Config } from '@/lib/types';
 import { OnboardingProvider } from './onboarding/OnboardingProvider';
 import { OnboardingModal } from './onboarding/OnboardingModal';
@@ -28,6 +29,7 @@ export default function ConfigProvider({ children }: { children: React.ReactNode
   const [loading, setLoading] = useState(true);
   const pathname = usePathname();
   const isLoginPage = pathname === '/login';
+  const { status } = useSession();
 
   const createDefaultConfig = (): Config => ({
     api: { apiKey: '', secretKey: '' },
@@ -59,6 +61,11 @@ export default function ConfigProvider({ children }: { children: React.ReactNode
   });
 
   const loadConfig = useCallback(async () => {
+    // Don't load config until authenticated
+    if (status !== 'authenticated') {
+      return;
+    }
+
     setLoading(true);
     try {
       const response = await fetch('/api/config');
@@ -131,7 +138,7 @@ export default function ConfigProvider({ children }: { children: React.ReactNode
     } finally {
       setLoading(false);
     }
-  }, [setConfig, setLoading]);
+  }, [status]);
 
   const updateConfig = async (newConfig: Config) => {
     try {

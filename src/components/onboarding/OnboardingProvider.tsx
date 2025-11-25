@@ -10,7 +10,7 @@ export interface OnboardingStep {
 }
 
 interface OnboardingContextType {
-  isOnboarding: boolean;
+  isOnboarding: boolean | null; // null = loading/checking server
   currentStep: number;
   steps: OnboardingStep[];
   showTutorial: boolean;
@@ -77,7 +77,7 @@ const initialSteps: OnboardingStep[] = [
 ];
 
 export function OnboardingProvider({ children }: { children: ReactNode }) {
-  const [isOnboarding, setIsOnboarding] = useState(false);
+  const [isOnboarding, setIsOnboarding] = useState<boolean | null>(null); // null = loading, checking server
   const [currentStep, setCurrentStep] = useState(0);
   const [steps, setSteps] = useState<OnboardingStep[]>(initialSteps);
   const [showTutorial, setShowTutorial] = useState(false);
@@ -86,7 +86,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   // Check server-side setup state from public endpoint (no auth required)
   const checkSetupStatus = async () => {
     try {
-      const response = await fetch('/api/setup-status');
+      const response = await fetch('/api/public-status');
       if (response.ok) {
         const data = await response.json();
         return {
@@ -105,38 +105,28 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     const initializeOnboarding = async () => {
       const { hasApiKeys, setupComplete } = await checkSetupStatus();
 
+      console.log('🔍 Onboarding check:', { hasApiKeys, setupComplete });
+
       // If setup is complete server-side, skip onboarding regardless of browser/device
       if (setupComplete) {
+        console.log('✅ Setup complete - skipping onboarding');
         setIsOnboarding(false);
         return;
       }
 
       // If no API keys configured, force onboarding
       if (!hasApiKeys) {
+        console.log('⚠️ No API keys - forcing onboarding');
         setIsNewUser(true);
         setIsOnboarding(true);
         setCurrentStep(1); // Start at API key step
         return;
       }
 
-      // Fallback: check localStorage for backward compatibility
-      const savedState = localStorage.getItem(ONBOARDING_STORAGE_KEY);
-      const isComplete = localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true';
-
-      if (!isComplete) {
-        setIsNewUser(true);
-        setIsOnboarding(true);
-      }
-
-      if (savedState) {
-        try {
-          const parsed = JSON.parse(savedState);
-          setSteps(parsed.steps || initialSteps);
-          setCurrentStep(parsed.currentStep || 0);
-        } catch (error) {
-          console.error('Failed to parse onboarding state:', error);
-        }
-      }
+      // If we have API keys but setup not marked complete, assume it's an old install
+      // Skip onboarding but let them access it from help menu if needed
+      console.log('ℹ️ Has API keys but setup not complete - skipping onboarding (legacy install)');
+      setIsOnboarding(false);
     };
 
     initializeOnboarding();

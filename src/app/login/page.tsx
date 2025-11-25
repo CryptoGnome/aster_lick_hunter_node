@@ -14,14 +14,25 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isPasswordConfigured, setIsPasswordConfigured] = useState(false);
   const router = useRouter();
   const { data: _session, status } = useSession();
-  const { config } = useConfig();
 
-  // Check if a custom password is configured (not the default "admin")
-  const isPasswordConfigured = config?.global?.server?.dashboardPassword &&
-    config.global.server.dashboardPassword.trim().length > 0 &&
-    config.global.server.dashboardPassword !== 'admin';
+  // Check if a custom password is configured (fetch from public endpoint)
+  useEffect(() => {
+    const checkPasswordStatus = async () => {
+      try {
+        const response = await fetch('/api/public-status');
+        if (response.ok) {
+          const data = await response.json();
+          setIsPasswordConfigured(data.hasCustomPassword);
+        }
+      } catch (error) {
+        console.error('Failed to check password status:', error);
+      }
+    };
+    checkPasswordStatus();
+  }, []);
 
   // Redirect if already authenticated
   useEffect(() => {

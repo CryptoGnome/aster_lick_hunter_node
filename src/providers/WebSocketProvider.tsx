@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import websocketService from '@/lib/services/websocketService';
 import logger, { setDebugMode } from '@/lib/utils/logger';
 
@@ -27,8 +28,14 @@ export const useWebSocketConfig = () => {
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [wsPort, setWsPort] = useState(0);
   const [wsHost, setWsHost] = useState('localhost');
+  const { status } = useSession();
 
   useEffect(() => {
+    // Only fetch config after authentication
+    if (status !== 'authenticated') {
+      return;
+    }
+
     // Fetch configuration to get the WebSocket settings
     fetch('/api/config')
       .then(res => {
@@ -120,8 +127,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         }
         
         setWsHost(fallbackHost);
-        // Use default port since config failed to load
-        const wsPort = 8080;
+        // Use port from environment (set by start-next.js) or default 8080
+        const wsPort = process.env.NEXT_PUBLIC_WS_PORT || '8080';
         const fallbackUrl = `${fallbackProtocol}://${fallbackHost}:${wsPort}`;
         logger.debug('WebSocketProvider: Using fallback WebSocket URL:', fallbackUrl);
         websocketService.setUrl(fallbackUrl);

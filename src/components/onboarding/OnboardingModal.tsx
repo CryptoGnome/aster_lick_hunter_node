@@ -242,8 +242,18 @@ export function OnboardingModal() {
     }
   };
 
+  // Don't render anything while checking setup status
+  if (isOnboarding === null) {
+    return null;
+  }
+
+  // Don't render if not onboarding
+  if (!isOnboarding) {
+    return null;
+  }
+
   return (
-    <Dialog open={isOnboarding} onOpenChange={() => {}}>
+    <Dialog open={true} onOpenChange={() => {}}>
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-center justify-between">

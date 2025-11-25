@@ -64,12 +64,16 @@ export const authOptions: NextAuthOptions = {
   ],
   pages: {
     signIn: '/login',
+    error: '/login', // Error code passed in query string as ?error=
   },
   callbacks: {
     async redirect({ url, baseUrl }) {
-      // Always redirect to root dashboard after login
-      // Ignore any callback URLs to prevent localhost:3000 redirects
-      return baseUrl || '/';
+      // ALWAYS redirect to root, ignore ALL callback URLs
+      // This prevents localhost:3000 and other unwanted redirects
+      if (url.startsWith(baseUrl)) {
+        return baseUrl;
+      }
+      return baseUrl;
     },
     async jwt({ token, user }) {
       if (user) {
