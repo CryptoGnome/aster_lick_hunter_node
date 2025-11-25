@@ -122,7 +122,7 @@ export default function TradingViewChart({
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const positionLinesRef = useRef<any[]>([]);
-  const vwapLineRef = useRef<any>(null);
+  const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const orderMarkersRef = useRef<any[]>([]);
 
   // State
@@ -137,6 +137,7 @@ export default function TradingViewChart({
   const [showVWAP, setShowVWAP] = useState(false);
   const [showRecentOrders, setShowRecentOrders] = useState(false);
   const [showPositions, setShowPositions] = useState(true); // Show TP/SL lines
+  const [magnetMode, setMagnetMode] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(30); // Default 30 seconds
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -660,7 +661,7 @@ export default function TradingViewChart({
           horzLines: { color: 'rgba(197, 203, 206, 0.1)' },
         },
         crosshair: {
-          mode: 1,
+          mode: magnetMode ? 1 : 0, // 0 = normal, 1 = magnet to data points
         },
         rightPriceScale: {
           borderColor: 'rgba(197, 203, 206, 0.5)',
@@ -744,6 +745,17 @@ export default function TradingViewChart({
 
     return () => clearInterval(interval);
   }, [autoRefresh, isVisible, symbol, timeframe, refreshInterval]);
+
+  // Update crosshair mode when magnetMode changes
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({
+        crosshair: {
+          mode: magnetMode ? 1 : 0, // 0 = normal, 1 = magnet to data points
+        },
+      });
+    }
+  }, [magnetMode]);
 
   // Update chart data when klineData changes
   useEffect(() => {
@@ -955,41 +967,45 @@ export default function TradingViewChart({
   // --- VWAP overlay logic ---
   React.useEffect(() => {
     if (!showVWAP) {
-      if (candlestickSeriesRef.current && vwapLineRef.current) {
-        candlestickSeriesRef.current.removePriceLine(vwapLineRef.current);
-        vwapLineRef.current = null;
+      if (vwapSeriesRef.current && chartRef.current) {
+        chartRef.current.removeSeries(vwapSeriesRef.current);
+        vwapSeriesRef.current = null;
       }
       return;
     }
-    if (!candlestickSeriesRef.current || !symbol) {
+    if (!chartRef.current || !symbol) {
       return;
     }
-    // Fetch VWAP from streamer API (or fallback to service)
+    
+    // Fetch historical VWAP from API
     const fetchVWAP = async () => {
       try {
         const configResp = await fetch('/api/config');
         const configData = await configResp.json();
         const symbolConfig = configData.symbols?.[symbol] || {};
         const timeframe = symbolConfig.vwapTimeframe || '1m';
-        const lookback = symbolConfig.vwapLookback || 100;
-        const vwapResp = await fetch(`/api/vwap?symbol=${symbol}&timeframe=${timeframe}&lookback=${lookback}`);
+        
+        const vwapResp = await fetch(`/api/vwap/historical?symbol=${symbol}&timeframe=${timeframe}&limit=500`);
         const vwapData = await vwapResp.json();
         
-        if (vwapData && vwapData.vwap) {
-          // Remove previous VWAP line if any
-          if (vwapLineRef.current) {
-            candlestickSeriesRef.current?.removePriceLine(vwapLineRef.current);
-            vwapLineRef.current = null;
+        if (vwapData && vwapData.data && vwapData.data.length > 0) {
+          // Remove previous VWAP series if any
+          if (vwapSeriesRef.current && chartRef.current) {
+            chartRef.current.removeSeries(vwapSeriesRef.current);
+            vwapSeriesRef.current = null;
           }
-          // Add VWAP line
-          vwapLineRef.current = candlestickSeriesRef.current?.createPriceLine({
-            price: vwapData.vwap,
-            color: '#ffd600',
-            lineWidth: 2,
-            lineStyle: 0,
-            axisLabelVisible: true,
-            title: `VWAP (${timeframe})`
+          
+          // Create VWAP line series
+          vwapSeriesRef.current = chartRef.current.addLineSeries({
+            color: '#ffa500',
+            lineWidth: 1,
+            title: `VWAP (${timeframe})`,
+            priceLineVisible: false,
+            lastValueVisible: true,
           });
+          
+          // Set VWAP data
+          vwapSeriesRef.current.setData(vwapData.data);
         } else {
           console.warn('[TradingViewChart] No VWAP data returned for', symbol, timeframe, vwapData);
         }
@@ -997,14 +1013,17 @@ export default function TradingViewChart({
         console.warn('[TradingViewChart] VWAP fetch error', err);
       }
     };
+    
     fetchVWAP();
-    // Optionally, poll for updates every 10s
-    const interval = setInterval(fetchVWAP, 10000);
+    
+    // Optionally, poll for updates every 30s (VWAP changes slowly)
+    const interval = setInterval(fetchVWAP, 30000);
+    
     return () => {
       clearInterval(interval);
-      if (candlestickSeriesRef.current && vwapLineRef.current) {
-        candlestickSeriesRef.current.removePriceLine(vwapLineRef.current);
-        vwapLineRef.current = null;
+      if (vwapSeriesRef.current && chartRef.current) {
+        chartRef.current.removeSeries(vwapSeriesRef.current);
+        vwapSeriesRef.current = null;
       }
     };
   }, [showVWAP, symbol]);
@@ -1199,6 +1218,18 @@ export default function TradingViewChart({
                     </Select>
                   )}
                 </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <Checkbox
+                  id="magnet-mode"
+                  checked={magnetMode}
+                  onCheckedChange={(checked) => setMagnetMode(checked as boolean)}
+                  className="h-4 w-4"
+                />
+                <Label htmlFor="magnet-mode" className="text-xs cursor-pointer">
+                  Magnet
+                </Label>
               </div>
             </div>
 
