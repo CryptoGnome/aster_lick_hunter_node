@@ -19,9 +19,25 @@ export class Database {
         console.error('Error opening database:', err);
       } else {
         console.log('Connected to SQLite database at:', DB_PATH);
+        this.optimizeDatabase();
         this.initializeSchema();
       }
     });
+  }
+
+  private optimizeDatabase(): void {
+    // WAL mode: Better concurrency, faster writes
+    this.db.run("PRAGMA journal_mode = WAL");
+    // NORMAL sync: Less fsync() calls, still safe with WAL
+    this.db.run("PRAGMA synchronous = NORMAL");
+    // 64MB cache for better performance
+    this.db.run("PRAGMA cache_size = -64000");
+    // Temp tables in memory
+    this.db.run("PRAGMA temp_store = MEMORY");
+    // Larger page size for better I/O
+    this.db.run("PRAGMA page_size = 4096");
+    
+    console.log('SQLite optimizations applied: WAL mode, NORMAL sync, 64MB cache');
   }
 
   static getInstance(): Database {
@@ -70,8 +86,20 @@ export class Database {
         console.error('Error creating schema:', err);
       } else {
         console.log('Database schema initialized');
+        // Initialize tranche tables after main schema is ready
+        this.initTrancheTables();
       }
     });
+  }
+
+  private async initTrancheTables(): Promise<void> {
+    try {
+      const { initTrancheTables } = await import('./trancheDb');
+      await initTrancheTables();
+      console.log('Tranche tables initialized');
+    } catch (error) {
+      console.error('Error initializing tranche tables:', error);
+    }
   }
 
   async run(sql: string, params: any[] = []): Promise<void> {

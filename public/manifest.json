@@ -1,0 +1,17 @@
+{
+  "name": "Aster Liquidation Hunter",
+  "short_name": "Aster Hunter",
+  "description": "Advanced cryptocurrency futures trading bot",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "any",
+      "type": "image/x-icon"
+    }
+  ]
+}

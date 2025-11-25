@@ -461,6 +461,90 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp('ℹ️  Tranche Management disabled for all symbols');
       }
 
+      // Initialize Protective Order Service (always available for on-demand protection via UI)
+      try {
+        const { initializeProtectiveOrderService } = await import('../lib/services/protectiveOrderService');
+        const protectiveOrderService = initializeProtectiveOrderService(this.config);
+        protectiveOrderService.start();
+        logWithTimestamp('✅ Protective Order Service ready (activated per-position via UI)');
+        
+        // Listen for scale_out_position commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('scale_out_position');
+        this.statusBroadcaster.on('scale_out_position', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Activating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.activateProtection(
+              data.symbol,
+              data.side,
+              data.entryPrice,
+              data.quantity,
+              data.settings
+            );
+            this.statusBroadcaster.broadcast('scale_out_position_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to activate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('scale_out_position_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for deactivate_scale_out commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('deactivate_scale_out');
+        this.statusBroadcaster.on('deactivate_scale_out', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Deactivating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.deactivateProtection(data.symbol, data.side);
+            
+            // Broadcast success and status update
+            this.statusBroadcaster.broadcast('deactivate_scale_out_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+            
+            // Immediately broadcast status update to UI
+            this.statusBroadcaster.broadcast('scale_out_status_update', {
+              symbol: data.symbol,
+              side: data.side,
+              isActive: false,
+              reason: 'manual_deactivation'
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to deactivate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('deactivate_scale_out_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for check_scale_out_status commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('check_scale_out_status');
+        this.statusBroadcaster.on('check_scale_out_status', (data: any) => {
+          const isActive = protectiveOrderService.isProtectionActive(data.symbol, data.side);
+          this.statusBroadcaster.broadcast('scale_out_status_response', {
+            symbol: data.symbol,
+            side: data.side,
+            isActive,
+            timestamp: new Date()
+          });
+        });
+      } catch (error: any) {
+        logErrorWithTimestamp('⚠️  Protective Order Service failed to start:', error.message);
+        this.statusBroadcaster.addError(`Protective Order Service: ${error.message}`);
+        // Continue without protective orders
+      }
+
       // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
       if (!this.hunter) {
         this.hunter = new Hunter(this.config, this.isHedgeMode);
@@ -724,6 +808,11 @@ logWithTimestamp('✅ Price service stopped');
         this.cleanupScheduler.stop();
       }
 logWithTimestamp('✅ Cleanup scheduler stopped');
+
+      // Flush liquidation buffer to prevent data loss
+      const { liquidationStorage } = await import('../lib/services/liquidationStorage');
+      await liquidationStorage.shutdown();
+logWithTimestamp('✅ Liquidation storage flushed');
 
       configManager.stop();
 logWithTimestamp('✅ Config manager stopped');

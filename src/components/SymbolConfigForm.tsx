@@ -27,6 +27,7 @@ import {
   Database,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { TrancheSettingsSection } from './TrancheSettingsSection';
 
 interface SymbolConfigFormProps {
   onSave: (config: Config) => void;
@@ -52,8 +53,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
           useThresholdSystem: false,
           server: {
             dashboardPassword: '',
-            dashboardPort: 3000,
-            websocketPort: 8080,
+            dashboardPort: 0,
+            websocketPort: 0,
             useRemoteWebSocket: false,
             websocketHost: null
           },
@@ -93,8 +94,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         useThresholdSystem: false,
         server: {
           dashboardPassword: 'admin',
-          dashboardPort: 3000,
-          websocketPort: 8080,
+          dashboardPort: 0,
+          websocketPort: 0,
           useRemoteWebSocket: false,
           websocketHost: null
         },
@@ -144,6 +145,14 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       vwapProtection: false,  // VWAP protection disabled by default
       vwapTimeframe: '1m',    // Default to 1 minute timeframe
       vwapLookback: 100,      // Default to 100 candles
+      // Multi-Tranche defaults (disabled by default)
+      enableTrancheManagement: false,
+      trancheIsolationThreshold: 5,
+      maxTranches: 3,
+      maxIsolatedTranches: 2,
+      allowTrancheWhileIsolated: true,
+      trancheAutoCloseIsolated: false,
+      trancheRecoveryThreshold: 0.5,
     };
   };
 
@@ -285,8 +294,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         [selectedSymbol]: hasLongSize || hasShortSize
       }));
 
-      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize).toString());
-      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize).toString());
+      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize ?? 100).toString());
+      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize ?? 100).toString());
     } else {
       setSymbolDetails(null);
     }
@@ -482,6 +491,22 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   </p>
                 </div>
               )}
+
+              <Separator />
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="debugMode">Debug Mode</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Enable verbose console logging for troubleshooting
+                  </p>
+                </div>
+                <Switch
+                  id="debugMode"
+                  checked={config.global.debugMode || false}
+                  onCheckedChange={(checked) => handleGlobalChange('debugMode', checked)}
+                />
+              </div>
 
               <Separator />
 
@@ -1448,6 +1473,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                             </div>
                           </div>
                         )}
+
+                        {/* Multi-Tranche Position Management */}
+                        <div className="col-span-2">
+                          <Separator className="my-4" />
+                          <TrancheSettingsSection
+                            symbol={selectedSymbol}
+                            config={config.symbols[selectedSymbol]}
+                            onChange={(field, value) => handleSymbolChange(selectedSymbol, field, value)}
+                          />
+                        </div>
                       </CardContent>
                     </Card>
                   )}
