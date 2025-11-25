@@ -32,19 +32,14 @@ export interface SymbolConfig {
   thresholdTimeWindow?: number; // Time window in ms for volume accumulation (default: 60000)
   thresholdCooldown?: number;   // Cooldown period in ms between triggers (default: 30000)
 
-  // Tranche management settings
-  enableTrancheManagement?: boolean;           // Enable multi-tranche system (default: false)
-  trancheIsolationThreshold?: number;          // % loss to isolate tranche (default: 5)
-  maxTranches?: number;                        // Max active tranches (default: 3)
-  maxIsolatedTranches?: number;                // Max isolated tranches before blocking (default: 2)
-  trancheAllocation?: 'equal' | 'dynamic';     // How to size new tranches (default: 'equal')
-  trancheStrategy?: TrancheStrategy;           // Tranche behavior settings
-
-  // Advanced tranche settings
-  allowTrancheWhileIsolated?: boolean;         // Allow new tranches when some are isolated (default: true)
-  isolatedTrancheMinMargin?: number;           // Min margin to keep in isolated tranches (USDT)
-  trancheAutoCloseIsolated?: boolean;          // Auto-close isolated tranches when recovered (default: false)
-  trancheRecoveryThreshold?: number;           // % profit to auto-close isolated tranche (default: 0.5%)
+  // Multi-Tranche Position Management
+  enableTrancheManagement?: boolean;     // Enable tracking of multiple independent position entries
+  trancheIsolationThreshold?: number;    // P&L % threshold to isolate underwater tranches (e.g., 5 for -5%)
+  maxTranches?: number;                  // Maximum number of active tranches per symbol/side (e.g., 3)
+  maxIsolatedTranches?: number;          // Maximum number of isolated tranches allowed before blocking new trades
+  allowTrancheWhileIsolated?: boolean;   // Allow opening new tranches while some are isolated
+  trancheAutoCloseIsolated?: boolean;    // Automatically close isolated tranches when they recover
+  trancheRecoveryThreshold?: number;     // P&L % threshold to auto-close recovered tranches (e.g., 0.5 for +0.5%)
 }
 
 export interface ApiCredentials {
@@ -58,6 +53,7 @@ export interface ServerConfig {
   websocketPort?: number;       // Port for the WebSocket server (default: 8080)
   useRemoteWebSocket?: boolean; // Enable remote WebSocket access (default: false)
   websocketHost?: string | null; // Optional WebSocket host override (null for auto-detect)
+  setupComplete?: boolean;      // Track if initial setup/onboarding has been completed (server-side state)
 }
 
 export interface RateLimitConfig {
@@ -78,8 +74,10 @@ export interface GlobalConfig {
   positionMode?: 'ONE_WAY' | 'HEDGE'; // Position mode preference (optional)
   maxOpenPositions?: number; // Max number of open positions (hedged pairs count as one)
   useThresholdSystem?: boolean; // Enable 60-second rolling volume threshold system (default: false)
+  debugMode?: boolean;      // Enable verbose console logging for debugging (default: false)
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration
+  liquidationDatabase?: LiquidationDatabaseConfig; // Liquidation data retention settings
 }
 
 export interface Config {
@@ -144,101 +142,4 @@ export interface MarkPrice {
   symbol: string;
   markPrice: string;
   indexPrice: string;
-}
-
-// Tranche Management Types
-
-export interface TrancheStrategy {
-  // Note: Closing strategy is hardcoded to LIFO (Last In, First Out)
-  // This closes newest tranches first for quick profit-taking
-
-  // Note: SL/TP strategy is hardcoded to BEST_ENTRY
-  // This protects the most favorable entry price
-
-  // Isolation behavior (future feature - currently only HOLD is implemented)
-  isolationAction: 'HOLD' | 'REDUCE_LEVERAGE' | 'PARTIAL_CLOSE';
-}
-
-export interface Tranche {
-  // Identity
-  id: string;                      // UUID v4
-  symbol: string;                  // e.g., "BTCUSDT"
-  side: 'LONG' | 'SHORT';          // Position direction
-  positionSide: 'LONG' | 'SHORT' | 'BOTH'; // Exchange position side
-
-  // Entry details
-  entryPrice: number;              // Average entry price for this tranche
-  quantity: number;                // Position size in base asset (BTC, ETH, etc.)
-  marginUsed: number;              // USDT margin allocated
-  leverage: number;                // Leverage used (1-125)
-  entryTime: number;               // Unix timestamp
-  entryOrderId?: string;           // Exchange order ID that created this tranche
-
-  // Exit details
-  exitPrice?: number;              // Average exit price (when closed)
-  exitTime?: number;               // Unix timestamp
-  exitOrderId?: string;            // Exchange order ID that closed this tranche
-
-  // P&L tracking
-  unrealizedPnl: number;           // Current unrealized P&L (updated real-time)
-  realizedPnl: number;             // Final realized P&L (on close)
-
-  // Risk management (inherited from SymbolConfig at entry time)
-  tpPercent: number;               // Take profit %
-  slPercent: number;               // Stop loss %
-  tpPrice: number;                 // Calculated TP price
-  slPrice: number;                 // Calculated SL price
-
-  // Status tracking
-  status: 'active' | 'closed' | 'liquidated';
-  isolated: boolean;               // True if underwater > isolation threshold
-  isolationTime?: number;          // When it became isolated
-  isolationPrice?: number;         // Price when isolated
-
-  // Metadata
-  notes?: string;                  // Optional notes (e.g., "manual entry", "recovered from restart")
-}
-
-export interface TrancheGroup {
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  positionSide: 'LONG' | 'SHORT' | 'BOTH';
-
-  // Tranche tracking
-  tranches: Tranche[];             // All tranches (active + closed)
-  activeTranches: Tranche[];       // Currently open tranches
-  isolatedTranches: Tranche[];     // Underwater tranches
-
-  // Aggregated metrics (sum of active tranches)
-  totalQuantity: number;           // Total position size
-  totalMarginUsed: number;         // Total margin allocated
-  weightedAvgEntry: number;        // Weighted average entry price
-  totalUnrealizedPnl: number;      // Sum of all unrealized P&L
-
-  // Exchange sync
-  lastExchangeQuantity: number;    // Last known exchange position size
-  lastExchangeSync: number;        // Last sync timestamp
-  syncStatus: 'synced' | 'drift' | 'conflict'; // Sync health
-
-  // Order management
-  activeSlOrderId?: number;        // Current exchange SL order
-  activeTpOrderId?: number;        // Current exchange TP order
-  targetSlPrice?: number;          // Target SL price
-  targetTpPrice?: number;          // Target TP price
-}
-
-export interface TrancheEvent {
-  id: number;                      // Auto-increment ID
-  trancheId: string;               // Foreign key to tranche
-  eventType: 'created' | 'isolated' | 'closed' | 'liquidated' | 'updated';
-  eventTime: number;               // Unix timestamp
-
-  // Event details
-  price?: number;                  // Price at event time
-  quantity?: number;               // Quantity affected
-  pnl?: number;                    // P&L at event (if applicable)
-
-  // Context
-  trigger?: string;                // What triggered the event
-  metadata?: string;               // JSON with additional details
-}
+};

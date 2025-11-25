@@ -30,11 +30,6 @@ export const symbolConfigSchema = z.object({
 
   // Threshold system settings
   useThreshold: z.boolean().optional(),
-  thresholdTimeWindow: z.number().min(10000).optional(), // Minimum 10 seconds
-  thresholdCooldown: z.number().min(10000).optional(), // Minimum 10 seconds
-
-  // Order execution settings
-  forceMarketEntry: z.boolean().optional(),
 }).refine(data => {
   // Ensure we have either legacy or new volume thresholds
   return data.volumeThresholdUSDT !== undefined ||

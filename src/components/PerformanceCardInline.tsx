@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Clock } from 'lucide-react';
+import { Clock, TrendingUp, TrendingDown } from 'lucide-react';
 import websocketService from '@/lib/services/websocketService';
 import dataStore from '@/lib/services/dataStore';
 
@@ -115,42 +115,51 @@ export default function PerformanceCardInline() {
 
   if (isLoading || !pnlData) {
     return (
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex items-center gap-2">
         <Clock className="h-4 w-4 text-muted-foreground" />
         <div className="flex flex-col">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">24h</span>
-          <Skeleton className="h-4 w-16" />
+          <span className="text-xs text-muted-foreground">24h Performance</span>
+          <Skeleton className="h-5 w-24" />
         </div>
       </div>
     );
   }
 
   const totalPnL = pnlData.metrics.totalPnl;
+  const totalRealizedPnL = pnlData.metrics.totalRealizedPnl;
+  const totalFees = pnlData.metrics.totalCommission + pnlData.metrics.totalFundingFee;
   const totalTrades = pnlData.dailyPnL.reduce((sum, day) => sum + day.tradeCount, 0);
   const isProfit = totalPnL >= 0;
   const returnPercent = totalBalance > 0 ? (totalPnL / totalBalance) * 100 : 0;
 
   return (
-    <div className="flex items-center gap-1.5 shrink-0">
+    <div className="flex items-center gap-2">
       <Clock className="h-4 w-4 text-muted-foreground" />
       <div className="flex flex-col">
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">24h</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">24h</span>
           {totalTrades > 0 && (
-            <Badge variant="secondary" className="h-3 text-[9px] px-0.5">
-              {totalTrades}
+            <Badge variant="secondary" className="h-3.5 text-[10px] px-1">
+              {totalTrades} trades
             </Badge>
           )}
         </div>
-        <div className="flex items-center gap-1">
-          <span className={`text-sm font-semibold whitespace-nowrap ${
-            isProfit ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
-          }`}>
-            {formatCurrency(totalPnL)}
-          </span>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            {isProfit ? (
+              <TrendingUp className="h-3.5 w-3.5 text-green-600" />
+            ) : (
+              <TrendingDown className="h-3.5 w-3.5 text-red-600" />
+            )}
+            <span className={`text-lg font-semibold ${
+              isProfit ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
+            }`}>
+              {formatCurrency(totalPnL)}
+            </span>
+          </div>
           <Badge
             variant={isProfit ? "outline" : "destructive"}
-            className={`h-3 text-[9px] px-0.5 ${
+            className={`h-4 text-[10px] px-1 ${
               isProfit
                 ? 'border-green-600 text-green-600 dark:border-green-400 dark:text-green-400'
                 : ''
@@ -158,6 +167,10 @@ export default function PerformanceCardInline() {
           >
             {formatPercentage(returnPercent)}
           </Badge>
+          <div className="flex gap-2 text-[10px] text-muted-foreground">
+            <span>Real: {formatCurrency(totalRealizedPnL)}</span>
+            <span>Fees: {formatCurrency(Math.abs(totalFees))}</span>
+          </div>
         </div>
       </div>
     </div>

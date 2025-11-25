@@ -29,12 +29,14 @@
     "positionMode": "HEDGE",
     "maxOpenPositions": 5,
     "useThresholdSystem": false,
+    "debugMode": false,
     "server": {
       "dashboardPassword": "admin",
       "dashboardPort": 3000,
       "websocketPort": 8080,
       "useRemoteWebSocket": false,
-      "websocketHost": null
+      "websocketHost": null,
+      "setupComplete": false
     },
     "rateLimit": {
       "maxRequestWeight": 2400,
@@ -46,6 +48,10 @@
       "deduplicationWindowMs": 1000,
       "parallelProcessing": true,
       "maxConcurrentRequests": 3
+    },
+    "liquidationDatabase": {
+      "retentionDays": 90,
+      "cleanupIntervalHours": 24
     }
   },
   "version": "1.1.0"

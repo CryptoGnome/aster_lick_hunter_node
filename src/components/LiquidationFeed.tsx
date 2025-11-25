@@ -41,21 +41,27 @@ export default function LiquidationFeed({ volumeThresholds = {}, maxEvents = 50 
   });
   const { formatQuantity, formatPriceWithCommas } = useSymbolPrecision();
 
-  // Capture initial values to avoid re-running effect when props change
-  const initialMaxEvents = useRef(maxEvents);
-  const initialVolumeThresholds = useRef(volumeThresholds);
+  // Use refs to track current prop values without causing re-subscriptions
+  const volumeThresholdsRef = useRef(volumeThresholds);
+  const maxEventsRef = useRef(maxEvents);
+
+  // Update refs when props change (doesn't trigger WebSocket re-subscription)
+  useEffect(() => {
+    volumeThresholdsRef.current = volumeThresholds;
+    maxEventsRef.current = maxEvents;
+  }, [volumeThresholds, maxEvents]);
 
   // Load historical liquidations on mount
   useEffect(() => {
     const loadHistoricalLiquidations = async () => {
       try {
-        const response = await fetch(`/api/liquidations?limit=${initialMaxEvents.current}`);
+        const response = await fetch(`/api/liquidations?limit=${maxEventsRef.current}`);
         if (response.ok) {
           const result = await response.json();
           if (result.success && result.data) {
             const historicalEvents = result.data.map((liq: any) => {
-              const volume = liq.volume_usdt || (liq.quantity * liq.price);
-              const threshold = initialVolumeThresholds.current[liq.symbol] || 10000;
+              const volume = liq.quantity * liq.price;
+              const threshold = volumeThresholdsRef.current[liq.symbol] || 10000;
               return {
                 symbol: liq.symbol,
                 side: liq.side,
@@ -98,15 +104,17 @@ export default function LiquidationFeed({ volumeThresholds = {}, maxEvents = 50 
     loadHistoricalLiquidations();
   }, []); // Only run once on mount - using refs for current values
 
-  // Handle WebSocket messages
+  // Handle WebSocket messages - Subscribe ONCE on mount
   useEffect(() => {
+    console.log('[LiquidationFeed] Subscribing to WebSocket');
+    
     const handleMessage = (message: any) => {
       if (message.type === 'liquidation') {
         const liquidationData = message.data;
 
-        // Calculate volume and determine if high volume
+        // Calculate volume and determine if high volume (use ref for latest threshold)
         const volume = liquidationData.quantity * liquidationData.price;
-        const threshold = volumeThresholds[liquidationData.symbol] || 10000; // Default $10k
+        const threshold = volumeThresholdsRef.current[liquidationData.symbol] || 10000;
         const isHighVolume = volume >= threshold;
 
         const liquidationEvent: LiquidationEvent = {
@@ -116,7 +124,7 @@ export default function LiquidationFeed({ volumeThresholds = {}, maxEvents = 50 
         };
 
         setEvents(prev => {
-          const newEvents = [liquidationEvent, ...prev].slice(0, maxEvents);
+          const newEvents = [liquidationEvent, ...prev].slice(0, maxEventsRef.current);
 
           // Update stats
           const now = Date.now();
@@ -148,10 +156,11 @@ export default function LiquidationFeed({ volumeThresholds = {}, maxEvents = 50 
     const cleanupConnectionListener = websocketService.addConnectionListener(handleConnectionChange);
 
     return () => {
+      console.log('[LiquidationFeed] Cleaning up WebSocket subscription');
       cleanupMessageHandler();
       cleanupConnectionListener();
     };
-  }, [volumeThresholds, maxEvents]);
+  }, []); // Empty deps - subscribe to WebSocket only once on mount
 
   const formatTime = (timestamp: Date | number): string => {
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);

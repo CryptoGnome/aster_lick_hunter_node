@@ -121,21 +121,22 @@ class PnLService extends EventEmitter {
         });
       }
 
-      // Initialize starting accumulated PnL on first update (even if zero)
-      if (this.lastUpdateTime === 0) {
+      // Initialize starting accumulated PnL on first update
+      if (this.sessionPnL.startingAccumulatedPnl === 0 && totalAccumulatedPnl !== 0) {
         this.sessionPnL.startingAccumulatedPnl = totalAccumulatedPnl;
       }
 
-      // Update session PnL tracking
+      // Update session PnL
       const _previousAccumulated = this.sessionPnL.currentAccumulatedPnl;
       this.sessionPnL.currentAccumulatedPnl = totalAccumulatedPnl;
       this.sessionPnL.unrealizedPnl = totalUnrealizedPnl;
 
-      // Note: Session realized PnL is now accumulated from individual trades in updateFromOrderEvent
-      // using the 'rp' field which gives accurate per-trade realized profit
-      // We keep the accumulated PnL fields for reference but don't use them for session tracking
-
+      // Session realized PnL is the difference from starting point
+      this.sessionPnL.realizedPnl = totalAccumulatedPnl - this.sessionPnL.startingAccumulatedPnl;
       this.sessionPnL.totalPnl = this.sessionPnL.realizedPnl + totalUnrealizedPnl;
+
+      // Trade counting is now handled in updateFromOrderEvent via the rp field
+      // We only track accumulated PnL changes here for verification
 
       // Update drawdown
       const currentValue = this.sessionPnL.currentBalance + this.sessionPnL.unrealizedPnl;
@@ -192,9 +193,6 @@ class PnLService extends EventEmitter {
           // Count closing trades (reduce-only or trades with realized PnL)
           const isReduceOnly = order.R === true || order.R === 'true';
           if (isReduceOnly || realizedProfit !== 0) {
-            // Accumulate realized PnL for the session
-            this.sessionPnL.realizedPnl += realizedProfit;
-
             this.sessionPnL.tradeCount++;
 
             // Track win/loss based on realized profit

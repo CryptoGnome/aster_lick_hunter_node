@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Shield } from 'lucide-react';
 import { useConfig } from '@/components/ConfigProvider';
+import { hashPassword } from '@/lib/utils/password';
 
 interface PasswordSetupGuardProps {
   children: React.ReactNode;
@@ -66,7 +67,10 @@ export function PasswordSetupGuard({ children }: PasswordSetupGuardProps) {
     }
 
     try {
-      // Update config with new password
+      // Hash the password before storing
+      const hashedPassword = await hashPassword(password);
+
+      // Update config with new hashed password
       await updateConfig({
         api: config?.api || { apiKey: '', secretKey: '' },
         symbols: config?.symbols || {},
@@ -77,7 +81,7 @@ export function PasswordSetupGuard({ children }: PasswordSetupGuardProps) {
           maxOpenPositions: config?.global?.maxOpenPositions || 10,
           server: {
             ...config?.global?.server,
-            dashboardPassword: password
+            dashboardPassword: hashedPassword
           }
         },
         version: config?.version || '1.1.0'

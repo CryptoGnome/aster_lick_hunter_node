@@ -9,7 +9,6 @@ import { initializePriceService, stopPriceService, getPriceService } from '../li
 import { vwapStreamer } from '../lib/services/vwapStreamer';
 import { getPositionMode, setPositionMode } from '../lib/api/positionMode';
 import { execSync } from 'child_process';
-import { cleanupScheduler } from '../lib/services/cleanupScheduler';
 import { db } from '../lib/db/database';
 import { configManager } from '../lib/services/configManager';
 import pnlService from '../lib/services/pnlService';
@@ -39,10 +38,10 @@ class AsterBot {
   private positionManager: PositionManager | null = null;
   private config: Config | null = null;
   private isRunning = false;
-  private isPaused = false;
   private statusBroadcaster: StatusBroadcaster;
   private isHedgeMode: boolean = false;
   private tradeSizeWarnings: any[] = [];
+  private cleanupScheduler: any = null;
 
   constructor() {
     // Will be initialized with config port
@@ -160,20 +159,6 @@ logErrorWithTimestamp('❌ Config error:', error.message);
           }
         );
         this.statusBroadcaster.addError(`Config: ${error.message}`);
-      });
-
-      // Listen for bot control commands from web UI
-      this.statusBroadcaster.on('bot_control', async (action: string) => {
-        switch (action) {
-          case 'pause':
-            await this.pause();
-            break;
-          case 'resume':
-            await this.resume();
-            break;
-          default:
-            logWarnWithTimestamp(`Unknown bot control action: ${action}`);
-        }
       });
 
       // Check API keys
@@ -476,8 +461,98 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp('ℹ️  Tranche Management disabled for all symbols');
       }
 
-      // Initialize Hunter
-      this.hunter = new Hunter(this.config, this.isHedgeMode);
+      // Initialize Protective Order Service (always available for on-demand protection via UI)
+      try {
+        const { initializeProtectiveOrderService } = await import('../lib/services/protectiveOrderService');
+        const protectiveOrderService = initializeProtectiveOrderService(this.config);
+        protectiveOrderService.start();
+        logWithTimestamp('✅ Protective Order Service ready (activated per-position via UI)');
+        
+        // Listen for scale_out_position commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('scale_out_position');
+        this.statusBroadcaster.on('scale_out_position', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Activating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.activateProtection(
+              data.symbol,
+              data.side,
+              data.entryPrice,
+              data.quantity,
+              data.settings
+            );
+            this.statusBroadcaster.broadcast('scale_out_position_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to activate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('scale_out_position_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for deactivate_scale_out commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('deactivate_scale_out');
+        this.statusBroadcaster.on('deactivate_scale_out', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Deactivating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.deactivateProtection(data.symbol, data.side);
+            
+            // Broadcast success and status update
+            this.statusBroadcaster.broadcast('deactivate_scale_out_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+            
+            // Immediately broadcast status update to UI
+            this.statusBroadcaster.broadcast('scale_out_status_update', {
+              symbol: data.symbol,
+              side: data.side,
+              isActive: false,
+              reason: 'manual_deactivation'
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to deactivate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('deactivate_scale_out_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for check_scale_out_status commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('check_scale_out_status');
+        this.statusBroadcaster.on('check_scale_out_status', (data: any) => {
+          const isActive = protectiveOrderService.isProtectionActive(data.symbol, data.side);
+          this.statusBroadcaster.broadcast('scale_out_status_response', {
+            symbol: data.symbol,
+            side: data.side,
+            isActive,
+            timestamp: new Date()
+          });
+        });
+      } catch (error: any) {
+        logErrorWithTimestamp('⚠️  Protective Order Service failed to start:', error.message);
+        this.statusBroadcaster.addError(`Protective Order Service: ${error.message}`);
+        // Continue without protective orders
+      }
+
+      // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
+      if (!this.hunter) {
+        this.hunter = new Hunter(this.config, this.isHedgeMode);
+      } else {
+        // Remove all old listeners before re-attaching to prevent duplicates
+        this.hunter.removeAllListeners();
+        console.log('[Bot] Removed all old hunter event listeners to prevent duplicates');
+      }
 
       // Inject status broadcaster for order events
       this.hunter.setStatusBroadcaster(this.statusBroadcaster);
@@ -489,7 +564,8 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
 
       // Connect hunter events to position manager and status broadcaster
       this.hunter.on('liquidationDetected', (liquidationEvent: any) => {
-        logWithTimestamp(`💥 Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
+        console.log(`[Bot] liquidationDetected event received for ${liquidationEvent.symbol}`);
+        // Broadcast to UI and log activity (don't log to console - already logged in hunter.ts)
         this.statusBroadcaster.broadcastLiquidation(liquidationEvent);
         this.statusBroadcaster.logActivity(`Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
       });
@@ -506,6 +582,9 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.logActivity(`Blocked: ${data.symbol} ${data.side} - ${data.blockType}`);
       });
 
+      // Remove old threshold monitor listeners to prevent duplicates
+      thresholdMonitor.removeAllListeners('thresholdUpdate');
+      
       // Listen for threshold updates and broadcast to UI
       thresholdMonitor.on('thresholdUpdate', (thresholdUpdate: any) => {
         this.statusBroadcaster.broadcastThresholdUpdate(thresholdUpdate);
@@ -558,8 +637,20 @@ logErrorWithTimestamp('❌ Hunter error:', error);
 logWithTimestamp('✅ Liquidation Hunter started');
 
       // Start the cleanup scheduler for liquidation database
-      cleanupScheduler.start();
-logWithTimestamp('✅ Database cleanup scheduler started (7-day retention)');
+      const dbConfig = this.config.global.liquidationDatabase;
+      const retentionDays = dbConfig?.retentionDays ?? 90;
+      const cleanupHours = dbConfig?.cleanupIntervalHours ?? 24;
+      
+      // Create a new scheduler instance with config values
+      const { CleanupScheduler } = await import('../lib/services/cleanupScheduler');
+      this.cleanupScheduler = new CleanupScheduler(cleanupHours, retentionDays);
+      this.cleanupScheduler.start();
+      
+      if (retentionDays > 0) {
+        logWithTimestamp(`✅ Database cleanup scheduler started (${retentionDays}-day retention, runs every ${cleanupHours}h)`);
+      } else {
+        logWithTimestamp('✅ Database cleanup scheduler started (retention disabled)');
+      }
 
       this.isRunning = true;
       this.statusBroadcaster.setRunning(true);
@@ -603,98 +694,6 @@ logErrorWithTimestamp('❌ Unhandled rejection at:', promise, 'reason:', reason)
     } catch (error) {
 logErrorWithTimestamp('❌ Failed to start bot:', error);
       process.exit(1);
-    }
-  }
-
-  async pause(): Promise<void> {
-    if (!this.isRunning || this.isPaused) {
-logWithTimestamp('⚠️  Cannot pause: Bot is not running or already paused');
-      return;
-    }
-
-    try {
-logWithTimestamp('⏸️  Pausing bot...');
-      this.isPaused = true;
-      this.statusBroadcaster.setBotState('paused');
-
-      // Stop the hunter from placing new trades
-      if (this.hunter) {
-        this.hunter.pause();
-logWithTimestamp('✅ Hunter paused (no new trades will be placed)');
-      }
-
-logWithTimestamp('✅ Bot paused - existing positions will continue to be monitored');
-      this.statusBroadcaster.logActivity('Bot paused');
-    } catch (error) {
-logErrorWithTimestamp('❌ Error while pausing bot:', error);
-      this.statusBroadcaster.addError(`Failed to pause: ${error}`);
-    }
-  }
-
-  async resume(): Promise<void> {
-    if (!this.isRunning || !this.isPaused) {
-logWithTimestamp('⚠️  Cannot resume: Bot is not running or not paused');
-      return;
-    }
-
-    try {
-logWithTimestamp('▶️  Resuming bot...');
-      this.isPaused = false;
-      this.statusBroadcaster.setBotState('running');
-
-      // Resume the hunter
-      if (this.hunter) {
-        this.hunter.resume();
-logWithTimestamp('✅ Hunter resumed');
-      }
-
-logWithTimestamp('✅ Bot resumed - trading active');
-      this.statusBroadcaster.logActivity('Bot resumed');
-    } catch (error) {
-logErrorWithTimestamp('❌ Error while resuming bot:', error);
-      this.statusBroadcaster.addError(`Failed to resume: ${error}`);
-    }
-  }
-
-  async stopAndCloseAll(): Promise<void> {
-    if (!this.isRunning) {
-logWithTimestamp('⚠️  Cannot stop: Bot is not running');
-      return;
-    }
-
-    try {
-logWithTimestamp('🛑 Stopping bot and closing all positions...');
-      this.isPaused = false;
-      this.statusBroadcaster.setBotState('stopped');
-
-      // Stop the hunter first
-      if (this.hunter) {
-        this.hunter.stop();
-logWithTimestamp('✅ Hunter stopped');
-      }
-
-      // Close all positions
-      if (this.positionManager) {
-        const positions = this.positionManager.getPositions();
-        if (positions.length > 0) {
-logWithTimestamp(`📊 Closing ${positions.length} open position(s)...`);
-          await this.positionManager.closeAllPositions();
-logWithTimestamp('✅ All positions closed');
-        } else {
-logWithTimestamp('ℹ️  No open positions to close');
-        }
-      }
-
-logWithTimestamp('✅ Bot stopped and all positions closed');
-      this.statusBroadcaster.logActivity('Bot stopped and all positions closed');
-
-      // Don't actually exit the process - just set state to stopped
-      // This allows the bot to be restarted from the UI
-      this.isRunning = false;
-      this.statusBroadcaster.setRunning(false);
-    } catch (error) {
-logErrorWithTimestamp('❌ Error while stopping bot:', error);
-      this.statusBroadcaster.addError(`Failed to stop: ${error}`);
     }
   }
 
@@ -805,8 +804,15 @@ logWithTimestamp('✅ Balance service stopped');
       stopPriceService();
 logWithTimestamp('✅ Price service stopped');
 
-      cleanupScheduler.stop();
+      if (this.cleanupScheduler) {
+        this.cleanupScheduler.stop();
+      }
 logWithTimestamp('✅ Cleanup scheduler stopped');
+
+      // Flush liquidation buffer to prevent data loss
+      const { liquidationStorage } = await import('../lib/services/liquidationStorage');
+      await liquidationStorage.shutdown();
+logWithTimestamp('✅ Liquidation storage flushed');
 
       configManager.stop();
 logWithTimestamp('✅ Config manager stopped');

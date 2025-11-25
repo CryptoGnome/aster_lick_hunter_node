@@ -10,8 +10,8 @@
  */
 
 import { EventEmitter } from 'events';
-import { initTrancheTables, createTranche, getTranche, getActiveTranches, getAllTranchesForSymbol, closeTranche as dbCloseTranche } from '../src/lib/db/trancheDb';
-import { initializeTrancheManager, getTrancheManager } from '../src/lib/services/trancheManager';
+import { initTrancheTables, getTranche, getActiveTranches } from '../src/lib/db/trancheDb';
+import { initializeTrancheManager } from '../src/lib/services/trancheManager';
 import { Config } from '../src/lib/types';
 import { db } from '../src/lib/db/database';
 
@@ -87,44 +87,6 @@ const testConfig: Config = {
   },
   version: '1.1.0',
 };
-
-// Mock StatusBroadcaster for testing
-class MockStatusBroadcaster extends EventEmitter {
-  public broadcastedEvents: any[] = [];
-
-  broadcastTrancheCreated(data: any) {
-    this.broadcastedEvents.push({ type: 'tranche_created', data });
-    this.emit('tranche_created', data);
-  }
-
-  broadcastTrancheIsolated(data: any) {
-    this.broadcastedEvents.push({ type: 'tranche_isolated', data });
-    this.emit('tranche_isolated', data);
-  }
-
-  broadcastTrancheClosed(data: any) {
-    this.broadcastedEvents.push({ type: 'tranche_closed', data });
-    this.emit('tranche_closed', data);
-  }
-
-  broadcastTrancheSyncUpdate(data: any) {
-    this.broadcastedEvents.push({ type: 'tranche_sync', data });
-    this.emit('tranche_sync', data);
-  }
-
-  broadcastTradingError(title: string, message: string, details?: any) {
-    this.broadcastedEvents.push({ type: 'trading_error', title, message, details });
-    this.emit('trading_error', { title, message, details });
-  }
-
-  clearEvents() {
-    this.broadcastedEvents = [];
-  }
-
-  getEventsByType(type: string) {
-    return this.broadcastedEvents.filter(e => e.type === type);
-  }
-}
 
 // Helper to clean up test data
 async function cleanupTestData() {
@@ -254,7 +216,8 @@ async function runIntegrationTests() {
 
     await new Promise(resolve => setTimeout(resolve, 10));
 
-    const tranche2 = await trancheManager.createTranche({
+    // Create third tranche (unused but tests multi-tranche creation)
+    await trancheManager.createTranche({
       symbol: TEST_SYMBOL,
       side: 'BUY',
       positionSide: 'LONG',
@@ -267,7 +230,8 @@ async function runIntegrationTests() {
 
     await new Promise(resolve => setTimeout(resolve, 10));
 
-    const tranche3 = await trancheManager.createTranche({
+    // Create third tranche to test multiple active tranches
+    await trancheManager.createTranche({
       symbol: TEST_SYMBOL,
       side: 'BUY',
       positionSide: 'LONG',
