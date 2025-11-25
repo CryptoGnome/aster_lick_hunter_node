@@ -62,6 +62,16 @@ export default function ConfigProvider({ children }: { children: React.ReactNode
     setLoading(true);
     try {
       const response = await fetch('/api/config');
+      
+      // Check if response is actually JSON (not HTML redirect)
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.warn('Config API returned non-JSON response (likely not authenticated)');
+        setConfig(createDefaultConfig());
+        setLoading(false);
+        return;
+      }
+      
       const data = await response.json() as Partial<Config>;
 
       if (response.ok) {

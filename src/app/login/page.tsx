@@ -15,8 +15,6 @@ function LoginForm() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const redirectUrl = searchParams.get('callbackUrl') || '/';
   const { data: _session, status } = useSession();
   const { config } = useConfig();
 
@@ -28,9 +26,9 @@ function LoginForm() {
   // Redirect if already authenticated
   useEffect(() => {
     if (status === 'authenticated') {
-      router.push(redirectUrl);
+      router.push('/');
     }
-  }, [status, router, redirectUrl]);
+  }, [status, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,8 +58,9 @@ function LoginForm() {
       if (result?.error) {
         setError('Invalid password');
       } else if (result?.ok) {
-        // Redirect to the intended page
-        router.push(redirectUrl);
+        // Always redirect to dashboard root
+        router.push('/');
+        router.refresh(); // Force refresh to reload with authenticated state
       }
     } catch (_err) {
       setError('Failed to login. Please try again.');

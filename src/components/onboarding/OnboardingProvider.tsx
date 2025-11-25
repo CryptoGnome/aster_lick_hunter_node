@@ -83,18 +83,19 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [showTutorial, setShowTutorial] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
 
-  // Check server-side setup state (instead of localStorage)
+  // Check server-side setup state from public endpoint (no auth required)
   const checkSetupStatus = async () => {
     try {
-      const response = await fetch('/api/config');
+      const response = await fetch('/api/setup-status');
       if (response.ok) {
-        const config = await response.json();
-        const hasApiKeys = config?.api?.apiKey && config?.api?.secretKey;
-        const setupComplete = config?.global?.server?.setupComplete === true;
-        return { hasApiKeys, setupComplete };
+        const data = await response.json();
+        return {
+          hasApiKeys: data.hasApiKeys === true,
+          setupComplete: data.setupComplete === true
+        };
       }
     } catch (error) {
-      console.error('Failed to check setup status:', error);
+      console.error('Could not check setup status:', error);
     }
     return { hasApiKeys: false, setupComplete: false };
   };

@@ -31,7 +31,14 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Fetch configuration to get the WebSocket settings
     fetch('/api/config')
-      .then(res => res.json())
+      .then(res => {
+        // Check if response is actually JSON (not HTML redirect)
+        const contentType = res.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          throw new Error('Config API returned non-JSON response');
+        }
+        return res.json();
+      })
       .then(data => {
         // Fix: API returns config directly, not nested under config property
         const port = data.global?.server?.websocketPort || 8080;
@@ -113,7 +120,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         }
         
         setWsHost(fallbackHost);
-        const fallbackUrl = `${fallbackProtocol}://${fallbackHost}:8080`;
+        // Use default port since config failed to load
+        const wsPort = 8080;
+        const fallbackUrl = `${fallbackProtocol}://${fallbackHost}:${wsPort}`;
         logger.debug('WebSocketProvider: Using fallback WebSocket URL:', fallbackUrl);
         websocketService.setUrl(fallbackUrl);
 

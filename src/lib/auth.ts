@@ -1,6 +1,7 @@
 import { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import { configLoader } from '@/lib/config/configLoader';
+import bcrypt from 'bcryptjs';
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -34,8 +35,17 @@ export const authOptions: NextAuthOptions = {
             ? 'admin'
             : dashboardPassword;
 
-          // Verify password
-          if (credentials.password !== effectivePassword) {
+          // Verify password (support both hashed and plain text for backward compatibility)
+          let isValid = false;
+          if (effectivePassword.startsWith('$2a$') || effectivePassword.startsWith('$2b$')) {
+            // Hashed password - use bcrypt
+            isValid = await bcrypt.compare(credentials.password, effectivePassword);
+          } else {
+            // Plain text password - direct comparison (legacy support)
+            isValid = credentials.password === effectivePassword;
+          }
+
+          if (!isValid) {
             return null;
           }
 
@@ -57,27 +67,9 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async redirect({ url, baseUrl }) {
-      // Handle relative URLs
-      if (url.startsWith('/')) {
-        return url;
-      }
-      // Handle same-origin URLs
-      if (url.startsWith(baseUrl)) {
-        return url;
-      }
-      // Extract path from URL if it's a full URL (e.g., http://localhost:3000/path)
-      try {
-        const urlObj = new URL(url);
-        const baseUrlObj = new URL(baseUrl);
-        // If the path is valid, redirect to the path on the current host
-        if (urlObj.pathname) {
-          return urlObj.pathname + (urlObj.search || '');
-        }
-      } catch {
-        // Invalid URL, fall through to default
-      }
-      // Default to home page
-      return '/';
+      // Always redirect to root dashboard after login
+      // Ignore any callback URLs to prevent localhost:3000 redirects
+      return baseUrl || '/';
     },
     async jwt({ token, user }) {
       if (user) {
