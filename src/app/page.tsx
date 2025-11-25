@@ -295,7 +295,7 @@ export default function DashboardPage() {
 
       <div className="flex h-full overflow-hidden">
         {/* Main Content */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-y-auto">
           <PullToRefresh onRefresh={handleRefresh}>
             <div className="p-6 space-y-6">
               {/* Account Summary - Minimal Design */}
@@ -454,7 +454,7 @@ export default function DashboardPage() {
 
           {/* Recent Orders Table */}
           <RecentOrdersTable maxRows={100} />
-          </div>
+            </div>
           </PullToRefresh>
         </div>
 

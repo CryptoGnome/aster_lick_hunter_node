@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import websocketService from '@/lib/services/websocketService';
 import logger, { setDebugMode } from '@/lib/utils/logger';
 
@@ -27,11 +28,24 @@ export const useWebSocketConfig = () => {
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [wsPort, setWsPort] = useState(0);
   const [wsHost, setWsHost] = useState('localhost');
+  const { status } = useSession();
 
   useEffect(() => {
+    // Only fetch config after authentication
+    if (status !== 'authenticated') {
+      return;
+    }
+
     // Fetch configuration to get the WebSocket settings
     fetch('/api/config')
-      .then(res => res.json())
+      .then(res => {
+        // Check if response is actually JSON (not HTML redirect)
+        const contentType = res.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          throw new Error('Config API returned non-JSON response');
+        }
+        return res.json();
+      })
       .then(data => {
         // Fix: API returns config directly, not nested under config property
         const port = data.global?.server?.websocketPort || 8080;
@@ -113,7 +127,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         }
         
         setWsHost(fallbackHost);
-        const fallbackUrl = `${fallbackProtocol}://${fallbackHost}:8080`;
+        // Use port from environment (set by start-next.js) or default 8080
+        const wsPort = process.env.NEXT_PUBLIC_WS_PORT || '8080';
+        const fallbackUrl = `${fallbackProtocol}://${fallbackHost}:${wsPort}`;
         logger.debug('WebSocketProvider: Using fallback WebSocket URL:', fallbackUrl);
         websocketService.setUrl(fallbackUrl);
 

@@ -260,8 +260,7 @@ export default function PositionTable({
     const displayedPositions = positions.length > 0 ? positions : realPositions;
     if (displayedPositions.length === 0) return;
 
-    // Create a unique key for each position to track what we've checked
-    const positionKeys = displayedPositions.map(p => `${p.symbol}_${p.side}`);
+    // Filter to only positions we haven't checked yet
     const uncheckedPositions = displayedPositions.filter(p => {
       const key = `${p.symbol}_${p.side}`;
       return !(key in protectionStatus);
