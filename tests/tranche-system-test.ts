@@ -9,7 +9,7 @@
  * - Exchange synchronization
  */
 
-import { initTrancheTables, createTranche, getTranche, getActiveTranches, updateTrancheUnrealizedPnl, isolateTranche, closeTranche } from '../src/lib/db/trancheDb';
+import { initTrancheTables, createTranche, getTranche, getActiveTranches } from '../src/lib/db/trancheDb';
 import { initializeTrancheManager } from '../src/lib/services/trancheManager';
 import { Config } from '../src/lib/types';
 import { db } from '../src/lib/db/database';
