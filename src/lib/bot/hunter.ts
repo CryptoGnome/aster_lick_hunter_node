@@ -593,12 +593,9 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
     });
     console.log(`[Hunter] Finished emitting liquidationDetected for ${liquidation.symbol}`);
 
-    const symbolConfig = this.config.symbols[liquidation.symbol];
-    if (!symbolConfig) return; // Symbol not in config
-
-    // Store liquidation in database (non-blocking)
+    // Store ALL liquidations in database (non-blocking) - useful for analyzing potential symbols
     liquidationStorage.saveLiquidation(liquidation, volumeUSDT).catch(error => {
-logErrorWithTimestamp('Hunter: Failed to store liquidation:', error);
+      logErrorWithTimestamp('Hunter: Failed to store liquidation:', error);
       // Log to error database
       errorLogger.logError(error instanceof Error ? error : new Error(String(error)), {
         type: 'general',
@@ -612,6 +609,9 @@ logErrorWithTimestamp('Hunter: Failed to store liquidation:', error);
       });
       // Non-critical error, don't broadcast to UI to avoid spam
     });
+
+    const symbolConfig = this.config.symbols[liquidation.symbol];
+    if (!symbolConfig) return; // Symbol not in config - skip trading logic but liquidation was already stored
 
     // Check if we should use threshold system or instant trigger
     if (useThresholdSystem && thresholdStatus) {
