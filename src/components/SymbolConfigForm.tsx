@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Config, SymbolConfig } from '@/lib/types';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -160,6 +161,43 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
   const [useSeparateTradeSizes, setUseSeparateTradeSizes] = useState<Record<string, boolean>>({});
   const [longTradeSizeInput, setLongTradeSizeInput] = useState<string>('');
   const [shortTradeSizeInput, setShortTradeSizeInput] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<string>('api');
+
+  // Handle URL parameter for adding symbols from Discovery page
+  const searchParams = useSearchParams();
+  const symbolFromUrl = searchParams.get('symbol');
+  const addFromUrl = searchParams.get('add');
+
+  useEffect(() => {
+    if (symbolFromUrl && addFromUrl === 'true') {
+      // Switch to symbols tab and add the symbol
+      setActiveTab('symbols');
+      
+      // Small delay to ensure config is loaded
+      setTimeout(() => {
+        if (!config.symbols[symbolFromUrl]) {
+          // Symbol not configured yet - add it
+          const defaultConfig = getDefaultSymbolConfig();
+          setConfig(prev => ({
+            ...prev,
+            symbols: {
+              ...prev.symbols,
+              [symbolFromUrl]: defaultConfig,
+            },
+          }));
+          setSelectedSymbol(symbolFromUrl);
+          toast.success(`Added ${symbolFromUrl} - configure settings and save`);
+        } else {
+          // Symbol already exists - just select it
+          setSelectedSymbol(symbolFromUrl);
+          toast.info(`${symbolFromUrl} is already configured`);
+        }
+        
+        // Clear the URL params without reload
+        window.history.replaceState({}, '', '/config');
+      }, 100);
+    }
+  }, [symbolFromUrl, addFromUrl]);
 
   // Function to generate default config
   const getDefaultSymbolConfig = (): SymbolConfig => {
@@ -383,7 +421,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
 
   return (
     <div className="space-y-6">
-      <Tabs defaultValue="api" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="api" className="flex items-center gap-2">
             <Key className="h-4 w-4" />

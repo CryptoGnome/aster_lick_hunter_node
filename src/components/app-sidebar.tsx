@@ -16,6 +16,7 @@ import {
   Target,
   Layers,
   FileText,
+  BarChart3,
 } from "lucide-react"
 
 import { RateLimitSidebar } from "@/components/RateLimitSidebar"
@@ -51,6 +52,11 @@ const navigation = [
     title: "Configuration",
     icon: Settings,
     href: "/config",
+  },
+  {
+    title: "Discovery",
+    icon: BarChart3,
+    href: "/discovery",
   },
   {
     title: "Tranches",

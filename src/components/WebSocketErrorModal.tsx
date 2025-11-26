@@ -19,8 +19,8 @@ export function WebSocketErrorModal() {
   const [copied, setCopied] = useState(false);
   const [connectionFailed, setConnectionFailed] = useState(false);
 
-  // Pages that don't need WebSocket connection
-  const wsExcludedPaths = ['/errors', '/config', '/auth', '/wiki', '/login'];
+  // Pages that don't need WebSocket connection (only dashboard really needs it)
+  const wsExcludedPaths = ['/errors', '/config', '/auth', '/wiki', '/login', '/discovery', '/tranches', '/optimizer', '/logs'];
   const shouldConnectWebSocket = !wsExcludedPaths.some(path => pathname?.startsWith(path));
 
   useEffect(() => {
