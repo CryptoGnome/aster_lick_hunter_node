@@ -324,7 +324,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       return;
     }
 
-    onSave(config);
+    // Clean up longTradeSize/shortTradeSize from symbols where separate sizes are disabled
+    const cleanedConfig = { ...config };
+    cleanedConfig.symbols = { ...config.symbols };
+    
+    Object.keys(cleanedConfig.symbols).forEach(symbol => {
+      if (!useSeparateTradeSizes[symbol]) {
+        // Remove separate trade size fields when toggle is off
+        const { longTradeSize, shortTradeSize, ...restSymbolConfig } = cleanedConfig.symbols[symbol];
+        cleanedConfig.symbols[symbol] = restSymbolConfig;
+      }
+    });
+
+    onSave(cleanedConfig);
   };
 
   // Fetch symbol details when selecting a symbol
