@@ -23,6 +23,8 @@ class WebSocketService {
   private isIntentionalDisconnect = false;
   private messageQueue: WebSocketMessage[] = [];
   private processingMessages = false;
+  private isTabHidden = false;
+  private readonly MAX_QUEUE_SIZE = 50; // Prevent unbounded queue growth
 
   constructor(url?: string) {
     // Will be set dynamically based on config by WebSocketProvider
@@ -34,6 +36,23 @@ class WebSocketService {
       if (typeof window !== 'undefined') {
         logger.debug('WebSocketService: Initialized without URL, waiting for WebSocketProvider to set it');
       }
+    }
+    
+    // Set up visibility change handler to clear stale queue when tab becomes visible
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          this.isTabHidden = true;
+        } else {
+          // Tab became visible again - clear stale queued messages
+          if (this.isTabHidden && this.messageQueue.length > 0) {
+            logger.debug(`WebSocketService: Tab visible again, clearing ${this.messageQueue.length} stale queued messages`);
+            this.messageQueue = [];
+            this.processingMessages = false;
+          }
+          this.isTabHidden = false;
+        }
+      });
     }
   }
 
@@ -176,8 +195,17 @@ class WebSocketService {
             this.isIntentionalDisconnect = true;
           }
 
+          // If tab is hidden, drop messages to prevent queue buildup
+          // Fresh data will be fetched when tab becomes visible
+          if (this.isTabHidden) {
+            return;
+          }
+
           // Queue message for batch processing to avoid blocking
-          this.messageQueue.push(message);
+          // Limit queue size to prevent memory issues
+          if (this.messageQueue.length < this.MAX_QUEUE_SIZE) {
+            this.messageQueue.push(message);
+          }
           this.scheduleMessageProcessing();
         } catch (error) {
           logger.error('WebSocketService: Message parse error:', error);

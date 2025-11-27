@@ -123,7 +123,7 @@ export default function DiscoveryPage() {
   const [data, setData] = useState<DiscoveryData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [timeWindow, setTimeWindow] = useState('24h');
+  const [timeWindow, setTimeWindow] = useState('30d');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('total_volume');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
