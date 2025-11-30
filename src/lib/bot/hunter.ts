@@ -846,14 +846,16 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
           if (!vwapCheck.allowed) {
 logWithTimestamp(`Hunter: VWAP Protection - ${vwapCheck.reason}`);
 
-            // Emit blocked trade opportunity for monitoring
+            // Emit blocked trade opportunity for monitoring (include quality score if available)
             this.emit('tradeBlocked', {
               symbol: liquidation.symbol,
               side: 'BUY',
               reason: vwapCheck.reason,
               vwap: vwapCheck.vwap,
               currentPrice: liquidation.price,
-              blockType: 'VWAP_FILTER'
+              blockType: 'VWAP_FILTER',
+              qualityScore,
+              liquidationVolume: volumeUSDT
             });
 
             return; // Block the trade
@@ -889,14 +891,16 @@ logWithTimestamp(`Hunter: VWAP Check Passed - Price $${liquidation.price.toFixed
           if (!vwapCheck.allowed) {
 logWithTimestamp(`Hunter: VWAP Protection - ${vwapCheck.reason}`);
 
-            // Emit blocked trade opportunity for monitoring
+            // Emit blocked trade opportunity for monitoring (include quality score if available)
             this.emit('tradeBlocked', {
               symbol: liquidation.symbol,
               side: 'SELL',
               reason: vwapCheck.reason,
               vwap: vwapCheck.vwap,
               currentPrice: liquidation.price,
-              blockType: 'VWAP_FILTER'
+              blockType: 'VWAP_FILTER',
+              qualityScore,
+              liquidationVolume: volumeUSDT
             });
 
             return; // Block the trade

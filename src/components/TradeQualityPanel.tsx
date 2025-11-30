@@ -61,6 +61,7 @@ interface TradeOpportunity {
   confidence: number;
   qualityScore?: TradeQualityScore;
   qualityRecommendation?: string;
+  blockType?: 'QUALITY_FILTER' | 'VWAP_FILTER';
   timestamp: number;
 }
 
@@ -252,16 +253,19 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
         setFtaAlerts(prev => prev.filter(a => a.timestamp !== alert.timestamp));
       }, 30000);
     } else if (message.type === 'trade_blocked') {
-      if (message.data?.blockType === 'QUALITY_FILTER') {
+      // Handle both QUALITY_FILTER and VWAP_FILTER blocks
+      const blockType = message.data?.blockType;
+      if (blockType === 'QUALITY_FILTER' || blockType === 'VWAP_FILTER') {
         const blockedOpp: TradeOpportunity = {
           symbol: message.data.symbol,
           side: message.data.side,
           reason: message.data.reason,
-          liquidationVolume: 0,
+          liquidationVolume: message.data.liquidationVolume || 0,
           priceImpact: 0,
           confidence: 0,
           qualityScore: message.data.qualityScore,
-          qualityRecommendation: 'SKIP',
+          qualityRecommendation: blockType === 'VWAP_FILTER' ? 'VWAP' : 'SKIP',
+          blockType: blockType,
           timestamp: Date.now()
         };
         
@@ -320,7 +324,8 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                 recommendation: s.recommendation,
                 reasons: s.reasons || []
               },
-              qualityRecommendation: s.recommendation,
+              qualityRecommendation: s.blockReason === 'VWAP_FILTER' ? 'VWAP' : s.recommendation,
+              blockType: s.blockReason === 'VWAP_FILTER' ? 'VWAP_FILTER' : (s.wasBlocked ? 'QUALITY_FILTER' : undefined),
               timestamp: s.timestamp
             }));
             setRecentOpportunities(opportunities);
@@ -388,6 +393,7 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
       case 'NORMAL': return <Target className="h-4 w-4 text-blue-400" />;
       case 'WEAK': return <AlertTriangle className="h-4 w-4 text-yellow-400" />;
       case 'SKIP': return <XCircle className="h-4 w-4 text-red-400" />;
+      case 'VWAP': return <ArrowUpDown className="h-4 w-4 text-orange-400" />;
       default: return null;
     }
   };
@@ -404,7 +410,8 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
   const stats = {
     totalOpportunities: recentOpportunities.length,
     strongSignals: recentOpportunities.filter(o => o.qualityRecommendation === 'STRONG').length,
-    skippedTrades: recentOpportunities.filter(o => o.qualityRecommendation === 'SKIP').length,
+    skippedTrades: recentOpportunities.filter(o => o.qualityRecommendation === 'SKIP' || o.qualityRecommendation === 'VWAP').length,
+    vwapBlocked: recentOpportunities.filter(o => o.blockType === 'VWAP_FILTER').length,
     avgQuality: recentOpportunities.length > 0 
       ? (recentOpportunities.reduce((sum, o) => sum + (o.qualityScore?.totalScore || 0), 0) / recentOpportunities.length).toFixed(1)
       : '0.0'
@@ -506,9 +513,33 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                     </div>
                     <div className="flex items-center gap-1">
                       {getRecommendationIcon(recentOpportunities[0].qualityRecommendation)}
-                      <span className="text-xs font-medium">{recentOpportunities[0].qualityRecommendation}</span>
+                      <span className={cn(
+                        "text-xs font-medium",
+                        recentOpportunities[0].blockType === 'VWAP_FILTER' && "text-orange-400"
+                      )}>
+                        {recentOpportunities[0].blockType === 'VWAP_FILTER' ? 'VWAP BLOCK' : recentOpportunities[0].qualityRecommendation}
+                      </span>
                     </div>
                   </div>
+
+                  {/* Block Reason Banner - show prominently for blocked trades */}
+                  {(recentOpportunities[0].blockType === 'VWAP_FILTER' || recentOpportunities[0].qualityRecommendation === 'SKIP') && recentOpportunities[0].reason && (
+                    <div className={cn(
+                      "p-2 rounded mb-3 text-xs",
+                      recentOpportunities[0].blockType === 'VWAP_FILTER' 
+                        ? "bg-orange-500/10 border border-orange-500/30 text-orange-300"
+                        : "bg-red-500/10 border border-red-500/30 text-red-300"
+                    )}>
+                      <div className="flex items-start gap-2">
+                        {recentOpportunities[0].blockType === 'VWAP_FILTER' ? (
+                          <ArrowUpDown className="h-4 w-4 shrink-0 mt-0.5" />
+                        ) : (
+                          <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                        )}
+                        <span>{recentOpportunities[0].reason}</span>
+                      </div>
+                    </div>
+                  )}
 
                   {recentOpportunities[0].qualityScore && (
                     <>
