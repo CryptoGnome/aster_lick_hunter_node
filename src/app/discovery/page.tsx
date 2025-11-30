@@ -29,7 +29,9 @@ import {
   ArrowUpDown,
   Plus,
   ExternalLink,
-  Zap
+  Zap,
+  Activity,
+  Bitcoin
 } from 'lucide-react';
 
 interface SymbolStats {
@@ -43,10 +45,14 @@ interface SymbolStats {
   short_liqs: number;
   long_volume: number;
   short_volume: number;
+  whale_volume: number;
+  whale_count: number;
   first_liq_time: number;
   last_liq_time: number;
   frequency_per_hour: number;
   long_ratio: number;
+  whale_percent: number;
+  hourly_opportunity: number;
 }
 
 interface HourlyData {
@@ -77,6 +83,26 @@ interface LargeLiqData {
   event_time: number;
 }
 
+interface BtcVolumeDay {
+  date: string;
+  timestamp: number;
+  volume: number;
+  price: number;
+  priceChange: number;
+}
+
+interface BtcVolumeData {
+  days: number;
+  source: string;
+  dailyData: BtcVolumeDay[];
+  stats: {
+    avgVolume: number;
+    maxVolume: number;
+    minVolume: number;
+    currentVolume: number;
+  };
+}
+
 interface DatabaseInfo {
   totalRecords: number;
   oldestRecord: number;
@@ -92,6 +118,10 @@ interface DiscoveryData {
     count: number;
     volume: number;
     uniqueSymbols: number;
+    longCount: number;
+    shortCount: number;
+    longVolume: number;
+    shortVolume: number;
   };
   symbols: SymbolStats[];
   hourlyDistribution: HourlyData[];
@@ -101,7 +131,7 @@ interface DiscoveryData {
   databaseInfo: DatabaseInfo;
 }
 
-type SortField = 'liq_count' | 'total_volume' | 'avg_volume' | 'frequency_per_hour' | 'long_ratio';
+type SortField = 'liq_count' | 'total_volume' | 'avg_volume' | 'frequency_per_hour' | 'long_ratio' | 'whale_percent' | 'hourly_opportunity';
 type SortDirection = 'asc' | 'desc';
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -119,8 +149,27 @@ function getTimeAgo(timestamp: number): string {
   return `${days}d`;
 }
 
+// Calculate Pearson correlation coefficient
+function calculateCorrelation(x: number[], y: number[]): number {
+  if (x.length !== y.length || x.length < 2) return 0;
+  
+  const n = x.length;
+  const sumX = x.reduce((a, b) => a + b, 0);
+  const sumY = y.reduce((a, b) => a + b, 0);
+  const sumXY = x.reduce((acc, xi, i) => acc + xi * y[i], 0);
+  const sumX2 = x.reduce((acc, xi) => acc + xi * xi, 0);
+  const sumY2 = y.reduce((acc, yi) => acc + yi * yi, 0);
+  
+  const numerator = n * sumXY - sumX * sumY;
+  const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+  
+  if (denominator === 0) return 0;
+  return numerator / denominator;
+}
+
 export default function DiscoveryPage() {
   const [data, setData] = useState<DiscoveryData | null>(null);
+  const [btcVolume, setBtcVolume] = useState<BtcVolumeData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [timeWindow, setTimeWindow] = useState('30d');
@@ -128,6 +177,7 @@ export default function DiscoveryPage() {
   const [sortField, setSortField] = useState<SortField>('total_volume');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [configuredSymbols, setConfiguredSymbols] = useState<string[]>([]);
+  const [suggestionFilter, setSuggestionFilter] = useState<'all' | 'suggested' | 'low-activity' | 'configured'>('all');
 
   // Fetch configured symbols
   useEffect(() => {
@@ -143,6 +193,25 @@ export default function DiscoveryPage() {
       }
     }
     fetchConfig();
+  }, []);
+
+  // Fetch BTC volume data from CoinGecko
+  const fetchBtcVolume = async () => {
+    try {
+      const response = await fetch('/api/btc-volume?days=30');
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success) {
+          setBtcVolume(result.data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch BTC volume:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchBtcVolume();
   }, []);
 
   // Fetch discovery data
@@ -169,6 +238,14 @@ export default function DiscoveryPage() {
     fetchData();
   }, [timeWindow]);
 
+  // Helper to check if symbol meets recommendation criteria
+  const isSymbolRecommended = (s: SymbolStats) => {
+    const meetsFrequency = s.frequency_per_hour >= 0.5;
+    const meetsAvgSize = s.avg_volume >= 5000;
+    const meetsMinCount = s.liq_count >= 50;
+    return meetsFrequency && meetsAvgSize && meetsMinCount;
+  };
+
   // Filter and sort symbols
   const filteredSymbols = useMemo(() => {
     if (!data?.symbols) return [];
@@ -176,6 +253,15 @@ export default function DiscoveryPage() {
     let filtered = data.symbols.filter(s => 
       s.symbol.toLowerCase().includes(searchQuery.toLowerCase())
     );
+
+    // Apply suggestion filter
+    if (suggestionFilter === 'suggested') {
+      filtered = filtered.filter(s => !configuredSymbols.includes(s.symbol) && isSymbolRecommended(s));
+    } else if (suggestionFilter === 'low-activity') {
+      filtered = filtered.filter(s => configuredSymbols.includes(s.symbol) && !isSymbolRecommended(s));
+    } else if (suggestionFilter === 'configured') {
+      filtered = filtered.filter(s => configuredSymbols.includes(s.symbol));
+    }
 
     // Sort
     filtered.sort((a, b) => {
@@ -186,7 +272,7 @@ export default function DiscoveryPage() {
     });
 
     return filtered;
-  }, [data?.symbols, searchQuery, sortField, sortDirection]);
+  }, [data?.symbols, searchQuery, sortField, sortDirection, suggestionFilter, configuredSymbols]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -247,6 +333,9 @@ export default function DiscoveryPage() {
                 <SelectItem value="24h">24 Hours</SelectItem>
                 <SelectItem value="7d">7 Days</SelectItem>
                 <SelectItem value="30d">30 Days</SelectItem>
+                <SelectItem value="60d">60 Days</SelectItem>
+                <SelectItem value="90d">90 Days</SelectItem>
+                <SelectItem value="all">All Time</SelectItem>
               </SelectContent>
             </Select>
             <Button variant="outline" size="icon" onClick={fetchData} disabled={loading}>
@@ -317,6 +406,126 @@ export default function DiscoveryPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Long vs Short Sentiment */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5" />
+              Long vs Short Liquidations
+            </CardTitle>
+            <CardDescription>
+              Market sentiment indicator based on Aster DEX liquidations only. More short liqs = bullish pressure, more long liqs = bearish pressure.
+              <span className="block mt-1 text-yellow-600 dark:text-yellow-500 text-[11px]">
+                ⚠ Single-exchange data may not reflect broader market conditions. Use as one of many indicators, not as trading advice.
+              </span>
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {(() => {
+              const longCount = data?.totals?.longCount || 0;
+              const shortCount = data?.totals?.shortCount || 0;
+              const totalCount = longCount + shortCount;
+              const longPercent = totalCount > 0 ? (longCount / totalCount) * 100 : 50;
+              const shortPercent = totalCount > 0 ? (shortCount / totalCount) * 100 : 50;
+              
+              const longVol = data?.totals?.longVolume || 0;
+              const shortVol = data?.totals?.shortVolume || 0;
+              const totalVol = longVol + shortVol;
+              const longVolPercent = totalVol > 0 ? (longVol / totalVol) * 100 : 50;
+              const shortVolPercent = totalVol > 0 ? (shortVol / totalVol) * 100 : 50;
+              
+              // Determine sentiment
+              const ratio = shortCount / (longCount || 1);
+              let sentiment = '';
+              let sentimentColor = '';
+              if (ratio > 1.2) {
+                sentiment = 'Bullish';
+                sentimentColor = 'text-green-500';
+              } else if (ratio > 0.83) {
+                sentiment = 'Neutral';
+                sentimentColor = 'text-yellow-500';
+              } else {
+                sentiment = 'Bearish';
+                sentimentColor = 'text-red-500';
+              }
+              
+              return (
+                <div className="space-y-4">
+                  {/* Sentiment Badge */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">Sentiment:</span>
+                      <span className={`font-semibold ${sentimentColor}`}>{sentiment}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Short/Long Ratio: {ratio.toFixed(2)}x
+                    </div>
+                  </div>
+                  
+                  {/* Count Bar */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>By Count</span>
+                      <span>{formatNumber(longCount)} longs vs {formatNumber(shortCount)} shorts</span>
+                    </div>
+                    <div className="h-6 rounded-full overflow-hidden flex bg-muted">
+                      <div 
+                        className="bg-red-500 flex items-center justify-center text-[10px] font-medium text-white transition-all"
+                        style={{ width: `${longPercent}%` }}
+                      >
+                        {longPercent > 15 && `${longPercent.toFixed(0)}%`}
+                      </div>
+                      <div 
+                        className="bg-green-500 flex items-center justify-center text-[10px] font-medium text-white transition-all"
+                        style={{ width: `${shortPercent}%` }}
+                      >
+                        {shortPercent > 15 && `${shortPercent.toFixed(0)}%`}
+                      </div>
+                    </div>
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span className="text-red-500">▼ Longs Liquidated</span>
+                      <span className="text-green-500">Shorts Liquidated ▲</span>
+                    </div>
+                  </div>
+                  
+                  {/* Volume Bar */}
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>By Volume</span>
+                      <span>{formatVolume(longVol)} vs {formatVolume(shortVol)}</span>
+                    </div>
+                    <div className="h-6 rounded-full overflow-hidden flex bg-muted">
+                      <div 
+                        className="bg-red-500/70 flex items-center justify-center text-[10px] font-medium text-white transition-all"
+                        style={{ width: `${longVolPercent}%` }}
+                      >
+                        {longVolPercent > 15 && `${longVolPercent.toFixed(0)}%`}
+                      </div>
+                      <div 
+                        className="bg-green-500/70 flex items-center justify-center text-[10px] font-medium text-white transition-all"
+                        style={{ width: `${shortVolPercent}%` }}
+                      >
+                        {shortVolPercent > 15 && `${shortVolPercent.toFixed(0)}%`}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Explanation */}
+                  <div className="text-xs text-muted-foreground p-2 bg-muted/30 rounded">
+                    {shortPercent > 55 ? (
+                      <span>More shorts getting liquidated suggests upward price pressure. Traders betting against the market are being forced out.</span>
+                    ) : longPercent > 55 ? (
+                      <span>More longs getting liquidated suggests downward price pressure. Leveraged bulls are being shaken out.</span>
+                    ) : (
+                      <span>Roughly balanced liquidations. Market is choppy with no clear directional bias.</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </CardContent>
+        </Card>
 
         {/* Charts Grid - 2x2 layout */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -549,6 +758,185 @@ export default function DiscoveryPage() {
           </Card>
         </div>
 
+        {/* BTC Volume vs Liquidations Correlation */}
+        {btcVolume && data?.calendarHeatmap && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2">
+                <Activity className="h-5 w-5" />
+                BTC Volume vs Liquidations (30 Day)
+              </CardTitle>
+              <CardDescription>
+                Correlation between market-wide BTC volume (CoinGecko) and liquidation activity
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {(() => {
+                // Match dates between BTC volume and liquidation data
+                const btcByDate = new Map(btcVolume.dailyData.map(d => [d.date, d]));
+                const liqByDate = new Map(data.calendarHeatmap.map(d => [d.date, d]));
+                
+                // Get all dates that exist in both datasets
+                const commonDates = btcVolume.dailyData
+                  .filter(d => liqByDate.has(d.date))
+                  .map(d => d.date)
+                  .sort();
+                
+                // Extract matched data for correlation
+                const btcVolumes: number[] = [];
+                const liqCounts: number[] = [];
+                const liqVolumes: number[] = [];
+                const chartData: Array<{
+                  date: string;
+                  btcVol: number;
+                  liqCount: number;
+                  liqVol: number;
+                  priceChange: number;
+                }> = [];
+                
+                commonDates.forEach(date => {
+                  const btc = btcByDate.get(date);
+                  const liq = liqByDate.get(date);
+                  if (btc && liq) {
+                    btcVolumes.push(btc.volume);
+                    liqCounts.push(liq.count);
+                    liqVolumes.push(liq.volume);
+                    chartData.push({
+                      date,
+                      btcVol: btc.volume,
+                      liqCount: liq.count,
+                      liqVol: liq.volume,
+                      priceChange: btc.priceChange,
+                    });
+                  }
+                });
+                
+                // Calculate correlations
+                const volCountCorr = calculateCorrelation(btcVolumes, liqCounts);
+                const volVolCorr = calculateCorrelation(btcVolumes, liqVolumes);
+                
+                // Find max values for scaling
+                const maxBtcVol = Math.max(...btcVolumes);
+                const maxLiqCount = Math.max(...liqCounts);
+                
+                // Get correlation interpretation
+                const getCorrelationLabel = (r: number) => {
+                  const abs = Math.abs(r);
+                  if (abs < 0.2) return { label: 'Very Weak', color: 'text-muted-foreground' };
+                  if (abs < 0.4) return { label: 'Weak', color: 'text-yellow-500' };
+                  if (abs < 0.6) return { label: 'Moderate', color: 'text-orange-500' };
+                  if (abs < 0.8) return { label: 'Strong', color: 'text-green-500' };
+                  return { label: 'Very Strong', color: 'text-green-600' };
+                };
+                
+                const countCorr = getCorrelationLabel(volCountCorr);
+                const volCorr = getCorrelationLabel(volVolCorr);
+                
+                return (
+                  <div className="space-y-4">
+                    {/* Correlation Stats */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="p-3 rounded-lg bg-muted/50">
+                        <div className="text-xs text-muted-foreground mb-1">BTC Vol → Liq Count</div>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-xl font-bold">{(volCountCorr * 100).toFixed(0)}%</span>
+                          <span className={`text-xs ${countCorr.color}`}>{countCorr.label}</span>
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-lg bg-muted/50">
+                        <div className="text-xs text-muted-foreground mb-1">BTC Vol → Liq Volume</div>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-xl font-bold">{(volVolCorr * 100).toFixed(0)}%</span>
+                          <span className={`text-xs ${volCorr.color}`}>{volCorr.label}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Dual-axis chart */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px] text-muted-foreground px-1">
+                        <span>BTC Volume (gray) vs Liquidations (green)</span>
+                        <span>{chartData.length} days</span>
+                      </div>
+                      <div className="relative h-28">
+                        {/* Combined SVG for both bars and line */}
+                        <svg className="w-full h-full" viewBox={`0 0 ${chartData.length * 12} 100`} preserveAspectRatio="none">
+                          {/* BTC Volume bars */}
+                          {chartData.map((d, i) => {
+                            const heightPercent = maxBtcVol > 0 ? (d.btcVol / maxBtcVol) * 100 : 0;
+                            const barWidth = 10;
+                            const x = i * 12 + 1;
+                            return (
+                              <rect
+                                key={`btc-${i}`}
+                                x={x}
+                                y={100 - heightPercent}
+                                width={barWidth}
+                                height={heightPercent}
+                                fill="hsl(var(--muted))"
+                                opacity={0.6}
+                                rx={1}
+                              >
+                                <title>{`${d.date}\nBTC Vol: $${(d.btcVol / 1e9).toFixed(1)}B\nLiqs: ${d.liqCount}\nPrice: ${d.priceChange >= 0 ? '+' : ''}${d.priceChange.toFixed(1)}%`}</title>
+                              </rect>
+                            );
+                          })}
+                          {/* Liquidation line */}
+                          <polyline
+                            fill="none"
+                            stroke="hsl(142 76% 46%)"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                            points={chartData.map((d, i) => {
+                              const x = i * 12 + 6;
+                              const y = 100 - (maxLiqCount > 0 ? (d.liqCount / maxLiqCount) * 95 : 0) - 2;
+                              return `${x},${y}`;
+                            }).join(' ')}
+                          />
+                          {/* Dots on line for each data point */}
+                          {chartData.map((d, i) => {
+                            const x = i * 12 + 6;
+                            const y = 100 - (maxLiqCount > 0 ? (d.liqCount / maxLiqCount) * 95 : 0) - 2;
+                            return (
+                              <circle
+                                key={`dot-${i}`}
+                                cx={x}
+                                cy={y}
+                                r="3"
+                                fill="hsl(142 76% 46%)"
+                                vectorEffect="non-scaling-stroke"
+                              >
+                                <title>{`${d.date}\nLiquidations: ${d.liqCount}\nLiq Volume: $${(d.liqVol / 1000).toFixed(0)}K`}</title>
+                              </circle>
+                            );
+                          })}
+                        </svg>
+                      </div>
+                      <div className="flex justify-between text-[9px] text-muted-foreground px-1">
+                        <span>{chartData[0]?.date?.slice(5)}</span>
+                        <span>{chartData[chartData.length - 1]?.date?.slice(5)}</span>
+                      </div>
+                    </div>
+                    
+                    {/* Insight */}
+                    <div className="text-xs text-muted-foreground p-2 bg-muted/30 rounded">
+                      {volCountCorr > 0.4 ? (
+                        <span className="text-green-500">✓ Higher BTC volume correlates with more liquidations - good for scalping!</span>
+                      ) : volCountCorr > 0.2 ? (
+                        <span>↗ Moderate correlation - volume helps but isn&apos;t everything</span>
+                      ) : (
+                        <span className="text-yellow-500">⚠ Weak correlation - liquidations may be driven by other factors</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+            </CardContent>
+          </Card>
+        )}
+
         {/* Symbol Table */}
         <Card>
           <CardHeader>
@@ -556,17 +944,34 @@ export default function DiscoveryPage() {
               <div>
                 <CardTitle>Symbol Analysis</CardTitle>
                 <CardDescription>
-                  Click column headers to sort. Green = already configured.
+                  <span className="font-medium">Whale%</span> = volume from $10K+ liqs (higher = fewer, bigger trades).
+                  <span className="ml-2 font-medium">$/hr</span> = expected hourly liq volume (frequency × avg size).
+                  <br/>
+                  <span className="text-blue-500">Blue = suggested to add</span>
+                  <span className="ml-2 text-orange-500">Orange = consider removing</span>
                 </CardDescription>
               </div>
-              <div className="relative w-full sm:w-auto">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search symbols..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="pl-8 w-full sm:w-[200px]"
-                />
+              <div className="flex items-center gap-2">
+                <Select value={suggestionFilter} onValueChange={(v) => setSuggestionFilter(v as typeof suggestionFilter)}>
+                  <SelectTrigger className="w-[140px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Symbols</SelectItem>
+                    <SelectItem value="suggested">Suggested</SelectItem>
+                    <SelectItem value="low-activity">Low Activity</SelectItem>
+                    <SelectItem value="configured">Configured</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="pl-8 w-[140px]"
+                  />
+                </div>
               </div>
             </div>
           </CardHeader>
@@ -623,31 +1028,68 @@ export default function DiscoveryPage() {
                       </TableHead>
                       <TableHead 
                         className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => handleSort('long_ratio')}
+                        onClick={() => handleSort('whale_percent')}
                       >
                         <div className="flex items-center gap-1">
-                          Long %
+                          Whale%
                           <ArrowUpDown className="h-3 w-3" />
                         </div>
                       </TableHead>
-                      <TableHead>Long/Short</TableHead>
-                      <TableHead className="w-[80px]">Actions</TableHead>
+                      <TableHead 
+                        className="cursor-pointer hover:bg-muted/50"
+                        onClick={() => handleSort('hourly_opportunity')}
+                      >
+                        <div className="flex items-center gap-1">
+                          $/hr
+                          <ArrowUpDown className="h-3 w-3" />
+                        </div>
+                      </TableHead>
+                      <TableHead 
+                        className="cursor-pointer hover:bg-muted/50"
+                        onClick={() => handleSort('long_ratio')}
+                      >
+                        <div className="flex items-center gap-1">
+                          Sentiment
+                          <ArrowUpDown className="h-3 w-3" />
+                        </div>
+                      </TableHead>
+                      <TableHead className="w-[100px]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredSymbols.slice(0, 100).map(s => {
                       const isConfigured = configuredSymbols.includes(s.symbol);
+                      const isRecommended = isSymbolRecommended(s);
+                      
+                      // Suggestion logic
+                      const shouldAdd = !isConfigured && isRecommended;
+                      const shouldRemove = isConfigured && !isRecommended;
+                      
                       return (
                         <TableRow 
                           key={s.symbol} 
-                          className={isConfigured ? 'bg-green-500/5' : ''}
+                          className={
+                            shouldRemove ? 'bg-red-500/5' :
+                            isConfigured ? 'bg-green-500/5' : 
+                            shouldAdd ? 'bg-blue-500/5' : ''
+                          }
                         >
                           <TableCell className="font-mono font-medium">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               {s.symbol.replace('USDT', '')}
                               {isConfigured && (
                                 <Badge variant="outline" className="text-[10px] text-green-600 border-green-600">
-                                  Configured
+                                  Active
+                                </Badge>
+                              )}
+                              {shouldAdd && (
+                                <Badge className="text-[10px] bg-blue-500 hover:bg-blue-600">
+                                  Suggested
+                                </Badge>
+                              )}
+                              {shouldRemove && (
+                                <Badge variant="outline" className="text-[10px] text-orange-500 border-orange-500">
+                                  Low Activity
                                 </Badge>
                               )}
                             </div>
@@ -661,21 +1103,62 @@ export default function DiscoveryPage() {
                             </span>
                           </TableCell>
                           <TableCell>
-                            <div className="flex items-center gap-1">
-                              {s.long_ratio > 0.6 ? (
-                                <TrendingUp className="h-3 w-3 text-green-500" />
-                              ) : s.long_ratio < 0.4 ? (
-                                <TrendingDown className="h-3 w-3 text-red-500" />
-                              ) : null}
-                              {(s.long_ratio * 100).toFixed(0)}%
+                            <div 
+                              className="flex items-center gap-1"
+                              title={`${s.whale_count} whale liqs (≥$10K) out of ${s.liq_count} total`}
+                            >
+                              <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
+                                <div 
+                                  className={`h-full rounded-full ${s.whale_percent > 70 ? 'bg-purple-500' : s.whale_percent > 40 ? 'bg-blue-500' : 'bg-green-500'}`}
+                                  style={{ width: `${Math.min(s.whale_percent, 100)}%` }}
+                                />
+                              </div>
+                              <span className={`text-xs ${s.whale_percent > 70 ? 'text-purple-500' : ''}`}>
+                                {s.whale_percent.toFixed(0)}%
+                              </span>
                             </div>
                           </TableCell>
                           <TableCell>
-                            <div className="flex items-center gap-1 text-xs">
-                              <span className="text-green-600">{s.long_liqs}</span>
-                              <span>/</span>
-                              <span className="text-red-500">{s.short_liqs}</span>
-                            </div>
+                            <span 
+                              className={`font-mono ${s.hourly_opportunity >= 10000 ? 'text-green-600 font-medium' : 'text-muted-foreground'}`}
+                              title={`Expected ${formatVolume(s.hourly_opportunity)} in liquidations per hour`}
+                            >
+                              {formatVolume(s.hourly_opportunity)}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            {(() => {
+                              // Calculate sentiment from short/long ratio
+                              const shortLongRatio = s.long_liqs > 0 ? s.short_liqs / s.long_liqs : s.short_liqs > 0 ? 999 : 1;
+                              let label = '';
+                              let bgColor = '';
+                              let textColor = '';
+                              
+                              if (shortLongRatio > 1.2) {
+                                label = 'Bullish';
+                                bgColor = 'bg-green-500/20';
+                                textColor = 'text-green-600';
+                              } else if (shortLongRatio < 0.83) {
+                                label = 'Bearish';
+                                bgColor = 'bg-red-500/20';
+                                textColor = 'text-red-600';
+                              } else {
+                                label = 'Neutral';
+                                bgColor = 'bg-yellow-500/20';
+                                textColor = 'text-yellow-600';
+                              }
+                              
+                              return (
+                                <div className="flex items-center gap-1.5" title={`${s.short_liqs} shorts / ${s.long_liqs} longs = ${shortLongRatio.toFixed(2)}x`}>
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${bgColor} ${textColor}`}>
+                                    {label}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {shortLongRatio.toFixed(1)}x
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-1">

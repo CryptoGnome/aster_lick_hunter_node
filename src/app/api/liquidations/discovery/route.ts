@@ -33,6 +33,15 @@ export async function GET(request: NextRequest) {
         case '30d':
           timeWindowSeconds = 2592000;
           break;
+        case '60d':
+          timeWindowSeconds = 5184000;
+          break;
+        case '90d':
+          timeWindowSeconds = 7776000;
+          break;
+        case 'all':
+          timeWindowSeconds = 0; // Special case: 0 means all time
+          break;
         default:
           timeWindowSeconds = parseInt(timeWindow) || 86400;
       }
@@ -65,7 +74,9 @@ export async function GET(request: NextRequest) {
 }
 
 function getTimeWindowLabel(seconds: number): string {
-  if (seconds < 3600) {
+  if (seconds === 0) {
+    return 'all time';
+  } else if (seconds < 3600) {
     return `${Math.floor(seconds / 60)} minutes`;
   } else if (seconds < 86400) {
     return `${Math.floor(seconds / 3600)} hours`;

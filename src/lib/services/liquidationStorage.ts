@@ -284,10 +284,13 @@ export class LiquidationStorage {
   /**
    * Get comprehensive discovery stats for all symbols
    * Returns aggregated data useful for finding tradeable symbols
+   * @param timeWindowSeconds - Time window in seconds, or 0 for all time
    */
   async getDiscoveryStats(timeWindowSeconds: number = 86400): Promise<DiscoveryStats> {
     try {
-      const since = Math.floor(Date.now() / 1000) - timeWindowSeconds;
+      // For "all time" (0), use a very old timestamp
+      const isAllTime = timeWindowSeconds === 0;
+      const since = isAllTime ? 0 : Math.floor(Date.now() / 1000) - timeWindowSeconds;
 
       // Get per-symbol comprehensive stats
       const symbolStatsSql = `
@@ -302,6 +305,8 @@ export class LiquidationStorage {
           SUM(CASE WHEN side = 'SELL' THEN 1 ELSE 0 END) as short_liqs,
           SUM(CASE WHEN side = 'BUY' THEN volume_usdt ELSE 0 END) as long_volume,
           SUM(CASE WHEN side = 'SELL' THEN volume_usdt ELSE 0 END) as short_volume,
+          SUM(CASE WHEN volume_usdt >= 10000 THEN volume_usdt ELSE 0 END) as whale_volume,
+          COUNT(CASE WHEN volume_usdt >= 10000 THEN 1 END) as whale_count,
           MIN(event_time) as first_liq_time,
           MAX(event_time) as last_liq_time
         FROM liquidations
@@ -321,6 +326,8 @@ export class LiquidationStorage {
         short_liqs: number;
         long_volume: number;
         short_volume: number;
+        whale_volume: number;
+        whale_count: number;
         first_liq_time: number;
         last_liq_time: number;
       }>(symbolStatsSql, [since]);
@@ -330,10 +337,14 @@ export class LiquidationStorage {
       const symbolsWithFrequency = symbolStats.map(s => {
         const timeSpanHours = Math.max(1, (s.last_liq_time - s.first_liq_time) / 1000 / 3600);
         const frequency = s.liq_count / timeSpanHours;
+        const whalePercent = s.total_volume > 0 ? (s.whale_volume / s.total_volume) * 100 : 0;
+        const hourlyOpportunity = frequency * s.avg_volume;
         return {
           ...s,
           frequency_per_hour: frequency,
           long_ratio: s.liq_count > 0 ? s.long_liqs / s.liq_count : 0,
+          whale_percent: whalePercent,
+          hourly_opportunity: hourlyOpportunity,
         };
       });
 
@@ -399,12 +410,16 @@ export class LiquidationStorage {
         unique_symbols: number;
       }>(calendarSql, [thirtyDaysAgo]);
 
-      // Get overall totals
+      // Get overall totals including long/short breakdown
       const totalsSql = `
         SELECT
           COUNT(*) as total_count,
           SUM(volume_usdt) as total_volume,
-          COUNT(DISTINCT symbol) as unique_symbols
+          COUNT(DISTINCT symbol) as unique_symbols,
+          SUM(CASE WHEN side = 'BUY' THEN 1 ELSE 0 END) as long_count,
+          SUM(CASE WHEN side = 'SELL' THEN 1 ELSE 0 END) as short_count,
+          SUM(CASE WHEN side = 'BUY' THEN volume_usdt ELSE 0 END) as long_volume,
+          SUM(CASE WHEN side = 'SELL' THEN volume_usdt ELSE 0 END) as short_volume
         FROM liquidations
         WHERE created_at >= ?
       `;
@@ -413,6 +428,10 @@ export class LiquidationStorage {
         total_count: number;
         total_volume: number;
         unique_symbols: number;
+        long_count: number;
+        short_count: number;
+        long_volume: number;
+        short_volume: number;
       }>(totalsSql, [since]);
 
       // Get recent large liquidations (top 10 by volume in time window)
@@ -443,6 +462,10 @@ export class LiquidationStorage {
           count: totals?.total_count || 0,
           volume: totals?.total_volume || 0,
           uniqueSymbols: totals?.unique_symbols || 0,
+          longCount: totals?.long_count || 0,
+          shortCount: totals?.short_count || 0,
+          longVolume: totals?.long_volume || 0,
+          shortVolume: totals?.short_volume || 0,
         },
         symbols: symbolsWithFrequency,
         hourlyDistribution: hourlyDist,
@@ -454,7 +477,7 @@ export class LiquidationStorage {
       console.error('Error getting discovery stats:', error);
       return {
         timeWindow: timeWindowSeconds,
-        totals: { count: 0, volume: 0, uniqueSymbols: 0 },
+        totals: { count: 0, volume: 0, uniqueSymbols: 0, longCount: 0, shortCount: 0, longVolume: 0, shortVolume: 0 },
         symbols: [],
         hourlyDistribution: [],
         dailyDistribution: [],
@@ -638,10 +661,14 @@ export interface DiscoveryStats {
     short_liqs: number;
     long_volume: number;
     short_volume: number;
+    whale_volume: number;
+    whale_count: number;
     first_liq_time: number;
     last_liq_time: number;
     frequency_per_hour: number;
     long_ratio: number;
+    whale_percent: number;
+    hourly_opportunity: number;
   }>;
   hourlyDistribution: Array<{
     hour: number;
