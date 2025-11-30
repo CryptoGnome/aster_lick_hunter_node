@@ -20,7 +20,7 @@ import TradingViewChart from '@/components/TradingViewChart';
 import PnLChart from '@/components/PnLChart';
 import PerformanceCardInline from '@/components/PerformanceCardInline';
 import SessionPerformanceCard from '@/components/SessionPerformanceCard';
-import TradeQualityCard from '@/components/TradeQualityCard';
+import TradeQualityPanel from '@/components/TradeQualityPanel';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
 import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
 import { PullToRefresh } from '@/components/PullToRefresh';
@@ -442,15 +442,11 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Trade Quality Monitor and PnL Chart side by side */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <PnLChart />
-            </div>
-            <div className="lg:col-span-1">
-              <TradeQualityCard />
-            </div>
-          </div>
+          {/* PnL Chart - Full Width */}
+          <PnLChart />
+
+          {/* Trade Quality Analysis Panel */}
+          <TradeQualityPanel isPassiveMode={config?.global?.useTradeQualityScoring === false} />
 
           {/* Positions Table */}
           <PositionTable

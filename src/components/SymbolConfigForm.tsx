@@ -877,6 +877,42 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   </Alert>
                 )}
               </div>
+
+              {/* Trade Quality Scoring Toggle */}
+              <Separator />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="flex items-center gap-2">
+                      <BarChart3 className="h-4 w-4" />
+                      Trade Quality Scoring
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      Filter trades based on VWAP regime, spike velocity, and volume trends
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.global.useTradeQualityScoring !== false}
+                    onCheckedChange={(checked) =>
+                      handleGlobalChange('useTradeQualityScoring', checked)
+                    }
+                  />
+                </div>
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    {config.global.useTradeQualityScoring !== false ? (
+                      <>
+                        <strong>ACTIVE:</strong> Trades are scored 0-3 based on market conditions. Low quality trades (score 0) are skipped, and position sizes are adjusted based on quality (0.5x-1.5x).
+                      </>
+                    ) : (
+                      <>
+                        <strong>PASSIVE:</strong> Trade quality is still calculated and recorded for monitoring, but no trades will be blocked or filtered. Use this to observe scoring before enabling full filtering.
+                      </>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              </div>
             </CardContent>
           </Card>
 

@@ -89,6 +89,7 @@ export interface GlobalConfig {
   positionMode?: 'ONE_WAY' | 'HEDGE'; // Position mode preference (optional)
   maxOpenPositions?: number; // Max number of open positions (hedged pairs count as one)
   useThresholdSystem?: boolean; // Enable 60-second rolling volume threshold system (default: false)
+  useTradeQualityScoring?: boolean; // Enable trade quality scoring - VWAP regime, spike analysis (default: true)
   debugMode?: boolean;      // Enable verbose console logging for debugging (default: false)
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration

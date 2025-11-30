@@ -44,7 +44,7 @@ export const DEFAULT_CONFIG: Config = {
     paperMode: true,
     positionMode: 'HEDGE',
     maxOpenPositions: 10,
-    debugMode: false,
+    useTradeQualityScoring: true, // Enable trade quality scoring by default
     server: {
       dashboardPassword: '',
       dashboardPort: 3000,

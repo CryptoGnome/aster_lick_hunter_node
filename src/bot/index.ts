@@ -17,6 +17,7 @@ import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
 import { ftaExitService } from '../lib/services/ftaExitService';
+import { tradeQualityDb } from '../lib/db/tradeQualityDb';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../lib/utils/timestamp';
 import { updateDynamicPositionSizes } from '../lib/utils/positionSizing';
 import { getPaperTradingManager } from '../lib/paperTrading';
@@ -677,12 +678,61 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp(`🎯 Trade opportunity: ${data.symbol} ${data.side} (${data.reason})`);
         this.statusBroadcaster.broadcastTradeOpportunity(data);
         this.statusBroadcaster.logActivity(`Opportunity: ${data.symbol} ${data.side} - ${data.reason}`);
+        
+        // Save to database for persistence
+        try {
+          tradeQualityDb.saveTradeSignal({
+            symbol: data.symbol,
+            side: data.side,
+            recommendation: data.qualityRecommendation || data.qualityScore?.recommendation || 'NORMAL',
+            totalScore: data.qualityScore?.totalScore ?? 2,
+            spikeScore: data.qualityScore?.spikeScore ?? 1,
+            volumeTrendScore: data.qualityScore?.volumeTrendScore ?? 1,
+            regimeScore: data.qualityScore?.regimeScore ?? 0,
+            positionSizeMultiplier: data.qualityScore?.positionSizeMultiplier ?? 1.0,
+            liquidationVolume: data.liquidationVolume || 0,
+            priceImpact: data.priceImpact || 0,
+            confidence: data.confidence || 0,
+            reason: data.reason,
+            metrics: data.qualityScore?.metrics,
+            wasExecuted: true,
+            wasBlocked: false,
+            reasons: data.qualityScore?.reasons
+          });
+        } catch (dbError) {
+          logErrorWithTimestamp('Failed to save trade signal to database:', dbError);
+        }
       });
 
       this.hunter.on('tradeBlocked', (data: any) => {
         logWithTimestamp(`🚫 Trade blocked: ${data.symbol} ${data.side} - ${data.reason}`);
         this.statusBroadcaster.broadcastTradeBlocked(data);
         this.statusBroadcaster.logActivity(`Blocked: ${data.symbol} ${data.side} - ${data.blockType}`);
+        
+        // Save blocked trade to database for analysis
+        try {
+          tradeQualityDb.saveTradeSignal({
+            symbol: data.symbol,
+            side: data.side,
+            recommendation: data.qualityScore?.recommendation || 'SKIP',
+            totalScore: data.qualityScore?.totalScore ?? 0,
+            spikeScore: data.qualityScore?.spikeScore ?? 0,
+            volumeTrendScore: data.qualityScore?.volumeTrendScore ?? 0,
+            regimeScore: data.qualityScore?.regimeScore ?? 0,
+            positionSizeMultiplier: data.qualityScore?.positionSizeMultiplier ?? 0,
+            liquidationVolume: 0,
+            priceImpact: 0,
+            confidence: 0,
+            reason: data.reason,
+            metrics: data.qualityScore?.metrics,
+            wasExecuted: false,
+            wasBlocked: true,
+            blockReason: data.blockType || data.reason,
+            reasons: data.qualityScore?.reasons
+          });
+        } catch (dbError) {
+          logErrorWithTimestamp('Failed to save blocked trade to database:', dbError);
+        }
       });
 
       // Remove old threshold monitor listeners to prevent duplicates
@@ -698,6 +748,19 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp(`⚠️ FTA Exit Signal: ${signal.symbol} ${signal.side} - ${signal.reason}`);
         this.statusBroadcaster.broadcast('fta_exit_signal', signal);
         this.statusBroadcaster.logActivity(`FTA Alert: ${signal.symbol} - ${signal.exitType}`);
+        
+        // Save FTA signal to database
+        try {
+          tradeQualityDb.saveFTASignal({
+            symbol: signal.symbol,
+            side: signal.side,
+            exitType: signal.exitType,
+            reason: signal.reason,
+            confidence: signal.confidence || 0
+          });
+        } catch (dbError) {
+          logErrorWithTimestamp('Failed to save FTA signal to database:', dbError);
+        }
       });
 
       this.hunter.on('positionOpened', (data: any) => {

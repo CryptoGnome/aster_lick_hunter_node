@@ -86,6 +86,7 @@ export const globalConfigSchema = z.object({
   positionMode: z.enum(['ONE_WAY', 'HEDGE']).optional(),
   maxOpenPositions: z.number().min(1).optional(),
   useThresholdSystem: z.boolean().optional(),
+  useTradeQualityScoring: z.boolean().optional(), // Enable/disable trade quality scoring (VWAP regime, spike analysis)
   server: serverConfigSchema,
   rateLimit: rateLimitConfigSchema,
 });

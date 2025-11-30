@@ -261,9 +261,14 @@ logErrorWithTimestamp('Hunter: Failed to sync position mode with exchange:', err
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // Start trade quality service for enhanced decision making
+    // Always start trade quality service for monitoring/recording
+    // When disabled in config, scores are still calculated but not used to block trades
     tradeQualityService.start();
-    logWithTimestamp('Hunter: Trade Quality Service started');
+    if (this.config.global.useTradeQualityScoring !== false) {
+      logWithTimestamp('Hunter: Trade Quality Service started (ACTIVE - will filter trades)');
+    } else {
+      logWithTimestamp('Hunter: Trade Quality Service started (PASSIVE - recording only, not filtering trades)');
+    }
 
     // Log threshold system configuration on startup
     if (this.config.global.useThresholdSystem) {
@@ -328,7 +333,7 @@ logErrorWithTimestamp('Hunter: Failed to initialize symbol precision manager:', 
       this.reconnectTimeout = null;
     }
 
-    // Stop trade quality service
+    // Stop trade quality service (always running for monitoring)
     tradeQualityService.stop();
     logWithTimestamp('Hunter: Trade Quality Service stopped');
 
@@ -732,16 +737,18 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
       const triggerBuy = liquidation.side === 'SELL' && priceRatio < 1.01; // 1% below
       const triggerSell = liquidation.side === 'BUY' && priceRatio > 0.99;  // 1% above
       
-      // Trade Quality Assessment (non-blocking, defaults to quality 2 on error)
+      // Trade Quality Assessment - ALWAYS calculated for monitoring/recording
+      // When useTradeQualityScoring is disabled, scores are recorded but don't block trades
       let qualityScore: TradeQualityScore | null = null;
       const volumeUSDT = liquidation.qty * liquidation.price;
+      const useQualityScoringToFilter = this.config.global.useTradeQualityScoring !== false; // Default to enabled
       
       if (triggerBuy || triggerSell) {
         try {
-          // Record the liquidation for volume tracking
+          // Record the liquidation for volume tracking (always)
           tradeQualityService.recordLiquidation(liquidation, volumeUSDT);
           
-          // Calculate quality score
+          // Calculate quality score (always - for monitoring)
           const tradeSide = triggerBuy ? 'BUY' : 'SELL';
           qualityScore = tradeQualityService.calculateQualityScore(
             liquidation.symbol,
@@ -751,11 +758,12 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
           );
           
           // Log quality assessment
-          logWithTimestamp(`Hunter: Trade Quality for ${liquidation.symbol} - Total: ${qualityScore.totalScore}/3, Spike: ${qualityScore.spikeScore}/1, Volume: ${qualityScore.volumeTrendScore}/1, Regime: ${qualityScore.regimeScore}/1`);
+          const filterStatus = useQualityScoringToFilter ? '' : ' [PASSIVE MODE]';
+          logWithTimestamp(`Hunter: Trade Quality for ${liquidation.symbol}${filterStatus} - Total: ${qualityScore.totalScore}/3, Spike: ${qualityScore.spikeScore}/1, Volume: ${qualityScore.volumeTrendScore}/1, Regime: ${qualityScore.regimeScore}/1`);
           logWithTimestamp(`Hunter: Quality recommendation: ${qualityScore.recommendation}, Position multiplier: ${qualityScore.positionSizeMultiplier}x`);
           
-          // Skip trade if quality is 0 (SKIP)
-          if (qualityScore.totalScore === 0 || qualityScore.recommendation === 'SKIP') {
+          // Only skip/block trades if quality scoring is ACTIVE (not passive/recording-only mode)
+          if (useQualityScoringToFilter && (qualityScore.totalScore === 0 || qualityScore.recommendation === 'SKIP')) {
             logWithTimestamp(`Hunter: SKIPPING trade for ${liquidation.symbol} - Quality score too low`);
             qualityScore.reasons.forEach(r => logWithTimestamp(`  ${r}`));
             
@@ -769,6 +777,9 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
             });
             
             return;
+          } else if (!useQualityScoringToFilter && (qualityScore.totalScore === 0 || qualityScore.recommendation === 'SKIP')) {
+            // Log that we WOULD have skipped but didn't because scoring is passive
+            logWithTimestamp(`Hunter: Trade Quality PASSIVE - Would have skipped ${liquidation.symbol} (score ${qualityScore.totalScore}/3) but proceeding anyway`);
           }
         } catch (qualityError) {
           // Non-blocking - if quality assessment fails, proceed with default quality

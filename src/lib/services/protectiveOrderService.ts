@@ -802,7 +802,7 @@ export class ProtectiveOrderService extends EventEmitter {
       const priceMap = new Map<string, number>(markPrices.map((p: any) => [p.symbol, parseFloat(p.markPrice)]));
 
       // Also get current positions to fetch quantity
-      const { getPositions } = await import('../api/market');
+      const { getPositions } = await import('../api/orders');
       const positions = await getPositions(this.config.api);
 
       for (const [key, trailData] of this.trailingStops.entries()) {
@@ -831,7 +831,7 @@ export class ProtectiveOrderService extends EventEmitter {
             );
             
             // Find position to get quantity
-            const position = positions.find(p => p.symbol === symbol);
+            const position = positions.find((p: any) => p.symbol === symbol);
             if (!position) {
               logWarnWithTimestamp(`ProtectiveOrderService: Position ${symbol} not found, skipping TP placement`);
               continue;
