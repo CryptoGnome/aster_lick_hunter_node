@@ -14,6 +14,16 @@ export const GET = withAuth(async (request: Request, _user) => {
       config = await configLoader.loadConfig();
     }
 
+    // If paper mode is enabled, return empty symbol data for now
+    // (Could be enhanced to show per-symbol stats from paper trading)
+    if (config.global?.paperMode) {
+      return NextResponse.json({
+        symbols: [],
+        range,
+        recordCount: 0,
+      });
+    }
+
     if (!config.api || !config.api.apiKey || !config.api.secretKey) {
       return NextResponse.json(
         { error: 'API credentials not configured' },

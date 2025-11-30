@@ -5,6 +5,8 @@ import { buildSignedForm, buildSignedQuery } from './auth';
 import { getRateLimitedAxios } from './requestInterceptor';
 import { symbolPrecision } from '../utils/symbolPrecision';
 import { getMarkPrice } from './market';
+import { getPaperTradingManager } from '../paperTrading';
+import { configManager } from '../services/configManager';
 
 const BASE_URL = 'https://fapi.asterdex.com';
 
@@ -20,6 +22,46 @@ export async function placeOrder(params: {
   positionSide?: 'BOTH' | 'LONG' | 'SHORT';
   timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'GTX';
 }, credentials: ApiCredentials): Promise<Order> {
+  // Check if paper mode is enabled
+  const config = configManager.getConfig();
+  const isPaperMode = config?.global?.paperMode ?? false;
+
+  if (isPaperMode) {
+    // Use paper trading simulator
+    const paperTrading = getPaperTradingManager();
+    
+    // Ensure paper trading is initialized
+    if (!paperTrading.isActive()) {
+      await paperTrading.initialize();
+    }
+
+    // Simulate the order
+    const result = await paperTrading.placeOrder({
+      symbol: params.symbol,
+      side: params.side,
+      type: params.type,
+      quantity: params.quantity,
+      price: params.price,
+      stopPrice: params.stopPrice,
+      reduceOnly: params.reduceOnly,
+      positionSide: params.positionSide as 'LONG' | 'SHORT' | 'BOTH',
+    });
+
+    // Convert simulated result to Order format
+    return {
+      symbol: result.symbol,
+      orderId: result.orderId,
+      clientOrderId: result.orderId,
+      side: result.side,
+      type: result.type,
+      quantity: parseFloat(result.origQty),
+      price: parseFloat(result.price),
+      status: result.status,
+      updateTime: result.updateTime,
+    } as Order;
+  }
+
+  // Real trading mode - proceed with actual API call
   // Validate quantity before proceeding
   let validatedQuantity = params.quantity;
   let priceForValidation = params.price || 0;

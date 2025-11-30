@@ -37,16 +37,65 @@ export const GET = withAuth(async (request: NextRequest, _user) => {
   try {
     const config = await loadConfig();
 
-    // If no API key is configured, return mock data
+    // If paper mode is enabled, return paper trading balance from database
+    if (config.global.paperMode) {
+      try {
+        const { PaperTradingDatabase } = await import('@/lib/db/paperTradingDb');
+        const db = PaperTradingDatabase.getInstance();
+        const balanceRow = await db.get<any>('SELECT * FROM balance WHERE id = 1');
+        
+        if (balanceRow) {
+          console.log('[Balance API] Paper trading balance from DB:', balanceRow.total_balance);
+          
+          return NextResponse.json({
+            totalBalance: balanceRow.total_balance,
+            availableBalance: balanceRow.available_balance,
+            totalPositionValue: balanceRow.used_margin || 0,
+            totalPnL: balanceRow.unrealized_pnl || 0,
+            source: 'paper_trading_db',
+            timestamp: Date.now(),
+            cached: false,
+            responseTime: Date.now() - startTime,
+          });
+        } else {
+          // No balance in database yet, use starting balance from config
+          const startingBalance = config.global.paperTrading?.startingBalance || 1000;
+          console.log('[Balance API] No paper balance in DB, using config:', startingBalance);
+          
+          return NextResponse.json({
+            totalBalance: startingBalance,
+            availableBalance: startingBalance,
+            totalPositionValue: 0,
+            totalPnL: 0,
+            source: 'paper_trading_config',
+            timestamp: Date.now(),
+            cached: false,
+            responseTime: Date.now() - startTime,
+          });
+        }
+      } catch (error: any) {
+        console.error('[Balance API] Error reading paper balance from DB:', error.message);
+        // Fallback to config
+        const startingBalance = config.global.paperTrading?.startingBalance || 1000;
+        return NextResponse.json({
+          totalBalance: startingBalance,
+          availableBalance: startingBalance,
+          totalPositionValue: 0,
+          totalPnL: 0,
+          source: 'paper_trading_fallback',
+          timestamp: Date.now(),
+          cached: false,
+          responseTime: Date.now() - startTime,
+        });
+      }
+    }
+
+    // If no API key is configured and not in paper mode, return error
     if (!config.api.apiKey || !config.api.secretKey) {
-      return NextResponse.json({
-        totalBalance: 10000,
-        availableBalance: 8500,
-        totalPositionValue: 1500,
-        totalPnL: 60,
-        source: 'mock',
-        timestamp: Date.now(),
-      });
+      return NextResponse.json(
+        { error: 'No API keys configured and paper mode is disabled' },
+        { status: 400 }
+      );
     }
 
     // Try to use WebSocket balance service first (real-time data)

@@ -624,7 +624,7 @@ export default function PositionTable({
                         {position.pnl >= 0 ? '+' : ''}${Math.abs(position.pnl).toFixed(2)}
                       </span>
                       <Badge variant={position.pnl >= 0 ? "outline" : "destructive"} className={`h-4 text-[10px] ${position.pnl >= 0 ? 'border-green-600 text-green-600' : ''}`}>
-                        {position.pnlPercent >= 0 ? '+' : ''}{position.pnlPercent.toFixed(1)}%
+                        {position.pnlPercent >= 0 ? '+' : ''}{(position.pnlPercent || 0).toFixed(1)}%
                       </Badge>
                     </div>
 
@@ -858,7 +858,7 @@ export default function PositionTable({
                         variant={position.pnl >= 0 ? "outline" : "destructive"}
                         className={`h-3.5 text-[9px] px-1 ${position.pnl >= 0 ? 'border-green-600 text-green-600 dark:border-green-400 dark:text-green-400' : ''}`}
                       >
-                        {position.pnlPercent >= 0 ? '+' : ''}{position.pnlPercent.toFixed(1)}%
+                        {position.pnlPercent >= 0 ? '+' : ''}{(position.pnlPercent || 0).toFixed(1)}%
                       </Badge>
                     </div>
                   </TableCell>

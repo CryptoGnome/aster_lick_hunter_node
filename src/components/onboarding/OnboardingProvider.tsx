@@ -84,6 +84,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [isNewUser, setIsNewUser] = useState(false);
 
   // Check server-side setup state from public endpoint (no auth required)
+  // Setup is complete if API keys are configured OR paper mode is enabled
   const checkSetupStatus = async () => {
     try {
       const response = await fetch('/api/public-status');
@@ -91,35 +92,37 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
         const data = await response.json();
         return {
           hasApiKeys: data.hasApiKeys === true,
-          setupComplete: data.setupComplete === true
+          setupComplete: data.setupComplete === true,
+          paperMode: data.paperMode === true
         };
       }
     } catch (error) {
       console.error('Could not check setup status:', error);
     }
-    return { hasApiKeys: false, setupComplete: false };
+    return { hasApiKeys: false, setupComplete: false, paperMode: false };
   };
 
   // Load onboarding state - check server config instead of localStorage
   useEffect(() => {
     const initializeOnboarding = async () => {
-      const { hasApiKeys, setupComplete } = await checkSetupStatus();
+      const { hasApiKeys, setupComplete, paperMode } = await checkSetupStatus();
 
-      console.log('🔍 Onboarding check:', { hasApiKeys, setupComplete });
+      console.log('🔍 Onboarding check:', { hasApiKeys, setupComplete, paperMode });
 
       // If setup is complete server-side, skip onboarding regardless of browser/device
-      if (setupComplete) {
+      // Setup is complete if we have API keys OR paper mode is enabled
+      if (setupComplete || paperMode) {
         console.log('✅ Setup complete - skipping onboarding');
         setIsOnboarding(false);
         return;
       }
 
-      // If no API keys configured, force onboarding
-      if (!hasApiKeys) {
-        console.log('⚠️ No API keys - forcing onboarding');
+      // If no API keys configured and not in paper mode, force onboarding
+      if (!hasApiKeys && !paperMode) {
+        console.log('⚠️ No API keys or paper mode - forcing onboarding');
         setIsNewUser(true);
         setIsOnboarding(true);
-        setCurrentStep(1); // Start at API key step
+        setCurrentStep(0); // Start at welcome step
         return;
       }
 

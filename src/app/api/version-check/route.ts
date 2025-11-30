@@ -28,6 +28,14 @@ export async function GET() {
     const { stdout: currentBranch } = await execAsync('git branch --show-current');
     const branch = currentBranch.trim();
 
+    // Fetch latest changes from remote for the current branch (ignore errors if branch doesn't exist remotely)
+    try {
+      await execAsync(`git fetch origin ${branch}`);
+    } catch (fetchError) {
+      // Branch might not exist on remote yet, continue anyway
+      console.log(`[Version Check] Branch ${branch} not found on remote, skipping fetch`);
+    }
+
     // Get current commit hash
     const { stdout: currentCommit } = await execAsync('git rev-parse HEAD');
     const currentCommitShort = currentCommit.trim().substring(0, 7);

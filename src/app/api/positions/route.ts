@@ -32,7 +32,47 @@ export const GET = withAuth(async (request: NextRequest, _user) => {
   try {
     const config = await loadConfig();
 
-    // If no API key is configured, return empty positions
+    // If paper mode is enabled, return paper trading positions from database
+    if (config.global.paperMode) {
+      try {
+        const { PaperTradingDatabase } = await import('@/lib/db/paperTradingDb');
+        const db = PaperTradingDatabase.getInstance();
+        const positions = await db.all<any>('SELECT * FROM positions');
+        
+        console.log(`[Positions API] Paper trading has ${positions.length} position(s) from database`);
+        
+        // Format database positions to match API format
+        const formattedPositions = positions.map((pos: any) => {
+          const unrealizedPnlPercent = pos.unrealized_pnl_percent || 0;
+          return {
+            symbol: pos.symbol,
+            side: pos.side,
+            positionAmt: pos.quantity.toString(),
+            entryPrice: parseFloat(pos.entry_price),
+            markPrice: parseFloat(pos.current_price || pos.entry_price),
+            pnl: parseFloat(pos.unrealized_pnl) || 0,
+            pnlPercent: parseFloat(unrealizedPnlPercent),
+            roe: unrealizedPnlPercent.toString(),
+            liquidationPrice: parseFloat(pos.liquidation_price) || 0,
+            leverage: parseInt(pos.leverage) || 10,
+            margin: parseFloat(pos.margin),
+            quantity: parseFloat(pos.quantity),
+            hasSL: !!pos.stop_loss,
+            hasTP: !!pos.take_profit,
+            stopLoss: pos.stop_loss ? parseFloat(pos.stop_loss) : undefined,
+            takeProfit: pos.take_profit ? parseFloat(pos.take_profit) : undefined,
+          };
+        });
+        
+        return NextResponse.json(formattedPositions);
+      } catch (error) {
+        console.error('[Positions API] Error getting paper trading positions:', error);
+        // Return empty array instead of erroring
+        return NextResponse.json([]);
+      }
+    }
+
+    // If no API key is configured and not in paper mode, return empty positions
     if (!config.api.apiKey || !config.api.secretKey) {
       return NextResponse.json([]);
     }
