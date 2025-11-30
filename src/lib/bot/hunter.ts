@@ -10,6 +10,7 @@ import { liquidationStorage } from '../services/liquidationStorage';
 import { vwapService } from '../services/vwapService';
 import { vwapStreamer } from '../services/vwapStreamer';
 import { thresholdMonitor } from '../services/thresholdMonitor';
+import { tradeQualityService, TradeQualityScore } from '../services/tradeQualityService';
 import { symbolPrecision } from '../utils/symbolPrecision';
 import {
   parseExchangeError,
@@ -258,6 +259,10 @@ logErrorWithTimestamp('Hunter: Failed to sync position mode with exchange:', err
     if (this.isRunning) return;
     this.isRunning = true;
 
+    // Start trade quality service for enhanced decision making
+    tradeQualityService.start();
+    logWithTimestamp('Hunter: Trade Quality Service started');
+
     // Log threshold system configuration on startup
     if (this.config.global.useThresholdSystem) {
 logWithTimestamp('Hunter: Global threshold system ENABLED');
@@ -317,6 +322,10 @@ logWithTimestamp('Hunter: Running in paper mode without API keys - simulating li
 
   stop(): void {
     this.isRunning = false;
+
+    // Stop trade quality service
+    tradeQualityService.stop();
+    logWithTimestamp('Hunter: Trade Quality Service stopped');
 
     // Stop periodic cleanup
     this.stopPeriodicCleanup();
@@ -584,6 +593,75 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
       const priceRatio = liquidation.price / markPrice;
       const triggerBuy = liquidation.side === 'SELL' && priceRatio < 1.01; // 1% below
       const triggerSell = liquidation.side === 'BUY' && priceRatio > 0.99;  // 1% above
+      
+      // Trade Quality Assessment (non-blocking, defaults to quality 2 on error)
+      let qualityScore: TradeQualityScore | null = null;
+      const volumeUSDT = liquidation.qty * liquidation.price;
+      
+      if (triggerBuy || triggerSell) {
+        try {
+          // Record the liquidation for volume tracking
+          tradeQualityService.recordLiquidation(liquidation, volumeUSDT);
+          
+          // Calculate quality score
+          const tradeSide = triggerBuy ? 'BUY' : 'SELL';
+          qualityScore = tradeQualityService.calculateQualityScore(
+            liquidation.symbol,
+            tradeSide,
+            liquidation.price,
+            volumeUSDT
+          );
+          
+          // Log quality assessment
+          logWithTimestamp(`Hunter: Trade Quality for ${liquidation.symbol} - Total: ${qualityScore.totalScore}/3, Spike: ${qualityScore.spikeScore}/1, Volume: ${qualityScore.volumeTrendScore}/1, Regime: ${qualityScore.regimeScore}/1`);
+          logWithTimestamp(`Hunter: Quality recommendation: ${qualityScore.recommendation}, Position multiplier: ${qualityScore.positionSizeMultiplier}x`);
+          
+          // Skip trade if quality is 0 (SKIP)
+          if (qualityScore.totalScore === 0 || qualityScore.recommendation === 'SKIP') {
+            logWithTimestamp(`Hunter: SKIPPING trade for ${liquidation.symbol} - Quality score too low`);
+            qualityScore.reasons.forEach(r => logWithTimestamp(`  ${r}`));
+            
+            // Emit blocked trade for monitoring
+            this.emit('tradeBlocked', {
+              symbol: liquidation.symbol,
+              side: tradeSide,
+              reason: `Trade quality too low: ${qualityScore.totalScore}/3 (${qualityScore.recommendation})`,
+              qualityScore,
+              blockType: 'QUALITY_FILTER'
+            });
+            
+            return;
+          }
+        } catch (qualityError) {
+          // Non-blocking - if quality assessment fails, proceed with default quality
+          logWarnWithTimestamp(`Hunter: Quality assessment failed for ${liquidation.symbol}, proceeding with default quality:`, qualityError);
+          // Create default quality score
+          qualityScore = {
+            symbol: liquidation.symbol,
+            side: triggerBuy ? 'BUY' : 'SELL',
+            totalScore: 2,
+            spikeScore: 1,
+            volumeTrendScore: 1,
+            regimeScore: 0,
+            metrics: {
+              priceChangePercent: 0,
+              spikeTimeSeconds: 0,
+              spikeVelocity: 0,
+              recentVolumeRatio: 1,
+              vwapCrossCount: 0,
+              vwapCrossesPerHour: 0,
+              isChoppyRegime: false,
+              isTrendingRegime: false,
+              vwapDistance: 0,
+              isAboveVwap: false
+            },
+            recommendation: 'NORMAL',
+            positionSizeMultiplier: 1.0,
+            targetMultiplier: 1.0,
+            reasons: ['⚠️ Quality assessment failed, using default NORMAL quality']
+          };
+        }
+      }
 
       // Check VWAP protection if enabled
       if (symbolConfig.vwapProtection) {
@@ -680,42 +758,42 @@ logWithTimestamp(`Hunter: VWAP Check Passed - Price $${liquidation.price.toFixed
       }
 
       if (triggerBuy) {
-        const volumeUSDT = liquidation.qty * liquidation.price;
-
-        // Emit trade opportunity
+        // Emit trade opportunity with quality score
         this.emit('tradeOpportunity', {
           symbol: liquidation.symbol,
           side: 'BUY',
           reason: `SELL liquidation at ${((1 - priceRatio) * 100).toFixed(2)}% below mark price`,
           liquidationVolume: volumeUSDT,
           priceImpact: (1 - priceRatio) * 100,
-          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10) // Higher confidence for larger volumes
+          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10), // Higher confidence for larger volumes
+          qualityScore: qualityScore || undefined,
+          qualityRecommendation: qualityScore?.recommendation
         });
 
         logWithTimestamp(`Hunter: Triggering BUY for ${liquidation.symbol} at ${liquidation.price}`);
-        await this.placeTrade(liquidation.symbol, 'BUY', symbolConfig, liquidation.price);
+        await this.placeTrade(liquidation.symbol, 'BUY', symbolConfig, liquidation.price, qualityScore || undefined);
       } else if (triggerSell) {
-        const volumeUSDT = liquidation.qty * liquidation.price;
-
-        // Emit trade opportunity
+        // Emit trade opportunity with quality score
         this.emit('tradeOpportunity', {
           symbol: liquidation.symbol,
           side: 'SELL',
           reason: `BUY liquidation at ${((priceRatio - 1) * 100).toFixed(2)}% above mark price`,
           liquidationVolume: volumeUSDT,
           priceImpact: (priceRatio - 1) * 100,
-          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10)
+          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10),
+          qualityScore: qualityScore || undefined,
+          qualityRecommendation: qualityScore?.recommendation
         });
 
         logWithTimestamp(`Hunter: Triggering SELL for ${liquidation.symbol} at ${liquidation.price}`);
-        await this.placeTrade(liquidation.symbol, 'SELL', symbolConfig, liquidation.price);
+        await this.placeTrade(liquidation.symbol, 'SELL', symbolConfig, liquidation.price, qualityScore || undefined);
       }
     } catch (error) {
 logErrorWithTimestamp('Hunter: Analysis error:', error);
     }
   }
 
-  private async placeTrade(symbol: string, side: 'BUY' | 'SELL', symbolConfig: SymbolConfig, entryPrice: number): Promise<void> {
+  private async placeTrade(symbol: string, side: 'BUY' | 'SELL', symbolConfig: SymbolConfig, entryPrice: number, qualityScore?: TradeQualityScore): Promise<void> {
     // Track when this trade attempt started (for timestamp validation)
     const tradeStartTime = Date.now();
 
@@ -726,6 +804,12 @@ logErrorWithTimestamp('Hunter: Analysis error:', error);
     let notionalUSDT: number | undefined;  // Don't initialize to 0 - use undefined
     let tradeSizeUSDT: number = symbolConfig.tradeSize; // Default to general tradeSize
     let order: any; // Declare order variable for error handling
+    
+    // Apply quality-based position size multiplier
+    const positionSizeMultiplier = qualityScore?.positionSizeMultiplier ?? 1.0;
+    if (positionSizeMultiplier !== 1.0) {
+      logWithTimestamp(`Hunter: Applying quality-based position multiplier: ${positionSizeMultiplier}x for ${symbol} (quality: ${qualityScore?.totalScore}/3)`);
+    }
 
     try {
       // Check position limits before placing trade
@@ -832,7 +916,8 @@ logWithTimestamp(`Hunter: PAPER MODE - Would place ${side} order for ${symbol}, 
           quantity: symbolConfig.tradeSize,
           price: entryPrice,
           leverage: symbolConfig.leverage,
-          paperMode: true
+          paperMode: true,
+          qualityScore
         });
         return;
       }
@@ -900,6 +985,9 @@ logErrorWithTimestamp(`Hunter: Could not fetch symbol info for ${symbol}`);
       tradeSizeUSDT = side === 'BUY'
         ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
         : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+      
+      // Apply quality-based position size multiplier
+      tradeSizeUSDT = tradeSizeUSDT * positionSizeMultiplier;
 
       notionalUSDT = tradeSizeUSDT * symbolConfig.leverage;
 
@@ -1121,7 +1209,8 @@ logWarnWithTimestamp('Hunter: Cannot determine correct mode. Since we cannot ver
           orderId: order.orderId,
           leverage: symbolConfig.leverage,
           orderType,
-          paperMode: false
+          paperMode: false,
+          qualityScore
         });
       }
 
@@ -1414,7 +1503,8 @@ logWithTimestamp(`Hunter: Fallback market order placed for ${symbol}, orderId: $
             orderId: fallbackOrder.orderId,
             leverage: symbolConfig.leverage,
             orderType: 'MARKET',
-            paperMode: false
+            paperMode: false,
+            qualityScore
           });
 
         } catch (fallbackError: any) {

@@ -263,6 +263,8 @@ export class StatusBroadcaster extends EventEmitter {
     liquidationVolume: number;
     priceImpact: number;
     confidence: number;
+    qualityScore?: any;
+    qualityRecommendation?: string;
   }): void {
     this._broadcast('trade_opportunity', {
       ...data,
@@ -270,7 +272,7 @@ export class StatusBroadcaster extends EventEmitter {
     });
   }
 
-  // Broadcast when a trade is blocked (e.g., by VWAP protection)
+  // Broadcast when a trade is blocked (e.g., by VWAP protection or quality filter)
   broadcastTradeBlocked(data: {
     symbol: string;
     side: string;
@@ -278,6 +280,7 @@ export class StatusBroadcaster extends EventEmitter {
     vwap?: number;
     currentPrice?: number;
     blockType?: string;
+    qualityScore?: any;
   }): void {
     this._broadcast('trade_blocked', {
       ...data,

@@ -17,6 +17,7 @@ import { getRateLimitManager } from '../lib/api/rateLimitManager';
 import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
+import { ftaExitService } from '../lib/services/ftaExitService';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../lib/utils/timestamp';
 
 // Helper function to kill all child processes (synchronous for exit handler)
@@ -407,6 +408,13 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.broadcastThresholdUpdate(thresholdUpdate);
       });
 
+      // Listen for FTA exit signals and broadcast to UI
+      ftaExitService.on('exitSignal', (signal: any) => {
+        logWithTimestamp(`⚠️ FTA Exit Signal: ${signal.symbol} ${signal.side} - ${signal.reason}`);
+        this.statusBroadcaster.broadcast('fta_exit_signal', signal);
+        this.statusBroadcaster.logActivity(`FTA Alert: ${signal.symbol} - ${signal.exitType}`);
+      });
+
       this.hunter.on('positionOpened', (data: any) => {
         logWithTimestamp(`📈 Position opened: ${data.symbol} ${data.side} qty=${data.quantity}`);
         this.positionManager?.onNewPosition(data);
@@ -421,6 +429,24 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.updateStatus({
           positionsOpen: (this.statusBroadcaster as any).status.positionsOpen + 1,
         });
+
+        // Register position with FTA Exit Service for early exit monitoring
+        const symbolConfig = this.config?.symbols[data.symbol];
+        if (symbolConfig && data.qualityScore) {
+          ftaExitService.addPosition({
+            symbol: data.symbol,
+            side: data.side,
+            entryPrice: data.price,
+            stopLossPrice: data.side === 'BUY' 
+              ? data.price * (1 - symbolConfig.slPercent / 100)
+              : data.price * (1 + symbolConfig.slPercent / 100),
+            takeProfitPrice: data.side === 'BUY'
+              ? data.price * (1 + symbolConfig.tpPercent / 100)
+              : data.price * (1 - symbolConfig.tpPercent / 100),
+            qualityScore: data.qualityScore?.totalScore ?? 2,
+          });
+          logWithTimestamp(`📊 FTA monitoring registered for ${data.symbol} (quality: ${data.qualityScore?.totalScore ?? 2}/3)`);
+        }
 
         // Subscribe to price updates for the new position's symbol
         const priceService = getPriceService();
@@ -452,6 +478,10 @@ logErrorWithTimestamp('❌ Hunter error:', error);
 
       await this.hunter.start();
 logWithTimestamp('✅ Liquidation Hunter started');
+
+      // Start the FTA Exit Service for early exit monitoring
+      ftaExitService.start();
+logWithTimestamp('✅ FTA Exit Service started');
 
       // Start the cleanup scheduler for liquidation database
       cleanupScheduler.start();
@@ -596,6 +626,10 @@ logWithTimestamp('✅ Hunter stopped');
         this.positionManager.stop();
 logWithTimestamp('✅ Position Manager stopped');
       }
+
+      // Stop FTA Exit Service
+      ftaExitService.stop();
+logWithTimestamp('✅ FTA Exit Service stopped');
 
       // Stop other services
       vwapStreamer.stop();

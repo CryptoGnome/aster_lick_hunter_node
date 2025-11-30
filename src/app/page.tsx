@@ -18,6 +18,7 @@ import PositionTable from '@/components/PositionTable';
 import PnLChart from '@/components/PnLChart';
 import PerformanceCardInline from '@/components/PerformanceCardInline';
 import SessionPerformanceCard from '@/components/SessionPerformanceCard';
+import TradeQualityCard from '@/components/TradeQualityCard';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
 import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
 import { useConfig } from '@/components/ConfigProvider';
@@ -387,8 +388,15 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* PnL Chart */}
-          <PnLChart />
+          {/* Trade Quality Monitor and PnL Chart side by side */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <PnLChart />
+            </div>
+            <div className="lg:col-span-1">
+              <TradeQualityCard />
+            </div>
+          </div>
 
           {/* Positions Table */}
           <PositionTable
