@@ -22,8 +22,14 @@ export async function getMarkPrice(symbol?: string): Promise<MarkPrice | MarkPri
   return response.data;
 }
 
-export async function getKlines(symbol: string, interval: string = '1m', limit: number = 500): Promise<Kline[]> {
-  const params = { symbol, interval, limit };
+export async function getKlines(symbol: string, interval: string = '1m', limit: number = 500, endTime?: number): Promise<Kline[]> {
+  const params: any = { symbol, interval, limit };
+  
+  // If endTime is provided, fetch candles BEFORE that time
+  if (endTime) {
+    params.endTime = endTime;
+  }
+  
   const query = paramsToQuery(params);
   const axios = getRateLimitedAxios();
   const response: AxiosResponse = await axios.get(`${BASE_URL}/fapi/v1/klines?${query}`);

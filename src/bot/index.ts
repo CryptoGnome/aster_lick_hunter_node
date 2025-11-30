@@ -9,7 +9,6 @@ import { initializePriceService, stopPriceService, getPriceService } from '../li
 import { vwapStreamer } from '../lib/services/vwapStreamer';
 import { getPositionMode, setPositionMode } from '../lib/api/positionMode';
 import { execSync } from 'child_process';
-import { cleanupScheduler } from '../lib/services/cleanupScheduler';
 import { db } from '../lib/db/database';
 import { configManager } from '../lib/services/configManager';
 import pnlService from '../lib/services/pnlService';
@@ -19,6 +18,7 @@ import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
 import { ftaExitService } from '../lib/services/ftaExitService';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../lib/utils/timestamp';
+import { updateDynamicPositionSizes } from '../lib/utils/positionSizing';
 
 // Helper function to kill all child processes (synchronous for exit handler)
 function killAllProcesses() {
@@ -43,6 +43,8 @@ class AsterBot {
   private statusBroadcaster: StatusBroadcaster;
   private isHedgeMode: boolean = false;
   private tradeSizeWarnings: any[] = [];
+  private cleanupScheduler: any = null;
+  private positionSizingInterval: NodeJS.Timeout | null = null;
 
   constructor() {
     // Will be initialized with config port
@@ -373,8 +375,187 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         }
       }
 
-      // Initialize Hunter
-      this.hunter = new Hunter(this.config, this.isHedgeMode);
+      // Initialize Tranche Manager (if enabled for any symbol)
+      const trancheEnabledSymbols = Object.entries(this.config.symbols).filter(
+        ([_symbol, config]) => config.enableTrancheManagement
+      );
+
+      if (trancheEnabledSymbols.length > 0) {
+        try {
+          const { initializeTrancheManager } = await import('../lib/services/trancheManager');
+          const trancheManager = initializeTrancheManager(this.config);
+          await trancheManager.initialize();
+
+          // Connect tranche events to status broadcaster
+          trancheManager.on('trancheCreated', (tranche) => {
+            this.statusBroadcaster.broadcastTrancheCreated({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              quantity: tranche.quantity,
+              marginUsed: tranche.marginUsed,
+              leverage: tranche.leverage,
+              tpPrice: tranche.tpPrice,
+              slPrice: tranche.slPrice,
+            });
+            logWithTimestamp(`📊 Tranche created: ${tranche.id.substring(0, 8)} for ${tranche.symbol} ${tranche.side}`);
+          });
+
+          trancheManager.on('trancheIsolated', (tranche) => {
+            const symbolConfig = this.config?.symbols[tranche.symbol];
+            const currentPrice = tranche.isolationPrice || 0;
+            const pnlPercent = tranche.side === 'LONG'
+              ? ((currentPrice - tranche.entryPrice) / tranche.entryPrice) * 100
+              : ((tranche.entryPrice - currentPrice) / tranche.entryPrice) * 100;
+
+            this.statusBroadcaster.broadcastTrancheIsolated({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              currentPrice,
+              unrealizedPnl: tranche.unrealizedPnl,
+              pnlPercent,
+              isolationThreshold: symbolConfig?.trancheIsolationThreshold || 5,
+            });
+            logWithTimestamp(`⚠️  Tranche isolated: ${tranche.id.substring(0, 8)} for ${tranche.symbol} (${pnlPercent.toFixed(2)}% loss)`);
+          });
+
+          trancheManager.on('trancheClosed', (tranche) => {
+            this.statusBroadcaster.broadcastTrancheClosed({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              exitPrice: tranche.exitPrice || 0,
+              quantity: tranche.quantity,
+              realizedPnl: tranche.realizedPnl,
+              closedFully: tranche.status === 'closed',
+              orderId: tranche.exitOrderId,
+            });
+            logWithTimestamp(`💰 Tranche closed: ${tranche.id.substring(0, 8)} for ${tranche.symbol} (PnL: $${tranche.realizedPnl.toFixed(2)})`);
+          });
+
+          trancheManager.on('tranchePartialClose', (tranche) => {
+            this.statusBroadcaster.broadcastTrancheClosed({
+              trancheId: tranche.id,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              entryPrice: tranche.entryPrice,
+              exitPrice: 0, // Partial close - exit price varies
+              quantity: tranche.quantity,
+              realizedPnl: tranche.realizedPnl,
+              closedFully: false,
+            });
+            logWithTimestamp(`📉 Tranche partially closed: ${tranche.id.substring(0, 8)} for ${tranche.symbol}`);
+          });
+
+          // Start periodic isolation monitoring
+          trancheManager.startIsolationMonitoring(10000); // Check every 10 seconds
+
+          logWithTimestamp(`✅ Tranche Manager initialized for ${trancheEnabledSymbols.length} symbol(s): ${trancheEnabledSymbols.map(([s]) => s).join(', ')}`);
+        } catch (error: any) {
+          logErrorWithTimestamp('⚠️  Tranche Manager failed to start:', error.message);
+          this.statusBroadcaster.addError(`Tranche Manager: ${error.message}`);
+          // Continue without tranche management
+        }
+      } else {
+        logWithTimestamp('ℹ️  Tranche Management disabled for all symbols');
+      }
+
+      // Initialize Protective Order Service (always available for on-demand protection via UI)
+      try {
+        const { initializeProtectiveOrderService } = await import('../lib/services/protectiveOrderService');
+        const protectiveOrderService = initializeProtectiveOrderService(this.config);
+        protectiveOrderService.start();
+        logWithTimestamp('✅ Protective Order Service ready (activated per-position via UI)');
+        
+        // Listen for scale_out_position commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('scale_out_position');
+        this.statusBroadcaster.on('scale_out_position', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Activating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.activateProtection(
+              data.symbol,
+              data.side,
+              data.entryPrice,
+              data.quantity,
+              data.settings
+            );
+            this.statusBroadcaster.broadcast('scale_out_position_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to activate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('scale_out_position_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for deactivate_scale_out commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('deactivate_scale_out');
+        this.statusBroadcaster.on('deactivate_scale_out', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Deactivating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.deactivateProtection(data.symbol, data.side);
+            
+            // Broadcast success and status update
+            this.statusBroadcaster.broadcast('deactivate_scale_out_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+            
+            // Immediately broadcast status update to UI
+            this.statusBroadcaster.broadcast('scale_out_status_update', {
+              symbol: data.symbol,
+              side: data.side,
+              isActive: false,
+              reason: 'manual_deactivation'
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to deactivate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('deactivate_scale_out_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for check_scale_out_status commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('check_scale_out_status');
+        this.statusBroadcaster.on('check_scale_out_status', (data: any) => {
+          const isActive = protectiveOrderService.isProtectionActive(data.symbol, data.side);
+          this.statusBroadcaster.broadcast('scale_out_status_response', {
+            symbol: data.symbol,
+            side: data.side,
+            isActive,
+            timestamp: new Date()
+          });
+        });
+      } catch (error: any) {
+        logErrorWithTimestamp('⚠️  Protective Order Service failed to start:', error.message);
+        this.statusBroadcaster.addError(`Protective Order Service: ${error.message}`);
+        // Continue without protective orders
+      }
+
+      // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
+      if (!this.hunter) {
+        this.hunter = new Hunter(this.config, this.isHedgeMode);
+      } else {
+        // Remove all old listeners before re-attaching to prevent duplicates
+        this.hunter.removeAllListeners();
+        console.log('[Bot] Removed all old hunter event listeners to prevent duplicates');
+      }
 
       // Inject status broadcaster for order events
       this.hunter.setStatusBroadcaster(this.statusBroadcaster);
@@ -386,7 +567,8 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
 
       // Connect hunter events to position manager and status broadcaster
       this.hunter.on('liquidationDetected', (liquidationEvent: any) => {
-        logWithTimestamp(`💥 Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
+        console.log(`[Bot] liquidationDetected event received for ${liquidationEvent.symbol}`);
+        // Broadcast to UI and log activity (don't log to console - already logged in hunter.ts)
         this.statusBroadcaster.broadcastLiquidation(liquidationEvent);
         this.statusBroadcaster.logActivity(`Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
       });
@@ -403,6 +585,9 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.logActivity(`Blocked: ${data.symbol} ${data.side} - ${data.blockType}`);
       });
 
+      // Remove old threshold monitor listeners to prevent duplicates
+      thresholdMonitor.removeAllListeners('thresholdUpdate');
+      
       // Listen for threshold updates and broadcast to UI
       thresholdMonitor.on('thresholdUpdate', (thresholdUpdate: any) => {
         this.statusBroadcaster.broadcastThresholdUpdate(thresholdUpdate);
@@ -484,8 +669,36 @@ logWithTimestamp('✅ Liquidation Hunter started');
 logWithTimestamp('✅ FTA Exit Service started');
 
       // Start the cleanup scheduler for liquidation database
-      cleanupScheduler.start();
-logWithTimestamp('✅ Database cleanup scheduler started (7-day retention)');
+      const dbConfig = this.config.global.liquidationDatabase;
+      const retentionDays = dbConfig?.retentionDays ?? 90;
+      const cleanupHours = dbConfig?.cleanupIntervalHours ?? 24;
+      
+      // Create a new scheduler instance with config values
+      const { CleanupScheduler } = await import('../lib/services/cleanupScheduler');
+      this.cleanupScheduler = new CleanupScheduler(cleanupHours, retentionDays);
+      this.cleanupScheduler.start();
+      
+      if (retentionDays > 0) {
+        logWithTimestamp(`✅ Database cleanup scheduler started (${retentionDays}-day retention, runs every ${cleanupHours}h)`);
+      } else {
+        logWithTimestamp('✅ Database cleanup scheduler started (retention disabled)');
+      }
+
+      // Start dynamic position sizing updater (every 5 minutes)
+      this.positionSizingInterval = setInterval(async () => {
+        try {
+          await updateDynamicPositionSizes();
+        } catch (error) {
+          logErrorWithTimestamp('[PositionSizing] Error updating dynamic position sizes:', error);
+        }
+      }, 5 * 60 * 1000); // 5 minutes
+      
+      // Run once immediately on startup
+      updateDynamicPositionSizes().catch(error => {
+        logErrorWithTimestamp('[PositionSizing] Error on initial position size update:', error);
+      });
+      
+      logWithTimestamp('✅ Dynamic position sizing updater started (updates every 5 minutes)');
 
       this.isRunning = true;
       this.statusBroadcaster.setRunning(true);
@@ -643,8 +856,21 @@ logWithTimestamp('✅ Balance service stopped');
       stopPriceService();
 logWithTimestamp('✅ Price service stopped');
 
-      cleanupScheduler.stop();
+      if (this.cleanupScheduler) {
+        this.cleanupScheduler.stop();
+      }
 logWithTimestamp('✅ Cleanup scheduler stopped');
+
+      if (this.positionSizingInterval) {
+        clearInterval(this.positionSizingInterval);
+        this.positionSizingInterval = null;
+      }
+logWithTimestamp('✅ Position sizing updater stopped');
+
+      // Flush liquidation buffer to prevent data loss
+      const { liquidationStorage } = await import('../lib/services/liquidationStorage');
+      await liquidationStorage.shutdown();
+logWithTimestamp('✅ Liquidation storage flushed');
 
       configManager.stop();
 logWithTimestamp('✅ Config manager stopped');

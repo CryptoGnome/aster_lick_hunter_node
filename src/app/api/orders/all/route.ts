@@ -74,12 +74,11 @@ export async function GET(request: NextRequest) {
         );
         allOrders = orders;
       } else if (configuredSymbols.length > 0) {
-        // Fetch for all configured/active symbols
-        console.log(`[Orders API] Fetching orders from ${configuredSymbols.length} configured symbols...`);
-
+        // Fetch for all configured/active symbols (when symbol is undefined or 'ALL')
         // Fetch generous amount per symbol to ensure we get enough orders
         // The limit will be applied AFTER filtering and sorting all orders from all symbols
-        const perSymbolLimit = Math.max(200, limit * 2);
+        // If filtering by FILLED status, we need to fetch more because many orders might not be filled
+        const perSymbolLimit = status === 'FILLED' ? Math.max(500, limit * 10) : Math.max(200, limit * 2);
 
         for (const sym of configuredSymbols) {
           try {
@@ -88,9 +87,8 @@ export async function GET(request: NextRequest) {
               config.api,
               startTime ? parseInt(startTime) : undefined,
               endTime ? parseInt(endTime) : undefined,
-              Math.min(perSymbolLimit, 500)
+              Math.min(perSymbolLimit, 1000)
             );
-            console.log(`[Orders API] Fetched ${orders.length} orders from ${sym}`);
             allOrders = allOrders.concat(orders);
           } catch (err) {
             console.error(`Failed to fetch orders for ${sym}:`, err);

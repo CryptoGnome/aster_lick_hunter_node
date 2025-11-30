@@ -158,6 +158,19 @@ export class ThresholdMonitor extends EventEmitter {
     // BUY liquidation means shorts are getting liquidated, we might want to SELL (short)
     const isLongOpportunity = liquidation.side === 'SELL';
 
+    // DEDUPLICATION: Check if this exact liquidation already exists based on eventTime and quantity
+    // This prevents duplicate WebSocket events from inflating the threshold count
+    const liquidationKey = `${liquidation.eventTime}_${liquidation.quantity}_${liquidation.price}`;
+    const targetArray = isLongOpportunity ? status.recentLiquidations.long : status.recentLiquidations.short;
+    const isDuplicate = targetArray.some(liq => 
+      `${liq.eventTime}_${liq.quantity}_${liq.price}` === liquidationKey
+    );
+
+    if (isDuplicate) {
+      // Skip duplicate liquidation - don't add to threshold count
+      return status;
+    }
+
     if (isLongOpportunity) {
       status.recentLiquidations.long.push(liquidation);
     } else {

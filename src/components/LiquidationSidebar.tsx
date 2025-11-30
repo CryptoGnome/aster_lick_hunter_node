@@ -35,22 +35,38 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
   const [newEventIds, setNewEventIds] = useState<Set<string>>(new Set());
   const _containerRef = useRef<HTMLDivElement>(null);
   const prevEventsRef = useRef<LiquidationEvent[]>([]);
+  
+  // Generate unique instance ID for debugging
+  const instanceId = useRef(Math.random().toString(36).substring(7));
 
-  // Capture initial values to avoid re-running effect when props change
-  const initialMaxEvents = useRef(maxEvents);
-  const initialVolumeThresholds = useRef(volumeThresholds);
+  // Use refs to track current prop values without causing re-subscriptions
+  const volumeThresholdsRef = useRef(volumeThresholds);
+  const maxEventsRef = useRef(maxEvents);
+
+  // Update refs when props change (doesn't trigger WebSocket re-subscription)
+  useEffect(() => {
+    volumeThresholdsRef.current = volumeThresholds;
+    maxEventsRef.current = maxEvents;
+  }, [volumeThresholds, maxEvents]);
 
   // Load historical liquidations on mount
   useEffect(() => {
+    console.log(`[LiquidationSidebar:${instanceId.current}] Historical liquidation useEffect triggered`);
+    
     const loadHistoricalLiquidations = async () => {
       try {
-        const response = await fetch(`/api/liquidations?limit=${initialMaxEvents.current}`);
+        console.log(`[LiquidationSidebar:${instanceId.current}] Fetching historical liquidations from API...`);
+        const response = await fetch(`/api/liquidations?limit=${maxEventsRef.current}`);
+        console.log(`[LiquidationSidebar:${instanceId.current}] API response status:`, response.status);
+        
         if (response.ok) {
           const result = await response.json();
+          console.log(`[LiquidationSidebar:${instanceId.current}] API response:`, result);
+          
           if (result.success && result.data) {
             const historicalEvents = result.data.map((liq: any) => {
               const volume = liq.volume_usdt || (liq.quantity * liq.price);
-              const threshold = initialVolumeThresholds.current[liq.symbol] || 10000;
+              const threshold = volumeThresholdsRef.current[liq.symbol] || 10000;
               return {
                 symbol: liq.symbol,
                 side: liq.side,
@@ -65,12 +81,16 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
                 isHighVolume: volume >= threshold,
               };
             });
-            console.log(`Loaded ${historicalEvents.length} historical liquidations`);
+            console.log(`[LiquidationSidebar:${instanceId.current}] Loaded ${historicalEvents.length} historical liquidations`);
             setEvents(historicalEvents);
+          } else {
+            console.log(`[LiquidationSidebar:${instanceId.current}] No data in API response or unsuccessful`);
           }
+        } else {
+          console.error(`[LiquidationSidebar:${instanceId.current}] API request failed with status:`, response.status);
         }
       } catch (error) {
-        console.error('Failed to load historical liquidations:', error);
+        console.error(`[LiquidationSidebar:${instanceId.current}] Failed to load historical liquidations:`, error);
       } finally {
         setIsLoading(false);
       }
@@ -79,15 +99,18 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
     loadHistoricalLiquidations();
   }, []); // Only run once on mount - using refs for current values
 
-  // Handle WebSocket messages for real-time updates
+  // Handle WebSocket messages for real-time updates - Subscribe ONCE on mount
   useEffect(() => {
+    console.log(`[LiquidationSidebar:${instanceId.current}] Subscribing to WebSocket`);
+    
     const handleMessage = (message: any) => {
       if (message.type === 'liquidation') {
+        console.log(`[LiquidationSidebar:${instanceId.current}] Received liquidation:`, message.data?.symbol, 'eventTime:', message.data?.eventTime);
         const liquidationData = message.data;
 
-        // Calculate volume and determine if high volume
+        // Calculate volume and determine if high volume (use ref for latest threshold)
         const volume = liquidationData.quantity * liquidationData.price;
-        const threshold = volumeThresholds[liquidationData.symbol] || 10000; // Default $10k
+        const threshold = volumeThresholdsRef.current[liquidationData.symbol] || 10000;
         const isHighVolume = volume >= threshold;
 
         const liquidationEvent: LiquidationEvent = {
@@ -98,10 +121,23 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
 
         // Mark this event as new for animation
         const eventId = `${liquidationData.symbol}-${liquidationData.eventTime}`;
-        setNewEventIds(prev => new Set([...prev, eventId]));
 
         setEvents(prev => {
-          const newEvents = [liquidationEvent, ...prev].slice(0, maxEvents);
+          // Check if this liquidation already exists (deduplicate)
+          const isDuplicate = prev.some(e => 
+            e.symbol === liquidationData.symbol && 
+            e.eventTime === liquidationData.eventTime
+          );
+          
+          if (isDuplicate) {
+            console.log(`[LiquidationSidebar:${instanceId.current}] Duplicate liquidation detected, skipping:`, eventId);
+            return prev;
+          }
+          
+          // Mark as new for animation
+          setNewEventIds(prevIds => new Set([...prevIds, eventId]));
+
+          const newEvents = [liquidationEvent, ...prev].slice(0, maxEventsRef.current);
           prevEventsRef.current = newEvents;
           return newEvents;
         });
@@ -127,10 +163,11 @@ export default function LiquidationSidebar({ volumeThresholds = {}, maxEvents = 
     const cleanupConnectionListener = websocketService.addConnectionListener(handleConnectionChange);
 
     return () => {
+      console.log(`[LiquidationSidebar:${instanceId.current}] Cleaning up WebSocket subscription`);
       cleanupMessageHandler();
       cleanupConnectionListener();
     };
-  }, [volumeThresholds, maxEvents]);
+  }, []); // Empty deps - subscribe to WebSocket only once on mount
 
   const formatTime = (timestamp: Date | number): string => {
     const date = timestamp instanceof Date ? timestamp : new Date(timestamp);

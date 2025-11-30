@@ -85,6 +85,31 @@ export class StatusBroadcaster extends EventEmitter {
                 }
                 break;
 
+              case 'scale_out_position':
+                console.log('🛡️  Scale out requested from web UI:', message.data);
+                this.emit('scale_out_position', message.data);
+                ws.send(JSON.stringify({ 
+                  type: 'scale_out_position_response', 
+                  success: true,
+                  timestamp: Date.now() 
+                }));
+                break;
+
+              case 'deactivate_scale_out':
+                console.log('🛡️  Scale out deactivation requested from web UI:', message.data);
+                this.emit('deactivate_scale_out', message.data);
+                ws.send(JSON.stringify({ 
+                  type: 'deactivate_scale_out_response', 
+                  success: true,
+                  timestamp: Date.now() 
+                }));
+                break;
+
+              case 'check_scale_out_status':
+                console.log('🛡️  Scale out status check requested from web UI:', message.data);
+                this.emit('check_scale_out_status', message.data);
+                break;
+
               case 'ping':
                 ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
                 break;
@@ -114,7 +139,8 @@ export class StatusBroadcaster extends EventEmitter {
         ws.on('ping', () => ws.pong());
       });
 
-      // Update uptime every second and rate limits every 2 seconds
+      // Update uptime and broadcast status less frequently to reduce load
+      // Status updates every 5 seconds, rate limits every 10 seconds
       let counter = 0;
       this.uptimeInterval = setInterval(() => {
         if (this.status.isRunning && this.status.startTime) {
@@ -122,12 +148,12 @@ export class StatusBroadcaster extends EventEmitter {
           this._broadcast('status', this.status);
         }
 
-        // Update rate limits every 2 seconds
+        // Update rate limits every 10 seconds (every 2 iterations)
         counter++;
         if (counter % 2 === 0) {
           this.updateRateLimit();
         }
-      }, 1000);
+      }, 5000); // Reduced from 1000ms to 5000ms (5 seconds)
 
       console.log(`📡 WebSocket server running on port ${this.port}`);
     } catch (error) {
@@ -211,12 +237,18 @@ export class StatusBroadcaster extends EventEmitter {
 
   private _broadcast(type: string, data: any): void {
     const message = JSON.stringify({ type, data });
+    let sentCount = 0;
 
     this.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
+        sentCount++;
       }
     });
+    
+    if (type === 'liquidation') {
+      console.log(`[WebSocketServer] Sent ${type} to ${sentCount} open clients (${this.clients.size} total)`);
+    }
   }
 
   logActivity(activity: string): void {
@@ -229,6 +261,7 @@ export class StatusBroadcaster extends EventEmitter {
 
   // Broadcast liquidation events to connected clients
   broadcastLiquidation(liquidationEvent: LiquidationEvent): void {
+    console.log(`[WebSocketServer] Broadcasting liquidation ${liquidationEvent.symbol} to ${this.clients.size} clients`);
     this._broadcast('liquidation', {
       symbol: liquidationEvent.symbol,
       side: liquidationEvent.side,

@@ -1,6 +1,7 @@
 import { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import { configLoader } from '@/lib/config/configLoader';
+import bcrypt from 'bcryptjs';
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -34,8 +35,17 @@ export const authOptions: NextAuthOptions = {
             ? 'admin'
             : dashboardPassword;
 
-          // Verify password
-          if (credentials.password !== effectivePassword) {
+          // Verify password (support both hashed and plain text for backward compatibility)
+          let isValid = false;
+          if (effectivePassword.startsWith('$2a$') || effectivePassword.startsWith('$2b$')) {
+            // Hashed password - use bcrypt
+            isValid = await bcrypt.compare(credentials.password, effectivePassword);
+          } else {
+            // Plain text password - direct comparison (legacy support)
+            isValid = credentials.password === effectivePassword;
+          }
+
+          if (!isValid) {
             return null;
           }
 
@@ -54,8 +64,17 @@ export const authOptions: NextAuthOptions = {
   ],
   pages: {
     signIn: '/login',
+    error: '/login', // Error code passed in query string as ?error=
   },
   callbacks: {
+    async redirect({ url, baseUrl }) {
+      // ALWAYS redirect to root, ignore ALL callback URLs
+      // This prevents localhost:3000 and other unwanted redirects
+      if (url.startsWith(baseUrl)) {
+        return baseUrl;
+      }
+      return baseUrl;
+    },
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;

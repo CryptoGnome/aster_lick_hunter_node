@@ -14,23 +14,32 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isPasswordConfigured, setIsPasswordConfigured] = useState(false);
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const redirectUrl = searchParams.get('callbackUrl') || '/';
   const { data: _session, status } = useSession();
-  const { config } = useConfig();
 
-  // Check if a custom password is configured (not the default "admin")
-  const isPasswordConfigured = config?.global?.server?.dashboardPassword &&
-    config.global.server.dashboardPassword.trim().length > 0 &&
-    config.global.server.dashboardPassword !== 'admin';
+  // Check if a custom password is configured (fetch from public endpoint)
+  useEffect(() => {
+    const checkPasswordStatus = async () => {
+      try {
+        const response = await fetch('/api/public-status');
+        if (response.ok) {
+          const data = await response.json();
+          setIsPasswordConfigured(data.hasCustomPassword);
+        }
+      } catch (error) {
+        console.error('Failed to check password status:', error);
+      }
+    };
+    checkPasswordStatus();
+  }, []);
 
   // Redirect if already authenticated
   useEffect(() => {
     if (status === 'authenticated') {
-      router.push(redirectUrl);
+      router.push('/');
     }
-  }, [status, router, redirectUrl]);
+  }, [status, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,8 +69,9 @@ function LoginForm() {
       if (result?.error) {
         setError('Invalid password');
       } else if (result?.ok) {
-        // Redirect to the intended page
-        router.push(redirectUrl);
+        // Always redirect to dashboard root
+        router.push('/');
+        router.refresh(); // Force refresh to reload with authenticated state
       }
     } catch (_err) {
       setError('Failed to login. Please try again.');

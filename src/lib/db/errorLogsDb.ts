@@ -68,6 +68,12 @@ class ErrorLogsDatabase {
             return;
           }
 
+          // Apply SQLite optimizations
+          this.db!.run("PRAGMA journal_mode = WAL");
+          this.db!.run("PRAGMA synchronous = NORMAL");
+          this.db!.run("PRAGMA cache_size = -32000"); // 32MB cache
+          this.db!.run("PRAGMA temp_store = MEMORY");
+
           // Create tables
           this.db!.serialize(() => {
             this.db!.run(`

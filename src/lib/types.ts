@@ -9,6 +9,12 @@ export interface SymbolConfig {
   longTradeSize?: number;              // Optional: Specific margin in USDT for long positions
   shortTradeSize?: number;             // Optional: Specific margin in USDT for short positions
   maxPositionMarginUSDT?: number;     // Max margin exposure for this symbol (position size × leverage × price)
+  
+  // Dynamic position sizing
+  positionSizingMode?: 'FIXED' | 'PERCENTAGE'; // Position sizing mode (default: FIXED)
+  percentageOfBalance?: number;        // Percentage of balance to use for position sizing (0.1-100%)
+  minPositionSize?: number;            // Minimum position size in USDT (safety floor)
+  maxPositionSize?: number;            // Maximum position size in USDT (safety ceiling)
 
   // Risk parameters
   leverage: number;            // Leverage (1-125)
@@ -31,6 +37,15 @@ export interface SymbolConfig {
   useThreshold?: boolean;       // Enable threshold-based triggering for this symbol (default: false)
   thresholdTimeWindow?: number; // Time window in ms for volume accumulation (default: 60000)
   thresholdCooldown?: number;   // Cooldown period in ms between triggers (default: 30000)
+
+  // Multi-Tranche Position Management
+  enableTrancheManagement?: boolean;     // Enable tracking of multiple independent position entries
+  trancheIsolationThreshold?: number;    // P&L % threshold to isolate underwater tranches (e.g., 5 for -5%)
+  maxTranches?: number;                  // Maximum number of active tranches per symbol/side (e.g., 3)
+  maxIsolatedTranches?: number;          // Maximum number of isolated tranches allowed before blocking new trades
+  allowTrancheWhileIsolated?: boolean;   // Allow opening new tranches while some are isolated
+  trancheAutoCloseIsolated?: boolean;    // Automatically close isolated tranches when they recover
+  trancheRecoveryThreshold?: number;     // P&L % threshold to auto-close recovered tranches (e.g., 0.5 for +0.5%)
 }
 
 export interface ApiCredentials {
@@ -44,6 +59,7 @@ export interface ServerConfig {
   websocketPort?: number;       // Port for the WebSocket server (default: 8080)
   useRemoteWebSocket?: boolean; // Enable remote WebSocket access (default: false)
   websocketHost?: string | null; // Optional WebSocket host override (null for auto-detect)
+  setupComplete?: boolean;      // Track if initial setup/onboarding has been completed (server-side state)
 }
 
 export interface RateLimitConfig {
@@ -64,8 +80,10 @@ export interface GlobalConfig {
   positionMode?: 'ONE_WAY' | 'HEDGE'; // Position mode preference (optional)
   maxOpenPositions?: number; // Max number of open positions (hedged pairs count as one)
   useThresholdSystem?: boolean; // Enable 60-second rolling volume threshold system (default: false)
+  debugMode?: boolean;      // Enable verbose console logging for debugging (default: false)
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration
+  liquidationDatabase?: LiquidationDatabaseConfig; // Liquidation data retention settings
 }
 
 export interface Config {

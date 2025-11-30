@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import logger from '@/lib/utils/logger';
 import { DashboardLayout } from '@/components/dashboard-layout';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -15,12 +16,14 @@ import {
 import MinimalBotStatus from '@/components/MinimalBotStatus';
 import LiquidationSidebar from '@/components/LiquidationSidebar';
 import PositionTable from '@/components/PositionTable';
+import TradingViewChart from '@/components/TradingViewChart';
 import PnLChart from '@/components/PnLChart';
 import PerformanceCardInline from '@/components/PerformanceCardInline';
 import SessionPerformanceCard from '@/components/SessionPerformanceCard';
 import TradeQualityCard from '@/components/TradeQualityCard';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
 import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
+import { PullToRefresh } from '@/components/PullToRefresh';
 import { useConfig } from '@/components/ConfigProvider';
 import websocketService from '@/lib/services/websocketService';
 import { useOrderNotifications } from '@/hooks/useOrderNotifications';
@@ -49,6 +52,8 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [positions, setPositions] = useState<Position[]>([]);
   const [markPrices, setMarkPrices] = useState<Record<string, number>>({});
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('');
+  const [availableChartSymbols, setAvailableChartSymbols] = useState<string[]>([]);
 
   // Initialize toast notifications
   useOrderNotifications();
@@ -72,8 +77,26 @@ export default function DashboardPage() {
         setAccountInfo(balanceData);
         setPositions(positionsData);
         setBalanceStatus({ source: 'api', timestamp: Date.now() });
+        
+        // Fetch available symbols from liquidation database
+        try {
+          const liquidationSymbolsResp = await fetch('/api/liquidations/symbols');
+          const liquidationSymbolsData = await liquidationSymbolsResp.json();
+          if (liquidationSymbolsData.success && liquidationSymbolsData.symbols) {
+            // Combine configured symbols with symbols that have liquidation data
+            const configuredSymbols = config?.symbols ? Object.keys(config.symbols) : [];
+            const allSymbols = Array.from(new Set([...configuredSymbols, ...liquidationSymbolsData.symbols]));
+            setAvailableChartSymbols(allSymbols);
+          }
+        } catch (error) {
+          logger.error('[Dashboard] Failed to fetch liquidation symbols:', error);
+          // Fallback to configured symbols only
+          if (config?.symbols) {
+            setAvailableChartSymbols(Object.keys(config.symbols));
+          }
+        }
       } catch (error) {
-        console.error('[Dashboard] Failed to load initial data:', error);
+        logger.error('[Dashboard] Failed to load initial data:', error);
         setBalanceStatus({ error: error instanceof Error ? error.message : 'Unknown error' });
       } finally {
         setIsLoading(false);
@@ -84,14 +107,14 @@ export default function DashboardPage() {
 
     // Listen to data store updates
     const handleBalanceUpdate = (data: AccountInfo & { source: string }) => {
-      console.log('[Dashboard] Balance updated from data store:', data.source);
+      logger.debug('[Dashboard] Balance updated from data store:', data.source);
       setAccountInfo(data);
       setBalanceStatus({ source: data.source, timestamp: Date.now() });
       setIsLoading(false);
     };
 
     const handlePositionsUpdate = (data: Position[]) => {
-      console.log('[Dashboard] Positions updated from data store');
+      logger.debug('[Dashboard] Positions updated from data store');
       setPositions(data);
     };
 
@@ -122,7 +145,7 @@ export default function DashboardPage() {
   }, []); // No dependencies - only run once on mount
 
   // Refresh data manually if needed
-  const _refreshData = async () => {
+  const handleRefresh = async () => {
     try {
       const [balanceData, positionsData] = await Promise.all([
         dataStore.fetchBalance(true), // Force refresh
@@ -132,7 +155,7 @@ export default function DashboardPage() {
       setPositions(positionsData);
       setBalanceStatus({ source: 'manual', timestamp: Date.now() });
     } catch (error) {
-      console.error('[Dashboard] Failed to refresh data:', error);
+      logger.error('[Dashboard] Failed to refresh data:', error);
       setBalanceStatus({ error: error instanceof Error ? error.message : 'Unknown error' });
     }
   };
@@ -158,6 +181,28 @@ export default function DashboardPage() {
       [symbol]: cfg.volumeThresholdUSDT
     }), {});
   }, [config?.symbols]);
+
+  // Set default symbol when config loads
+  useEffect(() => {
+    if (config?.symbols && Object.keys(config.symbols).length > 0 && !selectedSymbol) {
+      // First try to find a symbol with open positions
+      const positionSymbols = positions.map(pos => pos.symbol);
+      const symbolsWithPositions = Object.keys(config.symbols).filter(symbol => 
+        positionSymbols.includes(symbol)
+      );
+      
+      const defaultSymbol = symbolsWithPositions.length > 0 
+        ? symbolsWithPositions[0]  // Use symbol with position
+        : Object.keys(config.symbols)[0];  // Fallback to first configured symbol
+        
+      console.log(`[Dashboard] Setting default symbol: ${defaultSymbol}`, {
+        availableSymbols: Object.keys(config.symbols),
+        positionSymbols,
+        symbolsWithPositions
+      });
+      setSelectedSymbol(defaultSymbol);
+    }
+  }, [config?.symbols, selectedSymbol, positions]);
 
   // Calculate live account info with real-time mark prices
   // This supplements the official balance data with live price updates
@@ -251,8 +296,10 @@ export default function DashboardPage() {
 
       <div className="flex h-full overflow-hidden">
         {/* Main Content */}
-        <div className="flex-1 p-6 space-y-6 overflow-y-auto">
-          {/* Account Summary - Minimal Design */}
+        <div className="flex-1 overflow-y-auto">
+          <PullToRefresh onRefresh={handleRefresh}>
+            <div className="p-6 space-y-6">
+              {/* Account Summary - Minimal Design */}
           <div className="flex flex-wrap items-center gap-3">
             {/* Total Balance */}
             <div className="flex items-center gap-2">
@@ -278,7 +325,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Available Balance */}
             <div className="flex items-center gap-2">
@@ -293,7 +340,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Position Value */}
             <div className="flex items-center gap-2">
@@ -308,7 +355,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Unrealized PnL */}
             <div className="flex items-center gap-2">
@@ -346,17 +393,17 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* 24h Performance - Inline */}
             <PerformanceCardInline />
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Live Session Performance */}
             <SessionPerformanceCard />
 
-            <div className="w-px h-8 bg-border" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Active Trading Symbols */}
             <div className="flex items-center gap-2">
@@ -403,8 +450,20 @@ export default function DashboardPage() {
             onClosePosition={handleClosePosition}
           />
 
+          {/* Trading Chart with Symbol Selector */}
+          {config?.symbols && Object.keys(config.symbols).length > 0 && selectedSymbol && (
+            <TradingViewChart
+              symbol={selectedSymbol}
+              positions={positions}
+              availableSymbols={availableChartSymbols.length > 0 ? availableChartSymbols : Object.keys(config.symbols)}
+              onSymbolChange={setSelectedSymbol}
+            />
+          )}
+
           {/* Recent Orders Table */}
           <RecentOrdersTable maxRows={100} />
+            </div>
+          </PullToRefresh>
         </div>
 
         {/* Liquidation Sidebar */}
