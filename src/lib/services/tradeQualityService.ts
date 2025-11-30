@@ -179,8 +179,11 @@ export class TradeQualityService extends EventEmitter {
 
     this.lastVwapPosition.set(symbol, position);
     
-    // Also track price for spike detection
+    // Track price for spike detection using real-time VWAP streamer data
     this.trackPrice(symbol, currentPrice, timestamp);
+    
+    // Also detect spikes from the streaming price data (not just liquidations)
+    this.detectSpike(symbol, currentPrice, timestamp);
   }
 
   /**
