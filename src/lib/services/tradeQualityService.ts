@@ -95,8 +95,7 @@ export class TradeQualityService extends EventEmitter {
   private volumeHistory: Map<string, VolumeWindow[]> = new Map();
   
   // Configuration
-  private readonly VWAP_CROSS_LOOKBACK_MS = 60 * 60 * 1000;  // 1 hour
-  private readonly PRICE_HISTORY_LOOKBACK_MS = 5 * 60 * 1000; // 5 minutes
+  private readonly VWAP_CROSS_LOOKBACK_MS = 60 * 60 * 1000;  // 1 hour\n  private readonly PRICE_HISTORY_LOOKBACK_MS = 10 * 60 * 1000; // 10 minutes (increased from 5)\n  private readonly VOLUME_HISTORY_LOOKBACK_MS = 10 * 60 * 1000; // 10 minutes for volume trends
   private readonly SPIKE_THRESHOLD_PERCENT = 0.5;  // 0.5% move in short time = spike
   private readonly SPIKE_TIME_WINDOW_MS = 60 * 1000; // 1 minute window for spike detection
   private readonly CHOPPY_THRESHOLD_CROSSES_PER_HOUR = 3;
@@ -126,7 +125,64 @@ export class TradeQualityService extends EventEmitter {
       this.cleanupOldData();
     }, 60000);
 
+    // Load recent historical data to bootstrap volume/price tracking
+    this.loadHistoricalData();
+
     console.log('📊 Trade Quality Service: Started');
+  }
+
+  /**
+   * Load recent liquidation data from database to bootstrap tracking
+   */
+  private async loadHistoricalData(): Promise<void> {
+    try {
+      // Fetch liquidations from last 10 minutes to bootstrap volume/price history
+      const lookbackMs = 10 * 60 * 1000;
+      const startTime = Date.now() - lookbackMs;
+      
+      const response = await fetch(`http://localhost:${process.env.PORT || 3000}/api/liquidations?startTime=${startTime}&limit=500`);
+      if (!response.ok) {
+        console.log('📊 Trade Quality Service: Could not load historical liquidations (API not ready)');
+        return;
+      }
+      
+      const data = await response.json();
+      if (data.liquidations && Array.isArray(data.liquidations)) {
+        let loadedCount = 0;
+        for (const liq of data.liquidations) {
+          const volumeUSDT = liq.quantity * liq.price;
+          this.recordLiquidationInternal({
+            symbol: liq.symbol,
+            price: liq.price,
+            eventTime: liq.event_time || liq.eventTime,
+          }, volumeUSDT);
+          loadedCount++;
+        }
+        console.log(`📊 Trade Quality Service: Loaded ${loadedCount} historical liquidations for analysis`);
+      }
+    } catch (error) {
+      // Non-critical - we'll build up data as liquidations come in
+      console.log('📊 Trade Quality Service: Starting fresh (no historical data loaded)');
+    }
+  }
+
+  /**
+   * Internal method to record liquidation without emitting events
+   */
+  private recordLiquidationInternal(liquidation: { symbol: string; price: number; eventTime: number }, volumeUSDT: number): void {
+    const { symbol, eventTime, price } = liquidation;
+    
+    // Track volume
+    const volumes = this.volumeHistory.get(symbol) || [];
+    volumes.push({
+      symbol,
+      timestamp: eventTime,
+      volume: volumeUSDT,
+    });
+    this.volumeHistory.set(symbol, volumes);
+    
+    // Track price
+    this.trackPrice(symbol, price, eventTime);
   }
 
   /**
@@ -213,8 +269,8 @@ export class TradeQualityService extends EventEmitter {
       volume: volumeUSDT,
     });
     
-    // Keep only recent volumes (last 5 minutes)
-    const cutoff = eventTime - this.PRICE_HISTORY_LOOKBACK_MS;
+    // Keep only recent volumes (use dedicated volume lookback)
+    const cutoff = eventTime - this.VOLUME_HISTORY_LOOKBACK_MS;
     const filtered = volumes.filter(v => v.timestamp >= cutoff);
     this.volumeHistory.set(symbol, filtered);
     
@@ -275,7 +331,7 @@ export class TradeQualityService extends EventEmitter {
       this.vwapCrosses.set(symbol, filtered);
     }
     
-    // Clean spikes older than 5 minutes
+    // Clean spikes older than price history lookback
     for (const [symbol, spikes] of this.recentSpikes.entries()) {
       const cutoff = now - this.PRICE_HISTORY_LOOKBACK_MS;
       const filtered = spikes.filter(s => s.endTime >= cutoff);
@@ -289,9 +345,9 @@ export class TradeQualityService extends EventEmitter {
       this.priceHistory.set(symbol, filtered);
     }
     
-    // Clean volume history
+    // Clean volume history (uses dedicated longer lookback)
     for (const [symbol, volumes] of this.volumeHistory.entries()) {
-      const cutoff = now - this.PRICE_HISTORY_LOOKBACK_MS;
+      const cutoff = now - this.VOLUME_HISTORY_LOOKBACK_MS;
       const filtered = volumes.filter(v => v.timestamp >= cutoff);
       this.volumeHistory.set(symbol, filtered);
     }
@@ -371,15 +427,15 @@ export class TradeQualityService extends EventEmitter {
         // Score: Decreasing or flat volume = good for reversals
         if (recentVolumeRatio <= 1.1) { // Volume flat or decreasing
           volumeTrendScore = 1;
-          reasons.push(`✅ Volume trend favorable: ${(recentVolumeRatio * 100 - 100).toFixed(0)}% change`);
+          reasons.push(`✅ Volume trend favorable: ${(recentVolumeRatio * 100 - 100).toFixed(0)}% change (${volumeHistory.length} samples)`);
         } else {
-          reasons.push(`⚠️ Volume increasing: +${((recentVolumeRatio - 1) * 100).toFixed(0)}% (momentum building)`);
+          reasons.push(`⚠️ Volume increasing: +${((recentVolumeRatio - 1) * 100).toFixed(0)}% (${volumeHistory.length} samples)`);
         }
       }
     } else {
-      // Not enough volume data, give benefit of doubt
+      // Not enough volume data
       volumeTrendScore = 0;
-      reasons.push(`⚠️ Insufficient volume history for trend analysis`);
+      reasons.push(`⚠️ Insufficient volume history: ${volumeHistory.length}/3 samples needed`);
     }
 
     // === 3. REGIME SCORE - Is market choppy (good) or trending (bad)? ===
