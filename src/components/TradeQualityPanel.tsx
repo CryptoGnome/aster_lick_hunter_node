@@ -146,7 +146,7 @@ function MiniBarChart({ values, maxValue = 3, color = 'blue' }: { values: number
           style={{ 
             height: `${Math.min((val / maxValue) * 100, 100)}%`,
             opacity: 0.3 + (idx / 10) * 0.7
-          }}}
+          }}
         />
       ))}
     </div>
@@ -217,8 +217,6 @@ function ScoreGauge({ score, maxScore = 3, label, size = 'sm', tooltipKey }: { s
   }
 
   return gaugeContent;
-    </div>
-  );
 }
 
 // VWAP Cross Indicator
