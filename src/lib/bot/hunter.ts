@@ -263,7 +263,8 @@ logErrorWithTimestamp('Hunter: Failed to sync position mode with exchange:', err
 
     // Always start trade quality service for monitoring/recording
     // When disabled in config, scores are still calculated but not used to block trades
-    tradeQualityService.start();
+    // Pass config so it can monitor real-time prices for configured symbols
+    tradeQualityService.start(this.config);
     if (this.config.global.useTradeQualityScoring !== false) {
       logWithTimestamp('Hunter: Trade Quality Service started (ACTIVE - will filter trades)');
     } else {
@@ -615,16 +616,16 @@ logErrorWithTimestamp('Hunter: Failed to initialize symbol precision manager:', 
       // Non-critical error, don't broadcast to UI to avoid spam
     });
 
-    // ALWAYS record liquidation for trade quality tracking (volume trends, spike detection)
-    // This is separate from trade filtering - we need ALL liquidations for accurate analysis
+    const symbolConfig = this.config.symbols[liquidation.symbol];
+    if (!symbolConfig) return; // Symbol not in config - skip trading logic but liquidation was already stored
+
+    // Record ALL liquidations for configured symbols to the quality service
+    // This enables spike detection and volume trend analysis even before threshold is met
     try {
       tradeQualityService.recordLiquidation(liquidation, volumeUSDT);
     } catch (e) {
-      // Non-critical - don't block liquidation processing
+      // Non-critical, don't block trading
     }
-
-    const symbolConfig = this.config.symbols[liquidation.symbol];
-    if (!symbolConfig) return; // Symbol not in config - skip trading logic but liquidation was already stored
 
     // Check if we should use threshold system or instant trigger
     if (useThresholdSystem && thresholdStatus) {
@@ -753,8 +754,10 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
       
       if (triggerBuy || triggerSell) {
         try {
+          // Record the liquidation for volume tracking (always)
+          tradeQualityService.recordLiquidation(liquidation, volumeUSDT);
+          
           // Calculate quality score (always - for monitoring)
-          // Note: liquidation already recorded for volume tracking in handleLiquidationEvent
           const tradeSide = triggerBuy ? 'BUY' : 'SELL';
           qualityScore = tradeQualityService.calculateQualityScore(
             liquidation.symbol,

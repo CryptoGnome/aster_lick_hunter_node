@@ -11,8 +11,9 @@
  */
 
 import { EventEmitter } from 'events';
+import WebSocket from 'ws';
 import { vwapStreamer } from './vwapStreamer';
-import { LiquidationEvent } from '../types';
+import { LiquidationEvent, Config } from '../types';
 
 // Quality score breakdown
 export interface TradeQualityScore {
@@ -94,14 +95,24 @@ export class TradeQualityService extends EventEmitter {
   // Volume tracking for trend detection
   private volumeHistory: Map<string, VolumeWindow[]> = new Map();
   
+  // Rate limiting for price updates (don't need every tick, just frequent enough)
+  private lastPriceUpdate: Map<string, number> = new Map();
+  private lastSpikeLog: Map<string, { threshold: number; time: number }> = new Map();
+  private readonly PRICE_UPDATE_THROTTLE_MS = 100; // Only process price updates every 100ms per symbol
+  private readonly SPIKE_LOG_COOLDOWN_MS = 5000; // Don't log same threshold twice within 5s
+  
   // Configuration
-  private readonly VWAP_CROSS_LOOKBACK_MS = 60 * 60 * 1000;  // 1 hour\n  private readonly PRICE_HISTORY_LOOKBACK_MS = 10 * 60 * 1000; // 10 minutes (increased from 5)\n  private readonly VOLUME_HISTORY_LOOKBACK_MS = 10 * 60 * 1000; // 10 minutes for volume trends
-  private readonly SPIKE_THRESHOLD_PERCENT = 0.5;  // 0.5% move in short time = spike
-  private readonly SPIKE_TIME_WINDOW_MS = 60 * 1000; // 1 minute window for spike detection
+  private readonly VWAP_CROSS_LOOKBACK_MS = 60 * 60 * 1000;  // 1 hour
+  private readonly PRICE_HISTORY_LOOKBACK_MS = 5 * 60 * 1000; // 5 minutes
+  private readonly SPIKE_THRESHOLD_PERCENT = 0.3;  // 0.3% move in short time = spike (lowered from 0.5%)
+  private readonly SPIKE_TIME_WINDOW_MS = 2 * 60 * 1000; // 2 minute window for spike detection (increased from 1 min)
   private readonly CHOPPY_THRESHOLD_CROSSES_PER_HOUR = 3;
   private readonly TRENDING_THRESHOLD_CROSSES_PER_HOUR = 1;
   
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private priceStreamWs: WebSocket | null = null;
+  private priceStreamReconnectTimeout: NodeJS.Timeout | null = null;
+  private monitoredSymbols: Set<string> = new Set();
   private isRunning = false;
 
   constructor() {
@@ -111,78 +122,96 @@ export class TradeQualityService extends EventEmitter {
   /**
    * Start the trade quality service
    */
-  start(): void {
+  start(config?: Config): void {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // Listen to VWAP updates from the streamer
+    // Collect symbols to monitor for spike detection
+    if (config) {
+      for (const symbol of Object.keys(config.symbols)) {
+        this.monitoredSymbols.add(symbol);
+      }
+    }
+
+    // Listen to VWAP updates from the streamer (for regime detection)
     vwapStreamer.on('vwap', (vwapData) => {
       this.trackVWAPCross(vwapData);
     });
+
+    // Start dedicated real-time price stream for spike detection
+    if (this.monitoredSymbols.size > 0) {
+      this.connectPriceStream();
+    }
 
     // Cleanup old data every minute
     this.cleanupInterval = setInterval(() => {
       this.cleanupOldData();
     }, 60000);
 
-    // Load recent historical data to bootstrap volume/price tracking
-    this.loadHistoricalData();
-
     console.log('📊 Trade Quality Service: Started');
-  }
-
-  /**
-   * Load recent liquidation data from database to bootstrap tracking
-   */
-  private async loadHistoricalData(): Promise<void> {
-    try {
-      // Fetch liquidations from last 10 minutes to bootstrap volume/price history
-      const lookbackMs = 10 * 60 * 1000;
-      const startTime = Date.now() - lookbackMs;
-      
-      const response = await fetch(`http://localhost:${process.env.PORT || 3000}/api/liquidations?startTime=${startTime}&limit=500`);
-      if (!response.ok) {
-        console.log('📊 Trade Quality Service: Could not load historical liquidations (API not ready)');
-        return;
-      }
-      
-      const data = await response.json();
-      if (data.liquidations && Array.isArray(data.liquidations)) {
-        let loadedCount = 0;
-        for (const liq of data.liquidations) {
-          const volumeUSDT = liq.quantity * liq.price;
-          this.recordLiquidationInternal({
-            symbol: liq.symbol,
-            price: liq.price,
-            eventTime: liq.event_time || liq.eventTime,
-          }, volumeUSDT);
-          loadedCount++;
-        }
-        console.log(`📊 Trade Quality Service: Loaded ${loadedCount} historical liquidations for analysis`);
-      }
-    } catch (error) {
-      // Non-critical - we'll build up data as liquidations come in
-      console.log('📊 Trade Quality Service: Starting fresh (no historical data loaded)');
+    if (this.monitoredSymbols.size > 0) {
+      console.log(`📊 Trade Quality Service: Real-time price monitoring for ${this.monitoredSymbols.size} symbols`);
     }
   }
 
   /**
-   * Internal method to record liquidation without emitting events
+   * Connect to aggTrade stream for real-time price data (much faster than kline)
    */
-  private recordLiquidationInternal(liquidation: { symbol: string; price: number; eventTime: number }, volumeUSDT: number): void {
-    const { symbol, eventTime, price } = liquidation;
+  private connectPriceStream(): void {
+    if (!this.isRunning || this.monitoredSymbols.size === 0) return;
+
+    // Build stream URL for all symbols
+    const streams = Array.from(this.monitoredSymbols)
+      .map(s => `${s.toLowerCase()}@aggTrade`)
+      .join('/');
     
-    // Track volume
-    const volumes = this.volumeHistory.get(symbol) || [];
-    volumes.push({
-      symbol,
-      timestamp: eventTime,
-      volume: volumeUSDT,
+    const streamUrl = `wss://fstream.asterdex.com/stream?streams=${streams}`;
+    console.log(`📊 Trade Quality: Connecting to real-time price stream for spike detection`);
+
+    this.priceStreamWs = new WebSocket(streamUrl);
+
+    this.priceStreamWs.on('open', () => {
+      console.log('📊 Trade Quality: Real-time price stream connected');
     });
-    this.volumeHistory.set(symbol, volumes);
-    
-    // Track price
-    this.trackPrice(symbol, price, eventTime);
+
+    this.priceStreamWs.on('message', (data: Buffer) => {
+      try {
+        const message = JSON.parse(data.toString());
+        if (message.data) {
+          const trade = message.data;
+          // aggTrade format: { s: symbol, p: price, q: quantity, T: timestamp, m: isBuyerMaker }
+          const symbol = trade.s;
+          const price = parseFloat(trade.p);
+          const timestamp = trade.T;
+          
+          // Throttle price updates to reduce CPU/memory usage
+          const lastUpdate = this.lastPriceUpdate.get(symbol) || 0;
+          if (timestamp - lastUpdate < this.PRICE_UPDATE_THROTTLE_MS) {
+            return; // Skip this update, too soon
+          }
+          this.lastPriceUpdate.set(symbol, timestamp);
+          
+          // Track price and detect spikes
+          this.trackPrice(symbol, price, timestamp);
+          this.detectSpike(symbol, price, timestamp);
+        }
+      } catch (error) {
+        // Ignore parse errors
+      }
+    });
+
+    this.priceStreamWs.on('error', (error) => {
+      console.error('📊 Trade Quality: Price stream error:', error.message);
+    });
+
+    this.priceStreamWs.on('close', () => {
+      console.log('📊 Trade Quality: Price stream closed');
+      if (this.isRunning) {
+        this.priceStreamReconnectTimeout = setTimeout(() => {
+          this.connectPriceStream();
+        }, 5000);
+      }
+    });
   }
 
   /**
@@ -196,11 +225,24 @@ export class TradeQualityService extends EventEmitter {
       this.cleanupInterval = null;
     }
 
+    if (this.priceStreamReconnectTimeout) {
+      clearTimeout(this.priceStreamReconnectTimeout);
+      this.priceStreamReconnectTimeout = null;
+    }
+
+    if (this.priceStreamWs) {
+      this.priceStreamWs.close();
+      this.priceStreamWs = null;
+    }
+
     this.vwapCrosses.clear();
     this.lastVwapPosition.clear();
     this.priceHistory.clear();
     this.recentSpikes.clear();
     this.volumeHistory.clear();
+    this.monitoredSymbols.clear();
+    this.lastPriceUpdate.clear();
+    this.lastSpikeLog.clear();
 
     console.log('📊 Trade Quality Service: Stopped');
   }
@@ -269,15 +311,15 @@ export class TradeQualityService extends EventEmitter {
       volume: volumeUSDT,
     });
     
-    // Keep only recent volumes (use dedicated volume lookback)
-    const cutoff = eventTime - this.VOLUME_HISTORY_LOOKBACK_MS;
+    // Keep only recent volumes (last 5 minutes)
+    const cutoff = eventTime - this.PRICE_HISTORY_LOOKBACK_MS;
     const filtered = volumes.filter(v => v.timestamp >= cutoff);
     this.volumeHistory.set(symbol, filtered);
     
-    // Track price from liquidation
+    // Track price from liquidation (bypasses throttle for important events)
     this.trackPrice(symbol, liquidation.price, eventTime);
     
-    // Detect spikes
+    // Detect spikes from liquidation price
     this.detectSpike(symbol, liquidation.price, eventTime);
   }
 
@@ -311,6 +353,21 @@ export class TradeQualityService extends EventEmitter {
       };
 
       const spikes = this.recentSpikes.get(symbol) || [];
+      
+      // Rate-limited logging: only log significant thresholds with cooldown
+      const currentThreshold = Math.floor(Math.abs(changePercent) * 2) / 2; // Round to nearest 0.5%
+      const lastLog = this.lastSpikeLog.get(symbol);
+      const shouldLog = currentThreshold >= 0.5 && (
+        !lastLog || 
+        currentThreshold > lastLog.threshold || 
+        (timestamp - lastLog.time) > this.SPIKE_LOG_COOLDOWN_MS
+      );
+      
+      if (shouldLog) {
+        console.log(`📊 Quality: SPIKE ${symbol} ${spike.direction} ${Math.abs(changePercent).toFixed(2)}% in ${((timestamp - recentPrices[0].time) / 1000).toFixed(0)}s`);
+        this.lastSpikeLog.set(symbol, { threshold: currentThreshold, time: timestamp });
+      }
+      
       spikes.push(spike);
       this.recentSpikes.set(symbol, spikes);
 
@@ -331,7 +388,7 @@ export class TradeQualityService extends EventEmitter {
       this.vwapCrosses.set(symbol, filtered);
     }
     
-    // Clean spikes older than price history lookback
+    // Clean spikes older than 5 minutes
     for (const [symbol, spikes] of this.recentSpikes.entries()) {
       const cutoff = now - this.PRICE_HISTORY_LOOKBACK_MS;
       const filtered = spikes.filter(s => s.endTime >= cutoff);
@@ -345,9 +402,9 @@ export class TradeQualityService extends EventEmitter {
       this.priceHistory.set(symbol, filtered);
     }
     
-    // Clean volume history (uses dedicated longer lookback)
+    // Clean volume history
     for (const [symbol, volumes] of this.volumeHistory.entries()) {
-      const cutoff = now - this.VOLUME_HISTORY_LOOKBACK_MS;
+      const cutoff = now - this.PRICE_HISTORY_LOOKBACK_MS;
       const filtered = volumes.filter(v => v.timestamp >= cutoff);
       this.volumeHistory.set(symbol, filtered);
     }
@@ -377,7 +434,7 @@ export class TradeQualityService extends EventEmitter {
     let spikeVelocity = 0;
 
     const recentSpikes = this.recentSpikes.get(symbol) || [];
-    const veryRecentSpikes = recentSpikes.filter(s => (now - s.endTime) < 30000); // Last 30 seconds
+    const veryRecentSpikes = recentSpikes.filter(s => (now - s.endTime) < 60000); // Last 60 seconds (increased from 30s)
     
     if (veryRecentSpikes.length > 0) {
       // Find the most recent spike in the expected direction
@@ -393,15 +450,17 @@ export class TradeQualityService extends EventEmitter {
         spikeTimeSeconds = (relevantSpike.endTime - relevantSpike.startTime) / 1000;
         spikeVelocity = priceChangePercent / Math.max(spikeTimeSeconds, 0.1);
         
-        // Score: Fast spike (high velocity) = good
-        if (spikeVelocity > 0.5) { // >0.5% per second
+        // Score: Significant spike in the right direction
+        // Either fast (>0.1% per second) OR large (>0.5% total)
+        // This captures both quick spikes and sustained moves
+        if (spikeVelocity > 0.1 || priceChangePercent >= 0.5) {
           spikeScore = 1;
-          reasons.push(`✅ Fast spike detected: ${priceChangePercent.toFixed(2)}% in ${spikeTimeSeconds.toFixed(1)}s`);
+          reasons.push(`✅ Spike detected: ${priceChangePercent.toFixed(2)}% in ${spikeTimeSeconds.toFixed(0)}s (velocity: ${(spikeVelocity * 100).toFixed(1)}%/s)`);
         } else {
-          reasons.push(`⚠️ Slow approach: ${priceChangePercent.toFixed(2)}% over ${spikeTimeSeconds.toFixed(1)}s`);
+          reasons.push(`⚠️ Minor move: ${priceChangePercent.toFixed(2)}% over ${spikeTimeSeconds.toFixed(0)}s`);
         }
       } else {
-        reasons.push(`❌ No recent spike in expected direction`);
+        reasons.push(`❌ No recent spike in expected direction (need ${expectedDirection})`);
       }
     } else {
       reasons.push(`❌ No recent price spike detected`);
@@ -412,8 +471,8 @@ export class TradeQualityService extends EventEmitter {
     let recentVolumeRatio = 1;
 
     const volumeHistory = this.volumeHistory.get(symbol) || [];
-    if (volumeHistory.length >= 3) {
-      // Compare recent volume to older volume
+    if (volumeHistory.length >= 2) {
+      // Compare recent volume to older volume (lowered threshold from 3 to 2)
       const midpoint = Math.floor(volumeHistory.length / 2);
       const olderVolumes = volumeHistory.slice(0, midpoint);
       const recentVolumes = volumeHistory.slice(midpoint);
@@ -427,15 +486,15 @@ export class TradeQualityService extends EventEmitter {
         // Score: Decreasing or flat volume = good for reversals
         if (recentVolumeRatio <= 1.1) { // Volume flat or decreasing
           volumeTrendScore = 1;
-          reasons.push(`✅ Volume trend favorable: ${(recentVolumeRatio * 100 - 100).toFixed(0)}% change (${volumeHistory.length} samples)`);
+          reasons.push(`✅ Volume trend favorable: ${(recentVolumeRatio * 100 - 100).toFixed(0)}% change`);
         } else {
-          reasons.push(`⚠️ Volume increasing: +${((recentVolumeRatio - 1) * 100).toFixed(0)}% (${volumeHistory.length} samples)`);
+          reasons.push(`⚠️ Volume increasing: +${((recentVolumeRatio - 1) * 100).toFixed(0)}% (momentum building)`);
         }
       }
     } else {
-      // Not enough volume data
+      // Not enough volume data, give benefit of doubt
       volumeTrendScore = 0;
-      reasons.push(`⚠️ Insufficient volume history: ${volumeHistory.length}/3 samples needed`);
+      reasons.push(`⚠️ Insufficient volume history for trend analysis`);
     }
 
     // === 3. REGIME SCORE - Is market choppy (good) or trending (bad)? ===
