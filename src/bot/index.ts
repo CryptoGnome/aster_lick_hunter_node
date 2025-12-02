@@ -18,6 +18,7 @@ import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
 import { ftaExitService } from '../lib/services/ftaExitService';
 import { tradeQualityDb } from '../lib/db/tradeQualityDb';
+import { getMAEService } from '../lib/services/maeService';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../lib/utils/timestamp';
 import { updateDynamicPositionSizes } from '../lib/utils/positionSizing';
 import { getPaperTradingManager } from '../lib/paperTrading';
@@ -649,6 +650,25 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         // Continue without protective orders
       }
 
+      // Initialize MAE/MFE Tracking Service
+      try {
+        const maeService = getMAEService();
+        await maeService.start();
+        logWithTimestamp('✅ MAE/MFE tracking service started');
+        
+        // Log current stats on startup
+        const stats = maeService.getStats();
+        if (stats && stats.totalTrades > 0) {
+          logWithTimestamp(`📊 MAE/MFE Stats: ${stats.totalTrades} trades tracked`);
+          logWithTimestamp(`   Win rate: ${((stats.winners / stats.totalTrades) * 100).toFixed(1)}%`);
+          logWithTimestamp(`   Avg MAE (winners): ${stats.avgMaeWinners.toFixed(2)}%`);
+          logWithTimestamp(`   Avg MFE (winners): ${stats.avgMfeWinners.toFixed(2)}%`);
+        }
+      } catch (error: any) {
+        logErrorWithTimestamp('⚠️  MAE/MFE Service failed to start:', error.message);
+        // Continue without MAE tracking
+      }
+
       // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
       if (!this.hunter) {
         this.hunter = new Hunter(this.config, this.isHedgeMode);
@@ -697,7 +717,8 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
             metrics: data.qualityScore?.metrics,
             wasExecuted: true,
             wasBlocked: false,
-            reasons: data.qualityScore?.reasons
+            reasons: data.qualityScore?.reasons,
+            signalPrice: data.signalPrice || 0
           });
         } catch (dbError) {
           logErrorWithTimestamp('Failed to save trade signal to database:', dbError);
@@ -728,7 +749,8 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
             wasExecuted: false,
             wasBlocked: true,
             blockReason: data.blockType || data.reason,
-            reasons: data.qualityScore?.reasons
+            reasons: data.qualityScore?.reasons,
+            signalPrice: data.signalPrice || 0
           });
         } catch (dbError) {
           logErrorWithTimestamp('Failed to save blocked trade to database:', dbError);
@@ -777,6 +799,23 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.updateStatus({
           positionsOpen: (this.statusBroadcaster as any).status.positionsOpen + 1,
         });
+
+        // Start MAE/MFE tracking for this position
+        try {
+          const maeService = getMAEService();
+          const positionSide = data.side === 'BUY' ? 'LONG' : 'SHORT';
+          const symbolConfig = this.config?.symbols[data.symbol];
+          maeService.findOrCreatePosition(
+            data.symbol,
+            positionSide,
+            data.price,
+            data.quantity,
+            symbolConfig?.leverage || 1,
+            data.qualityScore?.totalScore
+          );
+        } catch (maeError) {
+          // Non-blocking - MAE tracking failure shouldn't affect trading
+        }
 
         // Register position with FTA Exit Service for early exit monitoring
         const symbolConfig = this.config?.symbols[data.symbol];

@@ -106,6 +106,7 @@ class TradeQualityDatabase {
         was_blocked INTEGER DEFAULT 0,
         block_reason TEXT,
         reasons TEXT,
+        signal_price REAL DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -132,6 +133,14 @@ class TradeQualityDatabase {
       CREATE INDEX IF NOT EXISTS idx_fta_timestamp ON fta_exit_signals(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_fta_symbol ON fta_exit_signals(symbol);
     `);
+
+    // Add signal_price column if it doesn't exist (migration for existing databases)
+    try {
+      db.exec(`ALTER TABLE trade_quality_signals ADD COLUMN signal_price REAL DEFAULT 0`);
+      console.log('[TradeQualityDB] Added signal_price column to existing database');
+    } catch {
+      // Column already exists, ignore
+    }
 
     console.log('[TradeQualityDB] Database schema initialized');
   }
@@ -166,6 +175,7 @@ class TradeQualityDatabase {
     wasBlocked?: boolean;
     blockReason?: string;
     reasons?: string[];
+    signalPrice?: number;
   }): number {
     const db = this.getDb();
     const stmt = db.prepare(`
@@ -176,7 +186,7 @@ class TradeQualityDatabase {
         reason, price_change_percent, spike_time_seconds, spike_velocity,
         recent_volume_ratio, vwap_cross_count, vwap_crosses_per_hour,
         is_choppy_regime, is_trending_regime, vwap_distance, is_above_vwap,
-        was_executed, was_blocked, block_reason, reasons
+        was_executed, was_blocked, block_reason, reasons, signal_price
       ) VALUES (
         ?, ?, ?, ?,
         ?, ?, ?, ?,
@@ -184,7 +194,7 @@ class TradeQualityDatabase {
         ?, ?, ?, ?,
         ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?, ?, ?
+        ?, ?, ?, ?, ?
       )
     `);
 
@@ -216,7 +226,8 @@ class TradeQualityDatabase {
       data.wasExecuted ? 1 : 0,
       data.wasBlocked ? 1 : 0,
       data.blockReason || null,
-      data.reasons ? JSON.stringify(data.reasons) : null
+      data.reasons ? JSON.stringify(data.reasons) : null,
+      data.signalPrice || 0
     );
 
     return result.lastInsertRowid as number;
@@ -279,7 +290,8 @@ class TradeQualityDatabase {
         was_executed as wasExecuted,
         was_blocked as wasBlocked,
         block_reason as blockReason,
-        reasons
+        reasons,
+        signal_price as signalPrice
       FROM trade_quality_signals
       WHERE 1=1
     `;

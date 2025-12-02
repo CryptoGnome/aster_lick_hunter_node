@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import { LiquidationEvent } from '../lib/types';
 import { errorLogger } from '../lib/services/errorLogger';
 import { getRateLimitManager } from '../lib/api/rateLimitManager';
+import { getMAEService } from '../lib/services/maeService';
 
 export interface BotStatus {
   isRunning: boolean;
@@ -425,11 +426,42 @@ export class StatusBroadcaster extends EventEmitter {
     quantity: number;
     pnl?: number;
     reason?: string;
+    exitPrice?: number;
   }): void {
     this._broadcast('position_closed', {
       ...data,
       timestamp: new Date(),
     });
+    
+    // Record MAE/MFE for this closed position
+    try {
+      const maeService = getMAEService();
+      // Side in the data is the position side (LONG/SHORT), not the closing order side
+      const positionSide = data.side as 'LONG' | 'SHORT';
+      
+      // Try to close the MAE tracking for this position
+      // exitPrice might come from the closing order, or we estimate from PnL if not available
+      if (data.exitPrice) {
+        maeService.closePosition(
+          data.symbol,
+          positionSide,
+          data.exitPrice,
+          data.pnl || 0
+        );
+      } else if (data.pnl !== undefined) {
+        // If we have PnL but no exit price, still record it
+        // The MAE service will use the last tracked price as exit
+        maeService.closePosition(
+          data.symbol,
+          positionSide,
+          0, // Will be overwritten by last tracked price in service
+          data.pnl
+        );
+      }
+    } catch (error) {
+      // Non-blocking - MAE tracking failure shouldn't affect trading
+      console.error('MAE/MFE tracking error on position close:', error);
+    }
   }
 
   // Broadcast when an order is cancelled

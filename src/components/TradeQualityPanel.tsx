@@ -22,17 +22,10 @@ import {
   Clock,
   ArrowUpDown,
   Percent,
-  Volume2,
-  Info
+  Volume2
 } from 'lucide-react';
 import websocketService from '@/lib/services/websocketService';
 import { cn } from '@/lib/utils';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 
 interface TradeQualityScore {
   symbol: string;
@@ -70,6 +63,7 @@ interface TradeOpportunity {
   qualityRecommendation?: string;
   blockType?: 'QUALITY_FILTER' | 'VWAP_FILTER';
   timestamp: number;
+  signalPrice?: number;
 }
 
 interface FTAExitSignal {
@@ -91,40 +85,6 @@ interface SymbolMetrics {
   lastVolumeRatio: number;
   recentScores: number[];
   lastUpdate: number;
-}
-
-// Tooltip descriptions for metrics
-const METRIC_TOOLTIPS = {
-  spike: "Spike Score: Measures how fast price approached this level. Fast spikes (>0.5%/sec) = 1, slow grinds = 0. Fast spikes are better for reversals.",
-  volume: "Volume Score: Compares recent liquidation volume to earlier volume. Decreasing/flat volume = 1 (exhaustion). Increasing volume = 0 (momentum building).",
-  regime: "Regime Score: Based on VWAP crosses. Choppy (≥3 crosses/hr) = 1 (good for reversals). Trending (<1 cross/hr) = 0 (bad for reversals).",
-  total: "Total Quality Score: Sum of Spike + Volume + Regime. 3 = STRONG, 2 = NORMAL, 1 = WEAK, 0 = SKIP.",
-  priceMove: "Price Move: How much price moved during the spike detection window. Larger moves indicate stronger momentum.",
-  spikeTime: "Spike Time: Duration of the price spike. Faster spikes (<10s) suggest capitulation. Slow approaches (>30s) suggest grinding.",
-  volRatio: "Volume Ratio: Recent volume ÷ earlier volume. <1.0 = decreasing (bullish for reversals). >1.0 = increasing (bearish for reversals).",
-  vwapDist: "VWAP Distance: Current price distance from VWAP. Positive = above VWAP. Negative = below VWAP.",
-  vwapCrosses: "VWAP Crosses: Number of times price crossed VWAP in the last hour. More crosses = choppy/ranging market (better for mean reversion).",
-  positionSize: "Position Size Multiplier: Adjusts trade size based on quality. 1.5x for STRONG signals, 0.5x for WEAK, 0x for SKIP."
-};
-
-// Metric label with tooltip
-function MetricLabel({ icon: Icon, label, tooltipKey }: { icon: any, label: string, tooltipKey: keyof typeof METRIC_TOOLTIPS }) {
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="text-muted-foreground flex items-center gap-1 cursor-help">
-            <Icon className="h-3 w-3" />
-            {label}
-            <Info className="h-2.5 w-2.5 opacity-50" />
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-[280px] text-xs">
-          <p>{METRIC_TOOLTIPS[tooltipKey]}</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
 }
 
 // Mini bar chart for visualizing scores
@@ -153,8 +113,8 @@ function MiniBarChart({ values, maxValue = 3, color = 'blue' }: { values: number
   );
 }
 
-// Circular gauge for displaying scores with optional tooltip
-function ScoreGauge({ score, maxScore = 3, label, size = 'sm', tooltipKey }: { score: number, maxScore?: number, label: string, size?: 'sm' | 'md', tooltipKey?: keyof typeof METRIC_TOOLTIPS }) {
+// Circular gauge for displaying scores
+function ScoreGauge({ score, maxScore = 3, label, size = 'sm' }: { score: number, maxScore?: number, label: string, size?: 'sm' | 'md' }) {
   const percentage = (score / maxScore) * 100;
   const radius = size === 'sm' ? 20 : 28;
   const strokeWidth = size === 'sm' ? 4 : 5;
@@ -168,7 +128,7 @@ function ScoreGauge({ score, maxScore = 3, label, size = 'sm', tooltipKey }: { s
     return 'text-red-500 stroke-red-500';
   };
 
-  const gaugeContent = (
+  return (
     <div className="flex flex-col items-center">
       <div className="relative" style={{ width: (radius + strokeWidth) * 2, height: (radius + strokeWidth) * 2 }}>
         <svg className="transform -rotate-90" width="100%" height="100%">
@@ -200,23 +160,6 @@ function ScoreGauge({ score, maxScore = 3, label, size = 'sm', tooltipKey }: { s
       <span className="text-[10px] text-muted-foreground mt-1">{label}</span>
     </div>
   );
-
-  if (tooltipKey) {
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="cursor-help">{gaugeContent}</div>
-          </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-[280px] text-xs">
-            <p>{METRIC_TOOLTIPS[tooltipKey]}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    );
-  }
-
-  return gaugeContent;
 }
 
 // VWAP Cross Indicator
@@ -226,19 +169,7 @@ function VWAPCrossIndicator({ crossCount, isChoppy, isTrending }: { crossCount: 
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="text-xs text-muted-foreground cursor-help flex items-center gap-1">
-                VWAP Crosses/hr
-                <Info className="h-2.5 w-2.5 opacity-50" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-[280px] text-xs">
-              <p>{METRIC_TOOLTIPS.vwapCrosses}</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <span className="text-xs text-muted-foreground">VWAP Crosses/hr</span>
         <span className={cn(
           "text-sm font-bold",
           isChoppy ? "text-red-400" : isTrending ? "text-green-400" : "text-blue-400"
@@ -336,7 +267,8 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
           qualityScore: message.data.qualityScore,
           qualityRecommendation: blockType === 'VWAP_FILTER' ? 'VWAP' : 'SKIP',
           blockType: blockType,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          signalPrice: message.data.signalPrice
         };
         
         setRecentOpportunities(prev => [blockedOpp, ...prev].slice(0, 10));
@@ -396,7 +328,8 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
               },
               qualityRecommendation: s.blockReason === 'VWAP_FILTER' ? 'VWAP' : s.recommendation,
               blockType: s.blockReason === 'VWAP_FILTER' ? 'VWAP_FILTER' : (s.wasBlocked ? 'QUALITY_FILTER' : undefined),
-              timestamp: s.timestamp
+              timestamp: s.timestamp,
+              signalPrice: s.signalPrice
             }));
             setRecentOpportunities(opportunities);
             
@@ -548,58 +481,22 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
             <TabsContent value="overview" className="mt-3 space-y-4">
               {/* Summary Stats */}
               <div className="grid grid-cols-4 gap-2">
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="text-center p-2 rounded-lg bg-muted/30 cursor-help">
-                        <div className="text-lg font-bold">{stats.totalOpportunities}</div>
-                        <div className="text-[10px] text-muted-foreground">Signals</div>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[200px] text-xs">
-                      <p>Total liquidation events that met the volume threshold</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="text-center p-2 rounded-lg bg-green-500/10 cursor-help">
-                        <div className="text-lg font-bold text-green-400">{stats.strongSignals}</div>
-                        <div className="text-[10px] text-muted-foreground">Strong</div>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[200px] text-xs">
-                      <p>Signals scoring 3/3 (ideal for larger positions)</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="text-center p-2 rounded-lg bg-red-500/10 cursor-help">
-                        <div className="text-lg font-bold text-red-400">{stats.skippedTrades}</div>
-                        <div className="text-[10px] text-muted-foreground">Skipped</div>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[200px] text-xs">
-                      <p>Signals scoring 0/3 (filtered out due to poor quality)</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="text-center p-2 rounded-lg bg-blue-500/10 cursor-help">
-                        <div className="text-lg font-bold text-blue-400">{stats.avgQuality}</div>
-                        <div className="text-[10px] text-muted-foreground">Avg Q</div>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[200px] text-xs">
-                      <p>Average quality score across all signals (0-3 scale)</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                <div className="text-center p-2 rounded-lg bg-muted/30">
+                  <div className="text-lg font-bold">{stats.totalOpportunities}</div>
+                  <div className="text-[10px] text-muted-foreground">Signals</div>
+                </div>
+                <div className="text-center p-2 rounded-lg bg-green-500/10">
+                  <div className="text-lg font-bold text-green-400">{stats.strongSignals}</div>
+                  <div className="text-[10px] text-muted-foreground">Strong</div>
+                </div>
+                <div className="text-center p-2 rounded-lg bg-red-500/10">
+                  <div className="text-lg font-bold text-red-400">{stats.skippedTrades}</div>
+                  <div className="text-[10px] text-muted-foreground">Skipped</div>
+                </div>
+                <div className="text-center p-2 rounded-lg bg-blue-500/10">
+                  <div className="text-lg font-bold text-blue-400">{stats.avgQuality}</div>
+                  <div className="text-[10px] text-muted-foreground">Avg Q</div>
+                </div>
               </div>
 
               {/* Latest Signal Details */}
@@ -613,6 +510,13 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                         <TrendingDown className="h-4 w-4 text-red-400" />
                       )}
                       <span className="font-medium">{recentOpportunities[0].symbol}</span>
+                      {recentOpportunities[0].signalPrice && (
+                        <span className="text-xs text-muted-foreground">
+                          @ ${recentOpportunities[0].signalPrice < 1 
+                            ? recentOpportunities[0].signalPrice.toFixed(4) 
+                            : recentOpportunities[0].signalPrice.toFixed(2)}
+                        </span>
+                      )}
                       <Badge variant="outline" className={cn("text-xs", getQualityBadgeStyle(recentOpportunities[0].qualityScore?.totalScore))}>
                         Q{recentOpportunities[0].qualityScore?.totalScore ?? '?'}/3
                       </Badge>
@@ -651,32 +555,40 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                     <>
                       {/* Score Gauges */}
                       <div className="flex justify-around mb-3">
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.spikeScore} maxScore={1} label="Spike" tooltipKey="spike" />
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.volumeTrendScore} maxScore={1} label="Volume" tooltipKey="volume" />
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.regimeScore} maxScore={1} label="Regime" tooltipKey="regime" />
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.totalScore} maxScore={3} label="Total" size="md" tooltipKey="total" />
+                        <ScoreGauge score={recentOpportunities[0].qualityScore.spikeScore} maxScore={1} label="Spike" />
+                        <ScoreGauge score={recentOpportunities[0].qualityScore.volumeTrendScore} maxScore={1} label="Volume" />
+                        <ScoreGauge score={recentOpportunities[0].qualityScore.regimeScore} maxScore={1} label="Regime" />
+                        <ScoreGauge score={recentOpportunities[0].qualityScore.totalScore} maxScore={3} label="Total" size="md" />
                       </div>
 
                       {/* Detailed Metrics */}
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
-                          <MetricLabel icon={Zap} label="Price Move" tooltipKey="priceMove" />
+                          <span className="text-muted-foreground flex items-center gap-1">
+                            <Zap className="h-3 w-3" /> Price Move
+                          </span>
                           <span className={recentOpportunities[0].qualityScore.metrics.priceChangePercent > 0 ? 'text-green-400' : 'text-red-400'}>
                             {recentOpportunities[0].qualityScore.metrics.priceChangePercent.toFixed(2)}%
                           </span>
                         </div>
                         <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
-                          <MetricLabel icon={Clock} label="Spike Time" tooltipKey="spikeTime" />
+                          <span className="text-muted-foreground flex items-center gap-1">
+                            <Clock className="h-3 w-3" /> Spike Time
+                          </span>
                           <span>{recentOpportunities[0].qualityScore.metrics.spikeTimeSeconds.toFixed(1)}s</span>
                         </div>
                         <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
-                          <MetricLabel icon={Volume2} label="Vol Ratio" tooltipKey="volRatio" />
+                          <span className="text-muted-foreground flex items-center gap-1">
+                            <Volume2 className="h-3 w-3" /> Vol Ratio
+                          </span>
                           <span className={recentOpportunities[0].qualityScore.metrics.recentVolumeRatio < 1 ? 'text-green-400' : 'text-yellow-400'}>
                             {recentOpportunities[0].qualityScore.metrics.recentVolumeRatio.toFixed(2)}x
                           </span>
                         </div>
                         <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
-                          <MetricLabel icon={ArrowUpDown} label="VWAP Dist" tooltipKey="vwapDist" />
+                          <span className="text-muted-foreground flex items-center gap-1">
+                            <ArrowUpDown className="h-3 w-3" /> VWAP Dist
+                          </span>
                           <span>{recentOpportunities[0].qualityScore.metrics.vwapDistance.toFixed(2)}%</span>
                         </div>
                       </div>
@@ -717,48 +629,6 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                   )}
                 </div>
               )}
-
-              {/* Recent Signals Quick View */}
-              {recentOpportunities.length > 1 && (
-                <div className="mt-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-muted-foreground">Recent Signals</span>
-                    <span className="text-[10px] text-muted-foreground">Last {Math.min(recentOpportunities.length - 1, 5)}</span>
-                  </div>
-                  <div className="space-y-1">
-                    {recentOpportunities.slice(1, 6).map((opp, idx) => (
-                      <div 
-                        key={`recent-${opp.symbol}-${opp.timestamp}-${idx}`}
-                        className={cn(
-                          "flex items-center justify-between p-1.5 rounded text-xs",
-                          opp.qualityRecommendation === 'SKIP' ? 'bg-red-500/5' :
-                          opp.qualityRecommendation === 'STRONG' ? 'bg-green-500/5' : 'bg-muted/20'
-                        )}
-                      >
-                        <div className="flex items-center gap-2">
-                          {opp.side === 'BUY' ? (
-                            <TrendingUp className="h-3 w-3 text-green-400" />
-                          ) : (
-                            <TrendingDown className="h-3 w-3 text-red-400" />
-                          )}
-                          <span className="font-medium">{opp.symbol}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={cn(
-                            "font-medium",
-                            opp.qualityRecommendation === 'STRONG' ? 'text-green-400' :
-                            opp.qualityRecommendation === 'SKIP' ? 'text-red-400' :
-                            opp.qualityRecommendation === 'WEAK' ? 'text-yellow-400' : 'text-blue-400'
-                          )}>
-                            Q{opp.qualityScore?.totalScore ?? '?'}
-                          </span>
-                          <span className="text-muted-foreground">{formatTime(opp.timestamp)}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </TabsContent>
 
             <TabsContent value="signals" className="mt-3">
@@ -789,6 +659,11 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                               <TrendingDown className="h-3 w-3 text-red-400" />
                             )}
                             <span className="text-sm font-medium">{opp.symbol}</span>
+                            {opp.signalPrice && (
+                              <span className="text-[10px] text-muted-foreground">
+                                @ ${opp.signalPrice < 1 ? opp.signalPrice.toFixed(4) : opp.signalPrice.toFixed(2)}
+                              </span>
+                            )}
                             <Badge variant="outline" className={cn("text-[10px]", getQualityBadgeStyle(opp.qualityScore?.totalScore))}>
                               {opp.qualityRecommendation}
                             </Badge>

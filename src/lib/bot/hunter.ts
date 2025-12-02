@@ -782,7 +782,8 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
               side: tradeSide,
               reason: `Trade quality too low: ${qualityScore.totalScore}/3 (${qualityScore.recommendation})`,
               qualityScore,
-              blockType: 'QUALITY_FILTER'
+              blockType: 'QUALITY_FILTER',
+              signalPrice: markPrice
             });
             
             return;
@@ -864,7 +865,8 @@ logWithTimestamp(`Hunter: VWAP Protection - ${vwapCheck.reason}`);
               currentPrice: liquidation.price,
               blockType: 'VWAP_FILTER',
               qualityScore,
-              liquidationVolume: volumeUSDT
+              liquidationVolume: volumeUSDT,
+              signalPrice: markPrice
             });
 
             return; // Block the trade
@@ -909,7 +911,8 @@ logWithTimestamp(`Hunter: VWAP Protection - ${vwapCheck.reason}`);
               currentPrice: liquidation.price,
               blockType: 'VWAP_FILTER',
               qualityScore,
-              liquidationVolume: volumeUSDT
+              liquidationVolume: volumeUSDT,
+              signalPrice: markPrice
             });
 
             return; // Block the trade
@@ -929,7 +932,8 @@ logWithTimestamp(`Hunter: VWAP Check Passed - Price $${liquidation.price.toFixed
           priceImpact: (1 - priceRatio) * 100,
           confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10), // Higher confidence for larger volumes
           qualityScore: qualityScore || undefined,
-          qualityRecommendation: qualityScore?.recommendation
+          qualityRecommendation: qualityScore?.recommendation,
+          signalPrice: markPrice
         });
 
         logWithTimestamp(`Hunter: Triggering BUY for ${liquidation.symbol} at ${liquidation.price}`);
@@ -944,7 +948,8 @@ logWithTimestamp(`Hunter: VWAP Check Passed - Price $${liquidation.price.toFixed
           priceImpact: (priceRatio - 1) * 100,
           confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10),
           qualityScore: qualityScore || undefined,
-          qualityRecommendation: qualityScore?.recommendation
+          qualityRecommendation: qualityScore?.recommendation,
+          signalPrice: markPrice
         });
 
         logWithTimestamp(`Hunter: Triggering SELL for ${liquidation.symbol} at ${liquidation.price}`);

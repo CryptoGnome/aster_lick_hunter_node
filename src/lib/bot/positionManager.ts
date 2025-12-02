@@ -1209,6 +1209,7 @@ logWithTimestamp(`PositionManager: Using exchange-provided PnL for ${symbol} ${o
             quantity: executedQty,
             pnl: realizedPnl,
             reason: orderType.includes('STOP') ? 'Stop Loss' : 'Take Profit',
+            exitPrice: avgPrice,
           });
 
           // Keep the existing position update for backward compatibility
@@ -1593,6 +1594,7 @@ logWithTimestamp(`PositionManager: Closing position at market instead of placing
                 quantity,
                 pnl: pnlPercent * quantity * currentPrice / 100,
                 reason: 'Auto-closed at market (exceeded TP target in batch)',
+                exitPrice: currentPrice,
               });
             }
 
@@ -1878,6 +1880,7 @@ logWithTimestamp(`PositionManager: Closing position at market - already past TP 
                 quantity,
                 pnl: pnlPercent * quantity * currentPrice / 100,
                 reason: 'Auto-closed at market (exceeded TP target)',
+                exitPrice: currentPrice,
               });
             }
             return; // Exit after market close
@@ -2454,6 +2457,7 @@ logWithTimestamp(`PositionManager: Position ${symbol} closed at market! Order ID
                   quantity: positionQty,
                   pnl: pnlPercent * positionQty * markPrice / 100,
                   reason: 'Periodic auto-close (exceeded TP target)',
+                  exitPrice: markPrice,
                 });
               }
 
