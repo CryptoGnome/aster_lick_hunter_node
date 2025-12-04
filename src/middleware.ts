@@ -1,6 +1,33 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getToken } from 'next-auth/jwt';
+import { jwtVerify } from 'jose';
+
+const SECRET = new TextEncoder().encode(
+  process.env.NEXTAUTH_SECRET || 'your-secret-key-change-in-production'
+);
+
+async function verifyAuth(req: NextRequest): Promise<boolean> {
+  // Check for simple auth token (cookie-based)
+  const authToken = req.cookies.get('auth-token')?.value;
+  if (authToken) {
+    try {
+      await jwtVerify(authToken, SECRET);
+      return true;
+    } catch {
+      // Token invalid or expired
+    }
+  }
+  
+  // Check for NextAuth session token (backwards compatibility)
+  const nextAuthToken = req.cookies.get('next-auth.session-token')?.value ||
+                        req.cookies.get('__Secure-next-auth.session-token')?.value;
+  if (nextAuthToken) {
+    // If NextAuth cookie exists, assume valid (NextAuth handles validation)
+    return true;
+  }
+  
+  return false;
+}
 
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
@@ -17,18 +44,18 @@ export async function middleware(req: NextRequest) {
   }
 
   // Check if user is authenticated
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET || 'your-secret-key-change-in-production' });
+  const isAuthenticated = await verifyAuth(req);
 
   // For /api/config, require authentication
   if (pathname.startsWith('/api/config')) {
-    if (!token) {
+    if (!isAuthenticated) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     return NextResponse.next();
   }
 
   // For all other protected routes, redirect to login if not authenticated
-  if (!token) {
+  if (!isAuthenticated) {
     // Redirect to /login WITHOUT any callbackUrl
     // Build a clean URL with no query parameters
     const loginUrl = new URL('/login', req.url);

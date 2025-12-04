@@ -2,7 +2,7 @@
 
 import React, { createContext, useState, useEffect, useContext, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
-import { useSession } from 'next-auth/react';
+import { useSession } from '@/components/AuthProvider';
 import { Config } from '@/lib/types';
 import { OnboardingProvider } from './onboarding/OnboardingProvider';
 import { OnboardingModal } from './onboarding/OnboardingModal';

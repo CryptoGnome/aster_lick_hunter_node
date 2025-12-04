@@ -114,7 +114,7 @@ function MiniBarChart({ values, maxValue = 3, color = 'blue' }: { values: number
 }
 
 // Circular gauge for displaying scores
-function ScoreGauge({ score, maxScore = 3, label, size = 'sm' }: { score: number, maxScore?: number, label: string, size?: 'sm' | 'md' }) {
+function ScoreGauge({ score, maxScore = 3, label, size = 'sm', tooltip }: { score: number, maxScore?: number, label: string, size?: 'sm' | 'md', tooltip?: string }) {
   const percentage = (score / maxScore) * 100;
   const radius = size === 'sm' ? 20 : 28;
   const strokeWidth = size === 'sm' ? 4 : 5;
@@ -129,7 +129,7 @@ function ScoreGauge({ score, maxScore = 3, label, size = 'sm' }: { score: number
   };
 
   return (
-    <div className="flex flex-col items-center">
+    <div className="flex flex-col items-center cursor-help" title={tooltip}>
       <div className="relative" style={{ width: (radius + strokeWidth) * 2, height: (radius + strokeWidth) * 2 }}>
         <svg className="transform -rotate-90" width="100%" height="100%">
           <circle
@@ -167,7 +167,10 @@ function VWAPCrossIndicator({ crossCount, isChoppy, isTrending }: { crossCount: 
   const dots = Array.from({ length: 10 }, (_, i) => i < Math.min(crossCount, 10));
   
   return (
-    <div className="space-y-1">
+    <div 
+      className="space-y-1 cursor-help" 
+      title="VWAP Crosses: How many times price crossed VWAP in the last hour. 0-2 = trending (worse for reversals), 3-5 = neutral, 6+ = choppy (best for mean reversion)."
+    >
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground">VWAP Crosses/hr</span>
         <span className={cn(
@@ -555,15 +558,39 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                     <>
                       {/* Score Gauges */}
                       <div className="flex justify-around mb-3">
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.spikeScore} maxScore={1} label="Spike" />
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.volumeTrendScore} maxScore={1} label="Volume" />
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.regimeScore} maxScore={1} label="Regime" />
-                        <ScoreGauge score={recentOpportunities[0].qualityScore.totalScore} maxScore={3} label="Total" size="md" />
+                        <ScoreGauge 
+                          score={recentOpportunities[0].qualityScore.spikeScore} 
+                          maxScore={1} 
+                          label="Spike" 
+                          tooltip="Spike Score: Fast price moves (spikes) are better for mean reversion. Higher = sharper move detected."
+                        />
+                        <ScoreGauge 
+                          score={recentOpportunities[0].qualityScore.volumeTrendScore} 
+                          maxScore={1} 
+                          label="Volume" 
+                          tooltip="Volume Score: Lower/decreasing volume suggests exhaustion. Higher = volume declining (good for reversals)."
+                        />
+                        <ScoreGauge 
+                          score={recentOpportunities[0].qualityScore.regimeScore} 
+                          maxScore={1} 
+                          label="Regime" 
+                          tooltip="Regime Score: Choppy markets (3+ VWAP crosses/hr) favor reversals. Higher = choppy range-bound market."
+                        />
+                        <ScoreGauge 
+                          score={recentOpportunities[0].qualityScore.totalScore} 
+                          maxScore={3} 
+                          label="Total" 
+                          size="md"
+                          tooltip="Total Score: Combined quality score (0-3). Higher scores = better trade quality. Above 2 is excellent."
+                        />
                       </div>
 
                       {/* Detailed Metrics */}
                       <div className="grid grid-cols-2 gap-2 text-xs">
-                        <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
+                        <div 
+                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
+                          title="Price Move: The % change in the spike detection window. Larger moves = stronger signal."
+                        >
                           <span className="text-muted-foreground flex items-center gap-1">
                             <Zap className="h-3 w-3" /> Price Move
                           </span>
@@ -571,13 +598,19 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                             {recentOpportunities[0].qualityScore.metrics.priceChangePercent.toFixed(2)}%
                           </span>
                         </div>
-                        <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
+                        <div 
+                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
+                          title="Spike Time: How quickly the move happened. Faster spikes are often more likely to revert."
+                        >
                           <span className="text-muted-foreground flex items-center gap-1">
                             <Clock className="h-3 w-3" /> Spike Time
                           </span>
                           <span>{recentOpportunities[0].qualityScore.metrics.spikeTimeSeconds.toFixed(1)}s</span>
                         </div>
-                        <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
+                        <div 
+                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
+                          title="Vol Ratio: Recent vs average volume. Below 1 (green) = decreasing volume, good for reversals."
+                        >
                           <span className="text-muted-foreground flex items-center gap-1">
                             <Volume2 className="h-3 w-3" /> Vol Ratio
                           </span>
@@ -585,7 +618,10 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                             {recentOpportunities[0].qualityScore.metrics.recentVolumeRatio.toFixed(2)}x
                           </span>
                         </div>
-                        <div className="flex items-center justify-between p-1.5 rounded bg-muted/30">
+                        <div 
+                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
+                          title="VWAP Dist: Distance from volume-weighted average price. Shows how extended price is from fair value."
+                        >
                           <span className="text-muted-foreground flex items-center gap-1">
                             <ArrowUpDown className="h-3 w-3" /> VWAP Dist
                           </span>

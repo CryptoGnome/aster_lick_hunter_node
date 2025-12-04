@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { useSession } from 'next-auth/react';
+import { useSession } from '@/components/AuthProvider';
 import websocketService from '@/lib/services/websocketService';
 import logger, { setDebugMode } from '@/lib/utils/logger';
 
@@ -70,25 +70,20 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         // Determine the host based on configuration with priority order
         let host = 'localhost'; // default
 
-        // 1. Check for environment variable override first (highest priority)
-        if (envHost) {
-          host = envHost;
-          logger.debug('WebSocketProvider: Using environment host override:', host);
-        } else if (useRemoteWebSocket) {
-          // 2. If remote WebSocket is enabled in config
-          if (configHost) {
-            // 3. Use the configured host if specified
-            host = configHost;
-            logger.debug('WebSocketProvider: Using configured remote host:', host);
-          } else if (typeof window !== 'undefined') {
-            // 4. Auto-detect from browser location
-            host = window.location.hostname;
-            logger.debug('WebSocketProvider: Auto-detected remote host from browser:', host);
-          }
-        } else if (typeof window !== 'undefined') {
-          // 5. Default to current hostname when useRemoteWebSocket is false but we're in browser
+        // Priority: window.location.hostname > configHost > envHost > localhost
+        // This ensures that browser access always uses the correct host
+        if (typeof window !== 'undefined') {
+          // When running in browser, use the hostname the user is accessing from
           host = window.location.hostname;
-          logger.debug('WebSocketProvider: Using current hostname (useRemoteWebSocket disabled):', host);
+          logger.debug('WebSocketProvider: Using browser hostname:', host);
+        } else if (configHost) {
+          // Explicit config override for special cases
+          host = configHost;
+          logger.debug('WebSocketProvider: Using configured host:', host);
+        } else if (envHost) {
+          // Environment variable fallback (for SSR/non-browser contexts)
+          host = envHost;
+          logger.debug('WebSocketProvider: Using environment host:', host);
         }
 
         // Set the host and port in state
@@ -101,7 +96,17 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         }
 
-        const url = `${protocol}://${host}:${port}`;
+        // Check if websocketPath is configured (for reverse proxy setups like Traefik/nginx)
+        const websocketPath = data.global?.server?.websocketPath;
+        let url: string;
+        
+        if (websocketPath && typeof window !== 'undefined') {
+          // Use path-based WebSocket through reverse proxy
+          url = `${protocol}://${window.location.host}${websocketPath}`;
+          logger.debug('WebSocketProvider: Using reverse proxy path:', websocketPath);
+        } else {
+          url = `${protocol}://${host}:${port}`;
+        }
         logger.debug('WebSocketProvider: Configured WebSocket URL:', url);
         websocketService.setUrl(url);
 

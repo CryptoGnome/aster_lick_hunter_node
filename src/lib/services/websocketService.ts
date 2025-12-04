@@ -38,17 +38,22 @@ class WebSocketService {
       }
     }
     
-    // Set up visibility change handler to clear stale queue when tab becomes visible
+    // Set up visibility change handler to refresh data when tab becomes visible
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
           this.isTabHidden = true;
         } else {
-          // Tab became visible again - clear stale queued messages
-          if (this.isTabHidden && this.messageQueue.length > 0) {
-            logger.debug(`WebSocketService: Tab visible again, clearing ${this.messageQueue.length} stale queued messages`);
-            this.messageQueue = [];
-            this.processingMessages = false;
+          // Tab became visible again - clear stale queued messages and refresh data
+          if (this.isTabHidden) {
+            if (this.messageQueue.length > 0) {
+              logger.debug(`WebSocketService: Tab visible again, clearing ${this.messageQueue.length} stale queued messages`);
+              this.messageQueue = [];
+              this.processingMessages = false;
+            }
+            // Trigger a data refresh via a synthetic message
+            // This ensures positions/balance are refreshed when coming back to the tab
+            this.broadcastMessage({ type: 'tab_visible', data: {} });
           }
           this.isTabHidden = false;
         }
@@ -195,9 +200,14 @@ class WebSocketService {
             this.isIntentionalDisconnect = true;
           }
 
-          // If tab is hidden, drop messages to prevent queue buildup
+          // Critical messages that should never be dropped (position closures, order fills)
+          const criticalTypes = ['position_closed', 'order_filled', 'shutdown'];
+          const isCritical = criticalTypes.includes(message.type) || 
+            (message.type === 'position_update' && message.data?.type === 'closed');
+
+          // If tab is hidden and not a critical message, drop to prevent queue buildup
           // Fresh data will be fetched when tab becomes visible
-          if (this.isTabHidden) {
+          if (this.isTabHidden && !isCritical) {
             return;
           }
 

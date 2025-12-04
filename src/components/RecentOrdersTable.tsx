@@ -28,12 +28,14 @@ import {
   XCircle,
   AlertCircle,
   RefreshCw,
-  ChevronDown
+  ChevronDown,
+  Pencil
 } from 'lucide-react';
 import orderStore from '@/lib/services/orderStore';
 import { Order, OrderStatus, OrderSide, OrderType } from '@/lib/types/order';
 import { useConfig } from '@/components/ConfigProvider';
 import websocketService from '@/lib/services/websocketService';
+import { EditOrderModal } from '@/components/EditOrderModal';
 
 interface RecentOrdersTableProps {
   maxRows?: number;
@@ -52,6 +54,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
   const [hasMore, setHasMore] = useState(true);
   const [currentLimit, setCurrentLimit] = useState(50); // Start with 50 orders
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [editModalOrder, setEditModalOrder] = useState<Order | null>(null);
   const LOAD_MORE_INCREMENT = 50; // Load 50 more each time
 
   // Get available symbols from orders (not just configured symbols)
@@ -508,6 +511,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
               {displayedOrders.map((order) => {
                 const pnl = formatPnL(order.realizedProfit);
                 const isFlashing = flashingOrders.has(order.orderId);
+                const isOpenOrder = order.status === OrderStatus.NEW || order.status === OrderStatus.PARTIALLY_FILLED;
                 
                 return (
                   <div key={order.orderId} className={`border rounded-lg p-2.5 space-y-1.5 ${isFlashing ? 'animate-pulse bg-blue-500/5' : ''}`}>
@@ -520,7 +524,19 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                           {order.side}
                         </Badge>
                       </div>
-                      <span className="text-[10px] text-muted-foreground">{formatTime(order.updateTime)}</span>
+                      <div className="flex items-center gap-1.5">
+                        {isOpenOrder && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() => setEditModalOrder(order)}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                        )}
+                        <span className="text-[10px] text-muted-foreground">{formatTime(order.updateTime)}</span>
+                      </div>
                     </div>
                     
                     {/* Action & Type */}
@@ -570,12 +586,14 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                     <TableHead className="text-right">Filled</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">PnL</TableHead>
+                    <TableHead className="w-[60px]"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {displayedOrders.map((order) => {
                     const pnl = formatPnL(order.realizedProfit);
                     const isFlashing = flashingOrders.has(order.orderId);
+                    const isOpenOrder = order.status === OrderStatus.NEW || order.status === OrderStatus.PARTIALLY_FILLED;
 
                     return (
                       <TableRow
@@ -629,6 +647,18 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                             </span>
                           )}
                         </TableCell>
+                        <TableCell>
+                          {isOpenOrder && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => setEditModalOrder(order)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
@@ -674,6 +704,14 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
         )}
       </CardContent>
       )}
+
+      {/* Edit Order Modal */}
+      <EditOrderModal
+        isOpen={!!editModalOrder}
+        onClose={() => setEditModalOrder(null)}
+        order={editModalOrder}
+        onOrderUpdated={() => loadOrders(true)}
+      />
     </Card>
   );
 }

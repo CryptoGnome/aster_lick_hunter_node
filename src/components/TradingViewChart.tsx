@@ -1,11 +1,13 @@
 'use client';
 
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { useConfig } from '@/components/ConfigProvider';
 import orderStore from '@/lib/services/orderStore';
 import { createChart, IChartApi, ISeriesApi, CandlestickData, Time } from 'lightweight-charts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { getCachedKlines, setCachedKlines, updateCachedKlines, getCandlesFor7Days, prependHistoricalKlines } from '@/lib/klineCache';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -104,6 +106,9 @@ export default function TradingViewChart({
   availableSymbols = [],
   onSymbolChange 
 }: TradingViewChartProps) {
+  // Get config for symbol-specific VWAP settings
+  const { config } = useConfig();
+  
   // Chart refs
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   // Responsive chart height (550px - slightly bigger for better visibility)
@@ -138,7 +143,7 @@ export default function TradingViewChart({
   const [showRecentOrders, setShowRecentOrders] = useState(false);
   const [showPositions, setShowPositions] = useState(true); // Show TP/SL lines
   const [magnetMode, setMagnetMode] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState(30); // Default 30 seconds
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -977,11 +982,62 @@ export default function TradingViewChart({
       return;
     }
     
+    // Get VWAP settings from symbol config (use hunter's settings, not chart timeframe)
+    const symbolConfig = config?.symbols?.[symbol];
+    const vwapTimeframe = symbolConfig?.vwapTimeframe || '5m';
+    // Fetch extended VWAP history (1500 candles - API max) for charting, even if config uses smaller lookback
+    // This allows users to see VWAP history while hunter still uses configured lookback for trading
+    const vwapFetchLimit = 1500;
+    
+    // Helper to convert timeframe string to milliseconds
+    const timeframeToMs = (tf: string): number => {
+      const match = tf.match(/^(\d+)(m|h|d)$/);
+      if (!match) return 60000; // default 1m
+      const [, num, unit] = match;
+      const n = parseInt(num, 10);
+      switch (unit) {
+        case 'm': return n * 60 * 1000;
+        case 'h': return n * 60 * 60 * 1000;
+        case 'd': return n * 24 * 60 * 60 * 1000;
+        default: return 60000;
+      }
+    };
+    
+    // Downsample VWAP data to match chart timeframe
+    const downsampleVWAP = (data: Array<{time: number, value: number}>, chartTf: string, vwapTf: string): Array<{time: number, value: number}> => {
+      const chartMs = timeframeToMs(chartTf);
+      const vwapMs = timeframeToMs(vwapTf);
+      
+      // If chart timeframe is same or smaller than VWAP timeframe, no downsampling needed
+      if (chartMs <= vwapMs) {
+        return data;
+      }
+      
+      // Calculate how many VWAP candles fit in one chart candle
+      const ratio = chartMs / vwapMs;
+      
+      // For non-integer ratios (like 30m/5m = 6), use floor
+      const step = Math.max(1, Math.floor(ratio));
+      
+      // Take every nth point to match chart density
+      const result: Array<{time: number, value: number}> = [];
+      for (let i = 0; i < data.length; i += step) {
+        result.push(data[i]);
+      }
+      
+      // Always include the last point for current VWAP value
+      if (data.length > 0 && (data.length - 1) % step !== 0) {
+        result.push(data[data.length - 1]);
+      }
+      
+      return result;
+    };
+    
     // Fetch historical VWAP from API
     const fetchVWAP = async () => {
       try {
-        // Use the chart's timeframe for VWAP to match candle density
-        const vwapResp = await fetch(`/api/vwap/historical?symbol=${symbol}&timeframe=${timeframe}&limit=500`);
+        // Use the symbol's configured VWAP timeframe but fetch extended history for charting
+        const vwapResp = await fetch(`/api/vwap/historical?symbol=${symbol}&timeframe=${vwapTimeframe}&limit=${vwapFetchLimit}`);
         const vwapData = await vwapResp.json();
         
         if (vwapData && vwapData.data && vwapData.data.length > 0) {
@@ -995,15 +1051,18 @@ export default function TradingViewChart({
           vwapSeriesRef.current = chartRef.current.addLineSeries({
             color: '#ffa500',
             lineWidth: 1,
-            title: `VWAP`,
+            title: `VWAP (${vwapTimeframe})`,
             priceLineVisible: false,
             lastValueVisible: true,
           });
           
+          // Downsample VWAP data to match chart timeframe density
+          const downsampledData = downsampleVWAP(vwapData.data, timeframe, vwapTimeframe);
+          
           // Set VWAP data
-          vwapSeriesRef.current.setData(vwapData.data);
+          vwapSeriesRef.current.setData(downsampledData);
         } else {
-          console.warn('[TradingViewChart] No VWAP data returned for', symbol, timeframe, vwapData);
+          console.warn('[TradingViewChart] No VWAP data returned for', symbol, vwapTimeframe, vwapData);
         }
       } catch (err) {
         console.warn('[TradingViewChart] VWAP fetch error', err);
@@ -1028,7 +1087,7 @@ export default function TradingViewChart({
         vwapSeriesRef.current = null;
       }
     };
-  }, [showVWAP, symbol, timeframe]);
+  }, [showVWAP, symbol, config, timeframe]);
 
   // Manual refresh handler
   const handleRefresh = useCallback(() => {
@@ -1061,18 +1120,13 @@ export default function TradingViewChart({
         >
           {availableSymbols.length > 0 && onSymbolChange ? (
             <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-2">
-              <Select value={symbol} onValueChange={onSymbolChange}>
-                <SelectTrigger className="w-[110px] sm:w-[130px] h-7 font-medium">
-                  <SelectValue placeholder="Select symbol" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableSymbols.map((sym) => (
-                    <SelectItem key={sym} value={sym}>
-                      {sym}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={symbol}
+                onValueChange={onSymbolChange}
+                options={availableSymbols}
+                placeholder="Select symbol"
+                className="w-[130px] sm:w-[150px] h-7"
+              />
               <span className="text-sm text-muted-foreground">Chart</span>
             </div>
           ) : (

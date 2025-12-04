@@ -1,7 +1,7 @@
 import { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
-import { configLoader } from '@/lib/config/configLoader';
 import bcrypt from 'bcryptjs';
+import { configLoader } from '@/lib/config/configLoader';
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -31,22 +31,22 @@ export const authOptions: NextAuthOptions = {
           const dashboardPassword = config.global?.server?.dashboardPassword;
 
           // If no password is set, use default "admin"
-          const effectivePassword = (!dashboardPassword || dashboardPassword.trim().length === 0)
-            ? 'admin'
-            : dashboardPassword;
-
-          // Verify password (support both hashed and plain text for backward compatibility)
-          let isValid = false;
-          if (effectivePassword.startsWith('$2a$') || effectivePassword.startsWith('$2b$')) {
-            // Hashed password - use bcrypt
-            isValid = await bcrypt.compare(credentials.password, effectivePassword);
+          if (!dashboardPassword || dashboardPassword.trim().length === 0) {
+            // Default password is "admin"
+            if (credentials.password !== 'admin') {
+              return null;
+            }
+          } else if (dashboardPassword.startsWith('$2a$') || dashboardPassword.startsWith('$2b$')) {
+            // Password is hashed - use bcrypt compare
+            const isValid = await bcrypt.compare(credentials.password, dashboardPassword);
+            if (!isValid) {
+              return null;
+            }
           } else {
-            // Plain text password - direct comparison (legacy support)
-            isValid = credentials.password === effectivePassword;
-          }
-
-          if (!isValid) {
-            return null;
+            // Plain text password (legacy support)
+            if (credentials.password !== dashboardPassword) {
+              return null;
+            }
           }
 
           // Return user object
@@ -64,16 +64,30 @@ export const authOptions: NextAuthOptions = {
   ],
   pages: {
     signIn: '/login',
-    error: '/login', // Error code passed in query string as ?error=
   },
   callbacks: {
     async redirect({ url, baseUrl }) {
-      // ALWAYS redirect to root, ignore ALL callback URLs
-      // This prevents localhost:3000 and other unwanted redirects
-      if (url.startsWith(baseUrl)) {
-        return baseUrl;
+      // Handle relative URLs
+      if (url.startsWith('/')) {
+        return url;
       }
-      return baseUrl;
+      // Handle same-origin URLs
+      if (url.startsWith(baseUrl)) {
+        return url;
+      }
+      // Extract path from URL if it's a full URL (e.g., http://localhost:3000/path)
+      try {
+        const urlObj = new URL(url);
+        const baseUrlObj = new URL(baseUrl);
+        // If the path is valid, redirect to the path on the current host
+        if (urlObj.pathname) {
+          return urlObj.pathname + (urlObj.search || '');
+        }
+      } catch {
+        // Invalid URL, fall through to default
+      }
+      // Default to home page
+      return '/';
     },
     async jwt({ token, user }) {
       if (user) {

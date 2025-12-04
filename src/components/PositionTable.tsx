@@ -5,12 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
-import { BarChart3, TrendingUp, TrendingDown, Shield, Target, ChevronDown, X, AlertTriangle } from 'lucide-react';
+import { BarChart3, TrendingUp, TrendingDown, Shield, Target, ChevronDown, X, AlertTriangle, Plus, LineChart } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { ScaleOutModal, ScaleOutSettings } from '@/components/ScaleOutModal';
+import { AddToPositionModal } from '@/components/AddToPositionModal';
 import websocketService from '@/lib/services/websocketService';
 import { useConfig } from '@/components/ConfigProvider';
 import { useSymbolPrecision } from '@/hooks/useSymbolPrecision';
@@ -43,11 +44,13 @@ interface VWAPData {
 interface PositionTableProps {
   positions?: Position[];
   onClosePosition?: (symbol: string, side: 'LONG' | 'SHORT') => void;
+  onViewChart?: (symbol: string) => void;
 }
 
 export default function PositionTable({
   positions = [],
   onClosePosition: _onClosePosition,
+  onViewChart,
 }: PositionTableProps) {
   const [realPositions, setRealPositions] = useState<Position[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -79,6 +82,20 @@ export default function PositionTable({
       quantity: number;
       entryPrice: number;
       markPrice: number;
+    } | null;
+  }>({
+    isOpen: false,
+    position: null,
+  });
+  const [addPositionModal, setAddPositionModal] = useState<{
+    isOpen: boolean;
+    position: {
+      symbol: string;
+      side: 'LONG' | 'SHORT';
+      quantity: number;
+      entryPrice: number;
+      markPrice: number;
+      leverage: number;
     } | null;
   }>({
     isOpen: false,
@@ -415,6 +432,21 @@ export default function PositionTable({
     }
   }, [protectionStatus]);
 
+  // Handle add to position
+  const handleAddToPosition = useCallback((position: Position) => {
+    setAddPositionModal({
+      isOpen: true,
+      position: {
+        symbol: position.symbol,
+        side: position.side,
+        quantity: position.quantity,
+        entryPrice: position.entryPrice,
+        markPrice: position.markPrice,
+        leverage: position.leverage,
+      },
+    });
+  }, []);
+
   const handleDeactivateProtection = useCallback(async (position: Position) => {
     try {
       const response = await fetch('/api/positions/scale-out/deactivate', {
@@ -690,6 +722,17 @@ export default function PositionTable({
 
                     {/* Actions */}
                     <div className="flex gap-2 pt-1">
+                      {onViewChart && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => { e.stopPropagation(); onViewChart(position.symbol); }}
+                          className="h-8 w-8 p-0"
+                          title="View chart"
+                        >
+                          <LineChart className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                       <Button
                         variant={isProtected ? "default" : "outline"}
                         size="sm"
@@ -698,6 +741,15 @@ export default function PositionTable({
                       >
                         <Shield className="h-3 w-3 mr-1" />
                         {isProtected ? 'Scaling' : 'Scale Out'}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => { e.stopPropagation(); handleAddToPosition(position); }}
+                        className="flex-1 h-8 text-xs"
+                      >
+                        <Plus className="h-3 w-3 mr-1" />
+                        Add
                       </Button>
                       <Button
                         variant="destructive"
@@ -942,6 +994,20 @@ export default function PositionTable({
                   </TableCell>
                   <TableCell className="text-center py-2">
                     <div className="flex gap-1 justify-center">
+                      {onViewChart && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onViewChart(position.symbol);
+                          }}
+                          className="h-7 w-7 p-0"
+                          title="View chart"
+                        >
+                          <LineChart className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
                       {(() => {
                         const key = `${position.symbol}_${position.side}`;
                         const isProtected = protectionStatus[key];
@@ -960,6 +1026,18 @@ export default function PositionTable({
                           </Button>
                         );
                       })()}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleAddToPosition(position);
+                        }}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <Plus className="h-3 w-3 mr-1" />
+                        Add
+                      </Button>
                       <Button
                         variant="destructive"
                         size="sm"
@@ -1058,6 +1136,20 @@ export default function PositionTable({
           onClose={handleProtectCancel}
           onConfirm={handleProtectConfirm}
           position={protectPositionModal.position}
+        />
+      )}
+
+      {/* Add to Position Modal */}
+      {addPositionModal.position && (
+        <AddToPositionModal
+          isOpen={addPositionModal.isOpen}
+          onClose={() => setAddPositionModal({ isOpen: false, position: null })}
+          symbol={addPositionModal.position.symbol}
+          side={addPositionModal.position.side}
+          currentQuantity={addPositionModal.position.quantity}
+          currentPrice={addPositionModal.position.markPrice}
+          entryPrice={addPositionModal.position.entryPrice}
+          leverage={addPositionModal.position.leverage}
         />
       )}
     </Card>

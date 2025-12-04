@@ -36,6 +36,7 @@
       "websocketPort": 8080,
       "useRemoteWebSocket": false,
       "websocketHost": null,
+      "websocketPath": null,
       "setupComplete": false
     },
     "rateLimit": {

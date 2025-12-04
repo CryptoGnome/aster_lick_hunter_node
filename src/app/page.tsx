@@ -451,6 +451,7 @@ export default function DashboardPage() {
           {/* Positions Table */}
           <PositionTable
             onClosePosition={handleClosePosition}
+            onViewChart={setSelectedSymbol}
           />
 
           {/* Trading Chart with Symbol Selector */}

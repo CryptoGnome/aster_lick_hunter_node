@@ -14,7 +14,7 @@ import { Separator } from "@/components/ui/separator"
 import { Button } from "@/components/ui/button"
 import { LogOut } from "lucide-react"
 import { useConfig } from "@/components/ConfigProvider"
-import { signOut } from "next-auth/react"
+import { useAuth } from "@/components/AuthProvider"
 import { RateLimitBarCompact } from "@/components/RateLimitBar"
 
 interface DashboardLayoutProps {
@@ -24,13 +24,11 @@ interface DashboardLayoutProps {
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const _router = useRouter();
   const { config: _config } = useConfig();
+  const { signOut } = useAuth();
 
   const handleLogout = async () => {
     try {
-      await signOut({
-        callbackUrl: '/login',
-        redirect: true
-      });
+      await signOut();
     } catch (error) {
       console.error('Logout failed:', error);
     }
