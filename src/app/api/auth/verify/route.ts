@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
 
-const secret = new TextEncoder().encode(process.env.NEXTAUTH_SECRET || 'fallback-secret-change-me');
+const secret = new TextEncoder().encode(process.env.NEXTAUTH_SECRET || 'your-secret-key-change-in-production');
 
 export async function GET(request: NextRequest) {
   try {

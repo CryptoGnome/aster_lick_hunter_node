@@ -7,7 +7,7 @@ const SECRET = new TextEncoder().encode(
 );
 
 async function verifyAuth(req: NextRequest): Promise<boolean> {
-  // Check for simple auth token (cookie-based)
+  // Check for simple auth token (cookie-based JWT)
   const authToken = req.cookies.get('auth-token')?.value;
   if (authToken) {
     try {
@@ -18,13 +18,8 @@ async function verifyAuth(req: NextRequest): Promise<boolean> {
     }
   }
   
-  // Check for NextAuth session token (backwards compatibility)
-  const nextAuthToken = req.cookies.get('next-auth.session-token')?.value ||
-                        req.cookies.get('__Secure-next-auth.session-token')?.value;
-  if (nextAuthToken) {
-    // If NextAuth cookie exists, assume valid (NextAuth handles validation)
-    return true;
-  }
+  // NextAuth is no longer used - don't trust old cookies
+  // Users with stale next-auth cookies will need to re-login
   
   return false;
 }

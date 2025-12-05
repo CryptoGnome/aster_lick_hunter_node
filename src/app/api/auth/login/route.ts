@@ -46,11 +46,15 @@ export async function POST(request: NextRequest) {
       .setExpirationTime('7d')
       .sign(SECRET);
 
+    // Determine if we're behind a reverse proxy (HTTPS)
+    const forwardedProto = request.headers.get('x-forwarded-proto');
+    const isHttps = forwardedProto === 'https' || process.env.NODE_ENV === 'production';
+
     // Set HTTP-only cookie
     const response = NextResponse.json({ success: true });
     response.cookies.set('auth-token', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: isHttps,
       sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60, // 7 days
       path: '/',
