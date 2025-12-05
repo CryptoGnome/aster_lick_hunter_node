@@ -972,8 +972,11 @@ logErrorWithTimestamp('Hunter: Analysis error:', error);
     let tradeSizeUSDT: number = symbolConfig.tradeSize; // Default to general tradeSize
     let order: any; // Declare order variable for error handling
     
-    // Apply quality-based position size multiplier
-    const positionSizeMultiplier = qualityScore?.positionSizeMultiplier ?? 1.0;
+    // Apply quality-based position size multiplier ONLY if quality scoring is ACTIVE (not passive mode)
+    const useQualityScoringToFilter = this.config.global.useTradeQualityScoring !== false;
+    const positionSizeMultiplier = (useQualityScoringToFilter && qualityScore?.positionSizeMultiplier) 
+      ? qualityScore.positionSizeMultiplier 
+      : 1.0;
     if (positionSizeMultiplier !== 1.0) {
       logWithTimestamp(`Hunter: Applying quality-based position multiplier: ${positionSizeMultiplier}x for ${symbol} (quality: ${qualityScore?.totalScore}/3)`);
     }
@@ -1209,12 +1212,42 @@ logErrorWithTimestamp(`Hunter: Could not fetch symbol info for ${symbol}`);
       // Apply quality-based position size multiplier
       tradeSizeUSDT = tradeSizeUSDT * positionSizeMultiplier;
 
+      // Re-apply minPositionSize after quality multiplier (quality can reduce size below minimum)
+      if (symbolConfig.minPositionSize !== undefined && tradeSizeUSDT < symbolConfig.minPositionSize) {
+        logWithTimestamp(`Hunter: Quality-adjusted size ${tradeSizeUSDT.toFixed(2)} below minimum ${symbolConfig.minPositionSize}, using minimum`);
+        tradeSizeUSDT = symbolConfig.minPositionSize;
+      }
+
       notionalUSDT = tradeSizeUSDT * symbolConfig.leverage;
 
-      // Ensure we meet minimum notional requirement
+      // Check if notional is below exchange minimum - fail with warning instead of auto-adjusting
       if (notionalUSDT < minNotional) {
-logWithTimestamp(`Hunter: Adjusting notional from ${notionalUSDT} to minimum ${minNotional} for ${symbol}`);
-        notionalUSDT = minNotional * 1.01; // Add 1% buffer to ensure we're above minimum
+        const minMarginRequired = minNotional / symbolConfig.leverage;
+        logErrorWithTimestamp(`Hunter: Trade size too small for ${symbol} - notional ${notionalUSDT.toFixed(2)} below exchange minimum ${minNotional}`);
+        logErrorWithTimestamp(`  Current trade size (margin): ${tradeSizeUSDT.toFixed(2)} USDT`);
+        logErrorWithTimestamp(`  Notional value: ${notionalUSDT.toFixed(2)} USDT (at ${symbolConfig.leverage}x leverage)`);
+        logErrorWithTimestamp(`  Exchange minimum notional: ${minNotional} USDT`);
+        logErrorWithTimestamp(`  RECOMMENDED: Set minPositionSize to at least ${(minMarginRequired * 1.1).toFixed(2)} USDT`);
+        
+        // Broadcast error to UI
+        if (this.statusBroadcaster) {
+          this.statusBroadcaster.broadcastTradingError(
+            `Trade Size Below Exchange Minimum - ${symbol}`,
+            `Notional ${notionalUSDT.toFixed(2)} USDT is below exchange minimum ${minNotional} USDT`,
+            {
+              component: 'Hunter',
+              symbol,
+              details: {
+                tradeSize: tradeSizeUSDT,
+                notional: notionalUSDT,
+                exchangeMinimum: minNotional,
+                leverage: symbolConfig.leverage,
+                recommendedMinPositionSize: minMarginRequired * 1.1
+              }
+            }
+          );
+        }
+        return;
       }
 
       const calculatedQuantity = notionalUSDT / currentPrice;
