@@ -47,8 +47,9 @@ export async function POST(request: NextRequest) {
       .sign(SECRET);
 
     // Determine if we're behind a reverse proxy (HTTPS)
+    // Only set secure flag if actually accessed via HTTPS (not just because we're in production)
     const forwardedProto = request.headers.get('x-forwarded-proto');
-    const isHttps = forwardedProto === 'https' || process.env.NODE_ENV === 'production';
+    const isHttps = forwardedProto === 'https';
 
     // Set HTTP-only cookie
     const response = NextResponse.json({ success: true });
