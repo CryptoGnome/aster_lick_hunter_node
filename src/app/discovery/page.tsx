@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { DashboardLayout } from '@/components/dashboard-layout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -31,8 +31,32 @@ import {
   ExternalLink,
   Zap,
   Activity,
-  Bitcoin
+  Bitcoin,
+  ChevronDown,
+  ChevronRight,
+  Layers
 } from 'lucide-react';
+
+interface DepthLevel {
+  percentFromMid: number;
+  bidLiquidity: number;
+  askLiquidity: number;
+  totalLiquidity: number;
+}
+
+interface DepthData {
+  symbol: string;
+  timestamp: number;
+  midPrice: number;
+  spread: number;
+  spreadPercent: number;
+  bestBid: number;
+  bestAsk: number;
+  bidAskImbalance: number;
+  levels: DepthLevel[];
+  totalBidLiquidity: number;
+  totalAskLiquidity: number;
+}
 
 interface SymbolStats {
   symbol: string;
@@ -178,6 +202,12 @@ export default function DiscoveryPage() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [configuredSymbols, setConfiguredSymbols] = useState<string[]>([]);
   const [suggestionFilter, setSuggestionFilter] = useState<'all' | 'suggested' | 'low-activity' | 'configured'>('all');
+  
+  // Depth expansion state
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
+  const [depthData, setDepthData] = useState<DepthData | null>(null);
+  const [depthLoading, setDepthLoading] = useState(false);
+  const [depthError, setDepthError] = useState<string | null>(null);
 
   // Fetch configured symbols
   useEffect(() => {
@@ -237,6 +267,49 @@ export default function DiscoveryPage() {
   useEffect(() => {
     fetchData();
   }, [timeWindow]);
+
+  // Fetch depth data for expanded symbol
+  const fetchDepthData = async (symbol: string) => {
+    setDepthLoading(true);
+    setDepthError(null);
+    try {
+      const response = await fetch(`/api/depth/${symbol}`);
+      if (!response.ok) throw new Error('Failed to fetch depth');
+      const result = await response.json();
+      if (result.success) {
+        setDepthData(result.data);
+      } else {
+        throw new Error(result.error || 'Unknown error');
+      }
+    } catch (err) {
+      setDepthError(err instanceof Error ? err.message : 'Failed to fetch depth');
+    } finally {
+      setDepthLoading(false);
+    }
+  };
+
+  // Auto-refresh depth data every 5 seconds while expanded
+  useEffect(() => {
+    if (!expandedSymbol) {
+      setDepthData(null);
+      return;
+    }
+    
+    // Initial fetch
+    fetchDepthData(expandedSymbol);
+    
+    // Set up interval
+    const interval = setInterval(() => {
+      fetchDepthData(expandedSymbol);
+    }, 5000);
+    
+    return () => clearInterval(interval);
+  }, [expandedSymbol]);
+
+  // Toggle symbol expansion
+  const toggleExpand = (symbol: string) => {
+    setExpandedSymbol(prev => prev === symbol ? null : symbol);
+  };
 
   // Helper to check if symbol meets recommendation criteria
   const isSymbolRecommended = (s: SymbolStats) => {
@@ -1060,129 +1133,219 @@ export default function DiscoveryPage() {
                     {filteredSymbols.slice(0, 100).map(s => {
                       const isConfigured = configuredSymbols.includes(s.symbol);
                       const isRecommended = isSymbolRecommended(s);
+                      const isExpanded = expandedSymbol === s.symbol;
                       
                       // Suggestion logic
                       const shouldAdd = !isConfigured && isRecommended;
                       const shouldRemove = isConfigured && !isRecommended;
                       
                       return (
-                        <TableRow 
-                          key={s.symbol} 
-                          className={
-                            shouldRemove ? 'bg-red-500/5' :
-                            isConfigured ? 'bg-green-500/5' : 
-                            shouldAdd ? 'bg-blue-500/5' : ''
-                          }
-                        >
-                          <TableCell className="font-mono font-medium">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              {s.symbol.replace('USDT', '')}
-                              {isConfigured && (
-                                <Badge variant="outline" className="text-[10px] text-green-600 border-green-600">
-                                  Active
-                                </Badge>
-                              )}
-                              {shouldAdd && (
-                                <Badge className="text-[10px] bg-blue-500 hover:bg-blue-600">
-                                  Suggested
-                                </Badge>
-                              )}
-                              {shouldRemove && (
-                                <Badge variant="outline" className="text-[10px] text-orange-500 border-orange-500">
-                                  Low Activity
-                                </Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>{formatNumber(s.liq_count)}</TableCell>
-                          <TableCell className="font-medium">{formatVolume(s.total_volume)}</TableCell>
-                          <TableCell>{formatVolume(s.avg_volume)}</TableCell>
-                          <TableCell>
-                            <span className={s.frequency_per_hour >= 1 ? 'text-green-600 font-medium' : ''}>
-                              {s.frequency_per_hour.toFixed(2)}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <div 
-                              className="flex items-center gap-1"
-                              title={`${s.whale_count} whale liqs (≥$10K) out of ${s.liq_count} total`}
-                            >
-                              <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
-                                <div 
-                                  className={`h-full rounded-full ${s.whale_percent > 70 ? 'bg-purple-500' : s.whale_percent > 40 ? 'bg-blue-500' : 'bg-green-500'}`}
-                                  style={{ width: `${Math.min(s.whale_percent, 100)}%` }}
-                                />
-                              </div>
-                              <span className={`text-xs ${s.whale_percent > 70 ? 'text-purple-500' : ''}`}>
-                                {s.whale_percent.toFixed(0)}%
-                              </span>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <span 
-                              className={`font-mono ${s.hourly_opportunity >= 10000 ? 'text-green-600 font-medium' : 'text-muted-foreground'}`}
-                              title={`Expected ${formatVolume(s.hourly_opportunity)} in liquidations per hour`}
-                            >
-                              {formatVolume(s.hourly_opportunity)}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            {(() => {
-                              // Calculate sentiment from short/long ratio
-                              const shortLongRatio = s.long_liqs > 0 ? s.short_liqs / s.long_liqs : s.short_liqs > 0 ? 999 : 1;
-                              let label = '';
-                              let bgColor = '';
-                              let textColor = '';
-                              
-                              if (shortLongRatio > 1.2) {
-                                label = 'Bullish';
-                                bgColor = 'bg-green-500/20';
-                                textColor = 'text-green-600';
-                              } else if (shortLongRatio < 0.83) {
-                                label = 'Bearish';
-                                bgColor = 'bg-red-500/20';
-                                textColor = 'text-red-600';
-                              } else {
-                                label = 'Neutral';
-                                bgColor = 'bg-yellow-500/20';
-                                textColor = 'text-yellow-600';
-                              }
-                              
-                              return (
-                                <div className="flex items-center gap-1.5" title={`${s.short_liqs} shorts / ${s.long_liqs} longs = ${shortLongRatio.toFixed(2)}x`}>
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${bgColor} ${textColor}`}>
-                                    {label}
-                                  </span>
-                                  <span className="text-[10px] text-muted-foreground">
-                                    {shortLongRatio.toFixed(1)}x
-                                  </span>
-                                </div>
-                              );
-                            })()}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => {
-                                  const url = isConfigured 
-                                    ? `/config?symbol=${s.symbol}` 
-                                    : `/config?symbol=${s.symbol}&add=true`;
-                                  window.location.href = url;
-                                }}
-                                title={isConfigured ? 'Edit Config' : 'Add to Config'}
-                              >
-                                {isConfigured ? (
-                                  <ExternalLink className="h-3 w-3" />
+                        <React.Fragment key={s.symbol}>
+                          <TableRow 
+                            className={`cursor-pointer ${
+                              shouldRemove ? 'bg-red-500/5' :
+                              isConfigured ? 'bg-green-500/5' : 
+                              shouldAdd ? 'bg-blue-500/5' : ''
+                            } ${isExpanded ? 'border-b-0' : ''}`}
+                            onClick={() => toggleExpand(s.symbol)}
+                          >
+                            <TableCell className="font-mono font-medium">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {isExpanded ? (
+                                  <ChevronDown className="h-3 w-3 text-muted-foreground" />
                                 ) : (
-                                  <Plus className="h-3 w-3" />
+                                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
                                 )}
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
+                                {s.symbol.replace('USDT', '')}
+                                {isConfigured && (
+                                  <Badge variant="outline" className="text-[10px] text-green-600 border-green-600">
+                                    Active
+                                  </Badge>
+                                )}
+                                {shouldAdd && (
+                                  <Badge className="text-[10px] bg-blue-500 hover:bg-blue-600">
+                                    Suggested
+                                  </Badge>
+                                )}
+                                {shouldRemove && (
+                                  <Badge variant="outline" className="text-[10px] text-orange-500 border-orange-500">
+                                    Low Activity
+                                  </Badge>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell>{formatNumber(s.liq_count)}</TableCell>
+                            <TableCell className="font-medium">{formatVolume(s.total_volume)}</TableCell>
+                            <TableCell>{formatVolume(s.avg_volume)}</TableCell>
+                            <TableCell>
+                              <span className={s.frequency_per_hour >= 1 ? 'text-green-600 font-medium' : ''}>
+                                {s.frequency_per_hour.toFixed(2)}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <div 
+                                className="flex items-center gap-1"
+                                title={`${s.whale_count} whale liqs (≥$10K) out of ${s.liq_count} total`}
+                              >
+                                <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
+                                  <div 
+                                    className={`h-full rounded-full ${s.whale_percent > 70 ? 'bg-purple-500' : s.whale_percent > 40 ? 'bg-blue-500' : 'bg-green-500'}`}
+                                    style={{ width: `${Math.min(s.whale_percent, 100)}%` }}
+                                  />
+                                </div>
+                                <span className={`text-xs ${s.whale_percent > 70 ? 'text-purple-500' : ''}`}>
+                                  {s.whale_percent.toFixed(0)}%
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <span 
+                                className={`font-mono ${s.hourly_opportunity >= 10000 ? 'text-green-600 font-medium' : 'text-muted-foreground'}`}
+                                title={`Expected ${formatVolume(s.hourly_opportunity)} in liquidations per hour`}
+                              >
+                                {formatVolume(s.hourly_opportunity)}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              {(() => {
+                                // Calculate sentiment from short/long ratio
+                                const shortLongRatio = s.long_liqs > 0 ? s.short_liqs / s.long_liqs : s.short_liqs > 0 ? 999 : 1;
+                                let label = '';
+                                let bgColor = '';
+                                let textColor = '';
+                                
+                                if (shortLongRatio > 1.2) {
+                                  label = 'Bullish';
+                                  bgColor = 'bg-green-500/20';
+                                  textColor = 'text-green-600';
+                                } else if (shortLongRatio < 0.83) {
+                                  label = 'Bearish';
+                                  bgColor = 'bg-red-500/20';
+                                  textColor = 'text-red-600';
+                                } else {
+                                  label = 'Neutral';
+                                  bgColor = 'bg-yellow-500/20';
+                                  textColor = 'text-yellow-600';
+                                }
+                                
+                                return (
+                                  <div className="flex items-center gap-1.5" title={`${s.short_liqs} shorts / ${s.long_liqs} longs = ${shortLongRatio.toFixed(2)}x`}>
+                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${bgColor} ${textColor}`}>
+                                      {label}
+                                    </span>
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {shortLongRatio.toFixed(1)}x
+                                    </span>
+                                  </div>
+                                );
+                              })()}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => {
+                                    const url = isConfigured 
+                                      ? `/config?symbol=${s.symbol}` 
+                                      : `/config?symbol=${s.symbol}&add=true`;
+                                    window.location.href = url;
+                                  }}
+                                  title={isConfigured ? 'Edit Config' : 'Add to Config'}
+                                >
+                                  {isConfigured ? (
+                                    <ExternalLink className="h-3 w-3" />
+                                  ) : (
+                                    <Plus className="h-3 w-3" />
+                                  )}
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                          {/* Expanded Depth Panel */}
+                          {isExpanded && (
+                            <TableRow className="bg-muted/30 hover:bg-muted/30">
+                              <TableCell colSpan={9} className="p-0">
+                                <div className="px-4 py-3">
+                                  {depthLoading && !depthData ? (
+                                    <div className="flex items-center gap-2 text-muted-foreground text-sm">
+                                      <RefreshCw className="h-3 w-3 animate-spin" />
+                                      Loading depth data...
+                                    </div>
+                                  ) : depthError ? (
+                                    <div className="text-destructive text-sm">{depthError}</div>
+                                  ) : depthData ? (
+                                    <div className="space-y-3">
+                                      {/* Header row */}
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-4 text-sm">
+                                          <div className="flex items-center gap-2">
+                                            <Layers className="h-4 w-4 text-muted-foreground" />
+                                            <span className="font-medium">Order Book Depth</span>
+                                          </div>
+                                          <div className="text-muted-foreground">
+                                            Spread: <span className={`font-mono ${depthData.spreadPercent < 0.05 ? 'text-green-500' : depthData.spreadPercent > 0.1 ? 'text-red-500' : 'text-yellow-500'}`}>
+                                              {depthData.spreadPercent.toFixed(3)}%
+                                            </span>
+                                          </div>
+                                          <div className="text-muted-foreground">
+                                            Mid: <span className="font-mono">${depthData.midPrice.toFixed(depthData.midPrice < 1 ? 4 : 2)}</span>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                          {depthLoading && <RefreshCw className="h-3 w-3 animate-spin" />}
+                                          Auto-refresh: 5s
+                                        </div>
+                                      </div>
+                                      
+                                      {/* Bid/Ask Imbalance Bar */}
+                                      <div className="space-y-1">
+                                        <div className="flex justify-between text-xs text-muted-foreground">
+                                          <span>Bid/Ask Imbalance (within 1%)</span>
+                                          <span>
+                                            {depthData.bidAskImbalance > 0.1 ? '🟢 More Bids' : 
+                                             depthData.bidAskImbalance < -0.1 ? '🔴 More Asks' : '⚪ Balanced'}
+                                          </span>
+                                        </div>
+                                        <div className="h-2 rounded-full overflow-hidden flex bg-muted">
+                                          <div 
+                                            className="bg-green-500 transition-all"
+                                            style={{ width: `${Math.max(0, 50 + depthData.bidAskImbalance * 50)}%` }}
+                                          />
+                                          <div 
+                                            className="bg-red-500 transition-all"
+                                            style={{ width: `${Math.max(0, 50 - depthData.bidAskImbalance * 50)}%` }}
+                                          />
+                                        </div>
+                                        <div className="flex justify-between text-[10px] text-muted-foreground">
+                                          <span className="text-green-500">Bids</span>
+                                          <span className="text-red-500">Asks</span>
+                                        </div>
+                                      </div>
+
+                                      {/* Depth Levels Table */}
+                                      <div className="grid grid-cols-4 gap-2 text-xs">
+                                        <div className="font-medium text-muted-foreground">% from Mid</div>
+                                        <div className="font-medium text-muted-foreground text-right">Bid Liquidity</div>
+                                        <div className="font-medium text-muted-foreground text-right">Ask Liquidity</div>
+                                        <div className="font-medium text-muted-foreground text-right">Total</div>
+                                        {depthData.levels.map(level => (
+                                          <React.Fragment key={level.percentFromMid}>
+                                            <div className="font-mono">±{level.percentFromMid}%</div>
+                                            <div className="font-mono text-right text-green-500">{formatVolume(level.bidLiquidity)}</div>
+                                            <div className="font-mono text-right text-red-500">{formatVolume(level.askLiquidity)}</div>
+                                            <div className="font-mono text-right">{formatVolume(level.totalLiquidity)}</div>
+                                          </React.Fragment>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </TableBody>

@@ -20,6 +20,9 @@ const nextConfig: NextConfig = {
     // (bot runs separately with tsx and has its own type checking)
     ignoreBuildErrors: true,
   },
+  // Prevent ws package from being bundled - it uses native Node.js Buffer
+  // operations that break when minified by webpack
+  serverExternalPackages: ['ws'],
 };
 
 export default nextConfig;
