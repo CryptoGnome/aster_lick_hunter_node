@@ -733,6 +733,11 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
 
   private async analyzeAndTrade(liquidation: LiquidationEvent, symbolConfig: SymbolConfig, _forcedSide?: 'BUY' | 'SELL'): Promise<void> {
     try {
+      // Log the liquidation price for debugging
+      if (liquidation.price <= 0 || !isFinite(liquidation.price)) {
+        logWarnWithTimestamp(`Hunter: Received invalid liquidation price for ${liquidation.symbol}: ${liquidation.price} (side: ${liquidation.side})`);
+      }
+
       // Get mark price and recent 1m kline
       const [markPriceData] = Array.isArray(await getMarkPrice(liquidation.symbol)) ?
         await getMarkPrice(liquidation.symbol) as any[] :

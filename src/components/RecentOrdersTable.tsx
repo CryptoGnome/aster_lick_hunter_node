@@ -550,7 +550,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div>
                         <div className="text-muted-foreground text-[10px]">Price</div>
-                        <div className="font-mono font-medium">${formatPrice(order.avgPrice || order.price)}</div>
+                        <div className="font-mono font-medium">${formatPrice(order.avgPrice || order.price || order.stopPrice)}</div>
                       </div>
                       <div>
                         <div className="text-muted-foreground text-[10px]">Filled</div>
@@ -629,7 +629,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatPrice(order.avgPrice || order.price)}
+                          {formatPrice(order.avgPrice || order.price || order.stopPrice)}
                         </TableCell>
                         <TableCell className="text-right font-mono">
                           {formatQuantity(order.origQty)}

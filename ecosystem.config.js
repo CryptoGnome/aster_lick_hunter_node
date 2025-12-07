@@ -14,6 +14,7 @@ module.exports = {
       log_date_format: "",      // Skip timestamp overhead in PM2 logs
       combine_logs: true,
       merge_logs: true,
+      autorestart: false,       // Disabled - bot running elsewhere
     },
     {
       name: "aster-notifier",
