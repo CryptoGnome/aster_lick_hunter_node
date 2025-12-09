@@ -345,7 +345,9 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     try {
       const response = await fetch(`/api/symbol-details/${symbol}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch symbol details');
+        const errorText = await response.text().catch(() => '');
+        console.error(`Symbol details API error: ${response.status} - ${errorText}`);
+        throw new Error(`Failed to fetch symbol details (${response.status})`);
       }
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {

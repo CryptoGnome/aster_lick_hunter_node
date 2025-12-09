@@ -295,11 +295,17 @@ class DataStore extends EventEmitter {
         console.error('[DataStore] Failed to fetch positions after closure:', error);
       });
     } else if (message.type === 'tab_visible') {
-      // Tab became visible again - refresh positions to catch any missed updates
-      console.log('[DataStore] Tab visible, refreshing positions');
+      // Tab became visible again - refresh both balance and positions to catch any missed updates
+      console.log('[DataStore] Tab visible, refreshing balance and positions');
+      this.state.balance.timestamp = 0;
       this.state.positions.timestamp = 0;
-      this.fetchPositions(true).catch(error => {
-        console.error('[DataStore] Failed to fetch positions on tab visible:', error);
+      
+      // Refresh both in parallel
+      Promise.all([
+        this.fetchBalance(true),
+        this.fetchPositions(true)
+      ]).catch(error => {
+        console.error('[DataStore] Failed to refresh data on tab visible:', error);
       });
     } else if (message.type === 'sl_placed' || message.type === 'tp_placed') {
       // When SL/TP orders are placed, refresh positions to update protection badges

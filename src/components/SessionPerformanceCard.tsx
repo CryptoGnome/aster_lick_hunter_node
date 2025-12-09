@@ -44,6 +44,18 @@ export default function SessionPerformanceCard() {
     };
 
     fetchSessionData();
+
+    // Refresh data when tab becomes visible again
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        fetchSessionData();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {
