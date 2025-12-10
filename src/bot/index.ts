@@ -171,23 +171,21 @@ logErrorWithTimestamp('❌ Config error:', error.message);
       const hasValidApiKeys = this.config.api.apiKey && this.config.api.secretKey &&
                               this.config.api.apiKey.length > 0 && this.config.api.secretKey.length > 0;
 
-      if (!hasValidApiKeys) {
-logWithTimestamp('⚠️  No API keys configured.');
-logWithTimestamp('   Please configure your API keys via the web interface at http://localhost:3000/config');
-        if (!this.config.global.paperMode) {
-logWithTimestamp('📋 Waiting for configuration - bot will start automatically once API keys are set');
-          this.statusBroadcaster.broadcastConfigError(
-            'Configuration Required',
-            'Please configure your API keys via the dashboard at /config, or enable paper mode to test without real trading.',
-            {
-              component: 'AsterBot',
-            }
-          );
-          // Don't throw - just wait. The web UI is still running.
-          // The bot will be restarted when config is saved via the UI.
-          this.isRunning = false;
-          return;
-        }
+      if (!hasValidApiKeys && !this.config.global.paperMode) {
+logWithTimestamp('⚠️  No API keys configured - waiting for setup via web UI at http://localhost:3000/config');
+        // Broadcast a simple status update (not an error) to the UI
+        this.statusBroadcaster._broadcast('waiting_for_config', {
+          message: 'Please configure your API keys via the dashboard, or enable paper mode to test.',
+          timestamp: new Date().toISOString(),
+        });
+        // Don't throw - just wait. The web UI is still running.
+        // The bot will be restarted when config is saved via the UI.
+        this.isRunning = false;
+        return;
+      }
+
+      if (!hasValidApiKeys && this.config.global.paperMode) {
+logWithTimestamp('📄 Running in Paper Mode (no API keys required)');
       }
 
       // Initialize Paper Trading if in paper mode (before API-dependent services)

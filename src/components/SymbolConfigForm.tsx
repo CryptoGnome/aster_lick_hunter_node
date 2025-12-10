@@ -1807,30 +1807,35 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                           </div>
                         </div>
 
-                        {/* Threshold System Settings - Only show if global threshold is enabled */}
-                        {config.global.useThresholdSystem && (
-                          <div className="col-span-2">
-                            <Separator className="my-4" />
-                            <div className="space-y-4">
-                              <div className="flex items-center justify-between">
-                                <div className="space-y-0.5">
-                                  <Label className="flex items-center gap-2">
-                                    <TrendingUp className="h-4 w-4" />
-                                    Enable Threshold System for {selectedSymbol}
-                                  </Label>
-                                  <p className="text-sm text-muted-foreground">
-                                    Use 60-second cumulative volume thresholds
+                        {/* Threshold System Settings - Always show toggle, details only when enabled */}
+                        <div className="col-span-2">
+                          <Separator className="my-4" />
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                              <div className="space-y-0.5">
+                                <Label className="flex items-center gap-2">
+                                  <TrendingUp className="h-4 w-4" />
+                                  Enable Threshold System for {selectedSymbol}
+                                </Label>
+                                <p className="text-sm text-muted-foreground">
+                                  Use 60-second cumulative volume thresholds
+                                </p>
+                                {!config.global.useThresholdSystem && (
+                                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                                    ⚠️ Enable &quot;60-Second Volume Threshold System&quot; in Global Settings first
                                   </p>
-                                </div>
-                                <Switch
-                                  checked={config.symbols[selectedSymbol].useThreshold || false}
-                                  onCheckedChange={(checked) =>
-                                    handleSymbolChange(selectedSymbol, 'useThreshold', checked)
-                                  }
-                                />
+                                )}
                               </div>
+                              <Switch
+                                checked={config.symbols[selectedSymbol].useThreshold || false}
+                                onCheckedChange={(checked) =>
+                                  handleSymbolChange(selectedSymbol, 'useThreshold', checked)
+                                }
+                                disabled={!config.global.useThresholdSystem}
+                              />
+                            </div>
 
-                              {config.symbols[selectedSymbol].useThreshold && (
+                            {config.symbols[selectedSymbol].useThreshold && config.global.useThresholdSystem && (
                                 <div className="space-y-4 pt-2">
                                   <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2">
@@ -1907,7 +1912,6 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                               )}
                             </div>
                           </div>
-                        )}
 
                         {/* Multi-Tranche Position Management */}
                         <div className="col-span-2">
