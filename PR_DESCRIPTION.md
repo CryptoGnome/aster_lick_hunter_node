@@ -143,6 +143,7 @@ Those features are included in this PR along with many additional improvements.
 - Fixed liquidation database settings not persisting
 - Fixed onboarding trade sizes using wrong units (was coin, now USDT)
 - Fixed secure cookies only when actually using HTTPS
+- Fixed FTA Exit Service spamming logs every second (now throttled to 5 min intervals, disabled by default)
 - Fixed various React hooks rule violations
 - Removed deprecated type stub packages
 
