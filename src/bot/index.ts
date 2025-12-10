@@ -172,18 +172,21 @@ logErrorWithTimestamp('❌ Config error:', error.message);
                               this.config.api.apiKey.length > 0 && this.config.api.secretKey.length > 0;
 
       if (!hasValidApiKeys) {
-logWithTimestamp('⚠️  WARNING: No API keys configured. Running in PAPER MODE only.');
+logWithTimestamp('⚠️  No API keys configured.');
 logWithTimestamp('   Please configure your API keys via the web interface at http://localhost:3000/config');
         if (!this.config.global.paperMode) {
-logErrorWithTimestamp('❌ Cannot run in LIVE mode without API keys!');
+logWithTimestamp('📋 Waiting for configuration - bot will start automatically once API keys are set');
           this.statusBroadcaster.broadcastConfigError(
-            'Invalid Configuration',
-            'Cannot run in LIVE mode without API keys. Please configure your API keys or enable paper mode.',
+            'Configuration Required',
+            'Please configure your API keys via the dashboard at /config, or enable paper mode to test without real trading.',
             {
               component: 'AsterBot',
             }
           );
-          throw new Error('API keys required for live trading');
+          // Don't throw - just wait. The web UI is still running.
+          // The bot will be restarted when config is saved via the UI.
+          this.isRunning = false;
+          return;
         }
       }
 
