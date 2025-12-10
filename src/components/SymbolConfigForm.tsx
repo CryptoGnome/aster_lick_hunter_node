@@ -80,7 +80,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       if (!currentConfig.global) {
         currentConfig.global = {
           riskPercent: 2,
-          paperMode: true,
+          paperMode: false,
           positionMode: 'HEDGE',
           maxOpenPositions: 10,
           useThresholdSystem: false,
@@ -101,8 +101,20 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
             deduplicationWindowMs: 1000,
             parallelProcessing: true,
             maxConcurrentRequests: 3
+          },
+          liquidationDatabase: {
+            retentionDays: 90,
+            cleanupIntervalHours: 24
           }
         };
+      } else {
+        // Ensure liquidationDatabase exists even if global exists
+        if (!currentConfig.global.liquidationDatabase) {
+          currentConfig.global.liquidationDatabase = {
+            retentionDays: 90,
+            cleanupIntervalHours: 24
+          };
+        }
       }
       
       // Ensure symbols object exists
@@ -120,11 +132,12 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         secretKey: ''
       },
       global: {
-        riskPercent: 2,
-        paperMode: true,
+        riskPercent: 5,
+        paperMode: false,
         positionMode: 'HEDGE',
         maxOpenPositions: 10,
         useThresholdSystem: false,
+        useTradeQualityScoring: false,
         server: {
           dashboardPassword: 'admin',
           dashboardPort: 0,
@@ -140,6 +153,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
           queueTimeout: 30000,
           parallelProcessing: true,
           maxConcurrentRequests: 3
+        },
+        liquidationDatabase: {
+          retentionDays: 90,
+          cleanupIntervalHours: 24
         }
       },
       symbols: {},
@@ -199,14 +216,15 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     }
   }, [symbolFromUrl, addFromUrl]);
 
-  // Function to generate default config
+  // Function to generate default config - conservative defaults
+  // Trade size defaults to $1 - users MUST adjust based on the minimum shown for each symbol
   const getDefaultSymbolConfig = (): SymbolConfig => {
     return {
       longVolumeThresholdUSDT: 10000,  // For long positions (buy on sell liquidations)
       shortVolumeThresholdUSDT: 10000, // For short positions (sell on buy liquidations)
       leverage: 10,
-      tradeSize: 100,
-      maxPositionMarginUSDT: 10000,
+      tradeSize: 1, // Very conservative - user must set based on symbol minimum
+      maxPositionMarginUSDT: 100,
       slPercent: 2,
       tpPercent: 3,
       priceOffsetBps: 5,      // 5 basis points offset for limit orders
@@ -546,6 +564,9 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 <p className="text-xs text-muted-foreground">
                   Maximum percentage of your account to risk across all positions
                 </p>
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  ⚠️ Not yet implemented - this setting is reserved for future use
+                </p>
               </div>
 
               <Separator />
@@ -555,6 +576,9 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   <Label htmlFor="paperMode">Paper Mode</Label>
                   <p className="text-xs text-muted-foreground">
                     Enable simulation mode for risk-free testing
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    ⚠️ Experimental - not thoroughly tested
                   </p>
                 </div>
                 <Switch

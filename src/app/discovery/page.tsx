@@ -58,6 +58,26 @@ interface DepthData {
   totalAskLiquidity: number;
 }
 
+interface RangeData {
+  symbol: string;
+  timestamp: number;
+  currentPrice: number;
+  atr1h: number;
+  atr4h: number;
+  atr24h: number;
+  atr7d: number;
+  atrPercent1h: number;
+  atrPercent4h: number;
+  atrPercent24h: number;
+  atrPercent7d: number;
+  range24h: number;
+  range24hPercent: number;
+  range7d: number;
+  range7dPercent: number;
+  volatilityRank: 'LOW' | 'MEDIUM' | 'HIGH' | 'VERY_HIGH';
+  suggestedTpPercent: number;
+}
+
 interface SymbolStats {
   symbol: string;
   liq_count: number;
@@ -208,6 +228,10 @@ export default function DiscoveryPage() {
   const [depthData, setDepthData] = useState<DepthData | null>(null);
   const [depthLoading, setDepthLoading] = useState(false);
   const [depthError, setDepthError] = useState<string | null>(null);
+  
+  // Range/ATR data state
+  const [rangeData, setRangeData] = useState<RangeData | null>(null);
+  const [rangeLoading, setRangeLoading] = useState(false);
 
   // Fetch configured symbols
   useEffect(() => {
@@ -288,17 +312,35 @@ export default function DiscoveryPage() {
     }
   };
 
+  // Fetch range/ATR data for expanded symbol
+  const fetchRangeData = async (symbol: string) => {
+    setRangeLoading(true);
+    try {
+      const response = await fetch(`/api/range/${symbol}`);
+      if (!response.ok) throw new Error('Failed to fetch range');
+      const result = await response.json();
+      setRangeData(result);
+    } catch (err) {
+      console.error('Range fetch error:', err);
+      setRangeData(null);
+    } finally {
+      setRangeLoading(false);
+    }
+  };
+
   // Auto-refresh depth data every 5 seconds while expanded
   useEffect(() => {
     if (!expandedSymbol) {
       setDepthData(null);
+      setRangeData(null);
       return;
     }
     
     // Initial fetch
     fetchDepthData(expandedSymbol);
+    fetchRangeData(expandedSymbol);
     
-    // Set up interval
+    // Set up interval for depth (range doesn't need frequent refresh)
     const interval = setInterval(() => {
       fetchDepthData(expandedSymbol);
     }, 5000);
@@ -312,6 +354,7 @@ export default function DiscoveryPage() {
   };
 
   // Helper to check if symbol meets recommendation criteria
+  // Based purely on liquidation activity - does not consider trade size requirements
   const isSymbolRecommended = (s: SymbolStats) => {
     const meetsFrequency = s.frequency_per_hour >= 0.5;
     const meetsAvgSize = s.avg_volume >= 5000;
@@ -1020,8 +1063,10 @@ export default function DiscoveryPage() {
                   <span className="font-medium">Whale%</span> = volume from $10K+ liqs (higher = fewer, bigger trades).
                   <span className="ml-2 font-medium">$/hr</span> = expected hourly liq volume (frequency × avg size).
                   <br/>
-                  <span className="text-blue-500">Blue = suggested to add</span>
-                  <span className="ml-2 text-orange-500">Orange = consider removing</span>
+                  <span className="text-blue-500">Blue = high liq activity (≥0.5/hr, ≥$5K avg)</span>
+                  <span className="ml-2 text-orange-500">Orange = configured but low activity</span>
+                  <br/>
+                  <span className="text-xs text-muted-foreground">Note: Recommendations are based on liquidation volume only, not minimum trade size requirements</span>
                 </CardDescription>
               </div>
               <div className="flex items-center gap-2">
@@ -1339,6 +1384,88 @@ export default function DiscoveryPage() {
                                           </React.Fragment>
                                         ))}
                                       </div>
+                                      
+                                      {/* Price Range / Volatility Section */}
+                                      {rangeData && (
+                                        <div className="mt-4 pt-4 border-t border-muted">
+                                          <div className="flex items-center gap-4 text-sm mb-3">
+                                            <div className="flex items-center gap-2">
+                                              <Activity className="h-4 w-4 text-muted-foreground" />
+                                              <span className="font-medium">Price Range Analysis</span>
+                                            </div>
+                                            <Badge variant={
+                                              rangeData.volatilityRank === 'LOW' ? 'secondary' :
+                                              rangeData.volatilityRank === 'MEDIUM' ? 'outline' :
+                                              rangeData.volatilityRank === 'HIGH' ? 'default' : 'destructive'
+                                            }>
+                                              {rangeData.volatilityRank} Volatility
+                                            </Badge>
+                                            <div className="text-muted-foreground">
+                                              Suggested TP: <span className="font-mono text-primary font-medium">{rangeData.suggestedTpPercent}%</span>
+                                            </div>
+                                          </div>
+                                          
+                                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                                            {/* ATR (Average True Range per candle) */}
+                                            <div className="space-y-2">
+                                              <div className="font-medium text-muted-foreground">Avg Range / Candle</div>
+                                              <div className="space-y-1">
+                                                <div className="flex justify-between">
+                                                  <span>1h (5m):</span>
+                                                  <span className="font-mono">{rangeData.atrPercent1h.toFixed(2)}%</span>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                  <span>4h (5m):</span>
+                                                  <span className="font-mono">{rangeData.atrPercent4h.toFixed(2)}%</span>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                  <span>24h (5m):</span>
+                                                  <span className="font-mono">{rangeData.atrPercent24h.toFixed(2)}%</span>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                  <span>7d (1h):</span>
+                                                  <span className="font-mono">{rangeData.atrPercent7d.toFixed(2)}%</span>
+                                                </div>
+                                              </div>
+                                            </div>
+                                            
+                                            {/* Total Range (High-Low over period) */}
+                                            <div className="space-y-2">
+                                              <div className="font-medium text-muted-foreground">Total Range</div>
+                                              <div className="space-y-1">
+                                                <div className="flex justify-between">
+                                                  <span>24h:</span>
+                                                  <span className="font-mono text-yellow-500">{rangeData.range24hPercent.toFixed(2)}%</span>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                  <span>7d:</span>
+                                                  <span className="font-mono text-yellow-500">{rangeData.range7dPercent.toFixed(2)}%</span>
+                                                </div>
+                                              </div>
+                                            </div>
+                                            
+                                            {/* TP Guidance */}
+                                            <div className="space-y-2 md:col-span-2">
+                                              <div className="font-medium text-muted-foreground">TP Guidance</div>
+                                              <div className="text-xs text-muted-foreground">
+                                                Based on recent price action, this symbol typically moves <span className="text-primary font-medium">{rangeData.atrPercent1h.toFixed(2)}%</span> per hour.
+                                                {rangeData.suggestedTpPercent < 1.0 && (
+                                                  <span className="text-yellow-500 ml-1">⚠️ Low volatility - consider lower TP.</span>
+                                                )}
+                                                {rangeData.suggestedTpPercent > 3.0 && (
+                                                  <span className="text-green-500 ml-1">✓ High volatility - larger TP possible.</span>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                      {rangeLoading && !rangeData && (
+                                        <div className="mt-4 pt-4 border-t border-muted flex items-center gap-2 text-muted-foreground text-sm">
+                                          <RefreshCw className="h-3 w-3 animate-spin" />
+                                          Loading range data...
+                                        </div>
+                                      )}
                                     </div>
                                   ) : null}
                                 </div>
