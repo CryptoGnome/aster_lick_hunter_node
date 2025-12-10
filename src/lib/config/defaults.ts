@@ -8,36 +8,7 @@ export const DEFAULT_CONFIG: Config = {
     secretKey: '',
   },
   symbols: {
-    BTCUSDT: {
-      longVolumeThresholdUSDT: 10000,
-      shortVolumeThresholdUSDT: 10000,
-      tradeSize: 0.001,
-      maxPositionMarginUSDT: 5000,
-      leverage: 5,
-      tpPercent: 5,
-      slPercent: 2,
-      priceOffsetBps: 5,
-      maxSlippageBps: 50,
-      orderType: 'LIMIT',
-      vwapProtection: true,
-      vwapTimeframe: '1m',
-      vwapLookback: 200,
-    },
-    ETHUSDT: {
-      longVolumeThresholdUSDT: 5000,
-      shortVolumeThresholdUSDT: 5000,
-      tradeSize: 0.01,
-      maxPositionMarginUSDT: 3000,
-      leverage: 10,
-      tpPercent: 4,
-      slPercent: 1.5,
-      priceOffsetBps: 5,
-      maxSlippageBps: 50,
-      orderType: 'LIMIT',
-      vwapProtection: true,
-      vwapTimeframe: '1m',
-      vwapLookback: 200,
-    },
+    // Empty by default - users add symbols during setup
   },
   global: {
     riskPercent: 5,
@@ -56,10 +27,11 @@ export const DEFAULT_CONFIG: Config = {
   version: DEFAULT_CONFIG_VERSION,
 };
 
+// Default symbol config - tradeSize in USDT (margin amount)
 export const DEFAULT_SYMBOL_CONFIG = {
   longVolumeThresholdUSDT: 5000,
   shortVolumeThresholdUSDT: 5000,
-  tradeSize: 0.001,
+  tradeSize: 5, // $5 USDT margin - safe minimum for most symbols at 10x leverage
   maxPositionMarginUSDT: 1000,
   leverage: 5,
   tpPercent: 3,

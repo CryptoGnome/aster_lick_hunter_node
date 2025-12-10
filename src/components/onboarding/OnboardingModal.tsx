@@ -148,10 +148,23 @@ export function OnboardingModal() {
     if (config) {
       const symbolsObject: Record<string, any> = {};
       
+      // Calculate safe minimum trade sizes based on leverage
+      // BTC min notional ~$100, ETH/others ~$5-10
+      const getTradeSize = (symbol: string, leverage: number): number => {
+        const isBTC = symbol === 'BTCUSDT';
+        const minNotional = isBTC ? 100 : 5;
+        // Add 50% buffer for price movements
+        const safeMargin = (minNotional / leverage) * 1.5;
+        // Round up to nearest dollar for BTC, nearest 0.5 for others
+        return isBTC ? Math.ceil(safeMargin) : Math.ceil(safeMargin * 2) / 2;
+      };
+      
       symbolConfigs.forEach(sc => {
+        const tradeSize = getTradeSize(sc.symbol, sc.leverage);
+        
         symbolsObject[sc.symbol] = {
-          // Required fields
-          tradeSize: sc.symbol === 'BTCUSDT' ? 0.001 : 0.01,
+          // Required fields - tradeSize in USDT (margin)
+          tradeSize: tradeSize,
           leverage: sc.leverage,
           tpPercent: sc.tpPercent,
           slPercent: sc.slPercent,
@@ -173,9 +186,6 @@ export function OnboardingModal() {
           useThreshold: false,
           thresholdTimeWindow: 60000,
           thresholdCooldown: 30000,
-          
-          // Optional fields with defaults
-          shortTradeSize: sc.symbol === 'BTCUSDT' ? 0.001 : 0.01
         };
       });
 
