@@ -68,6 +68,13 @@ export class FTAExitService extends EventEmitter {
   // Positions being monitored
   private monitoredPositions: Map<string, MonitoredPosition> = new Map();
   
+  // Track which signals have already been emitted (to prevent spam)
+  // Key: `${positionKey}_${exitType}`, Value: timestamp of last emission
+  private emittedSignals: Map<string, number> = new Map();
+  
+  // Minimum time between repeated signals for the same position/type (5 minutes)
+  private readonly SIGNAL_THROTTLE_MS = 5 * 60 * 1000;
+  
   // Historical trade durations for calibration
   private tradeDurations: Array<{
     symbol: string;
@@ -215,6 +222,13 @@ export class FTAExitService extends EventEmitter {
       position.isActive = false;
       this.monitoredPositions.delete(positionKey);
       
+      // Clean up throttle tracking for this position
+      for (const key of this.emittedSignals.keys()) {
+        if (key.startsWith(positionKey)) {
+          this.emittedSignals.delete(key);
+        }
+      }
+      
       logWithTimestamp(`📊 FTA Exit Service: Stopped monitoring ${position.symbol} (${reason})`);
       
       this.emit('positionRemoved', { positionKey, reason });
@@ -310,6 +324,19 @@ export class FTAExitService extends EventEmitter {
         reason = `Unrealized loss (${unrealizedPnlPercent.toFixed(2)}%) is abnormally high for winning trades`;
         confidence = 75;
       }
+
+      // Throttle repeated signals - only emit if we haven't signaled this position/type recently
+      const signalKey = `${position.positionKey}_${exitType}`;
+      const now = Date.now();
+      const lastEmitted = this.emittedSignals.get(signalKey);
+      
+      if (lastEmitted && (now - lastEmitted) < this.SIGNAL_THROTTLE_MS) {
+        // Skip - already signaled recently
+        return;
+      }
+      
+      // Update throttle timestamp
+      this.emittedSignals.set(signalKey, now);
 
       const signal: FTAExitSignal = {
         symbol: position.symbol,

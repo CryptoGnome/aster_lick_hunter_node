@@ -16,6 +16,7 @@ export const DEFAULT_CONFIG: Config = {
     positionMode: 'HEDGE',
     maxOpenPositions: 10,
     useTradeQualityScoring: false, // Disabled by default - users can enable once familiar
+    useFTAExitAnalysis: false, // Disabled by default - logs signals for long-running trades
     server: {
       dashboardPassword: '',
       dashboardPort: 3000,

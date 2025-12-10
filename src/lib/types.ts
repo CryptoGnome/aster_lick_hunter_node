@@ -90,6 +90,7 @@ export interface GlobalConfig {
   maxOpenPositions?: number; // Max number of open positions (hedged pairs count as one)
   useThresholdSystem?: boolean; // Enable 60-second rolling volume threshold system (default: false)
   useTradeQualityScoring?: boolean; // Enable trade quality scoring - VWAP regime, spike analysis (default: true)
+  useFTAExitAnalysis?: boolean; // Enable FTA early exit analysis - logs signals for long-running/losing trades (default: false)
   debugMode?: boolean;      // Enable verbose console logging for debugging (default: false)
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration

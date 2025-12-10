@@ -89,6 +89,7 @@ export const globalConfigSchema = z.object({
   maxOpenPositions: z.number().min(1).optional(),
   useThresholdSystem: z.boolean().optional(),
   useTradeQualityScoring: z.boolean().optional(), // Enable/disable trade quality scoring (VWAP regime, spike analysis)
+  useFTAExitAnalysis: z.boolean().optional(), // Enable/disable FTA early exit analysis
   server: serverConfigSchema,
   rateLimit: rateLimitConfigSchema,
 });

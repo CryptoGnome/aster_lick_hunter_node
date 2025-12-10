@@ -26,6 +26,7 @@ import {
   Settings2,
   BarChart3,
   Database,
+  Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { TrancheSettingsSection } from './TrancheSettingsSection';
@@ -138,6 +139,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         maxOpenPositions: 10,
         useThresholdSystem: false,
         useTradeQualityScoring: false,
+        useFTAExitAnalysis: false,
         server: {
           dashboardPassword: 'admin',
           dashboardPort: 0,
@@ -934,6 +936,42 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                     ) : (
                       <>
                         <strong>PASSIVE:</strong> Trade quality is still calculated and recorded for monitoring, but no trades will be blocked or filtered. Use this to observe scoring before enabling full filtering.
+                      </>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="flex items-center gap-2">
+                      <Clock className="h-4 w-4" />
+                      FTA Exit Analysis
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      Analyze positions for early exit signals based on duration and price action
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.global.useFTAExitAnalysis === true}
+                    onCheckedChange={(checked) =>
+                      handleGlobalChange('useFTAExitAnalysis', checked)
+                    }
+                  />
+                </div>
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    {config.global.useFTAExitAnalysis === true ? (
+                      <>
+                        <strong>ENABLED:</strong> Monitors positions and logs signals when trades exceed 3x average winning duration or hit First Trouble Area (FTA) price levels. Signals are logged every 5 minutes per position. Does NOT auto-close positions.
+                      </>
+                    ) : (
+                      <>
+                        <strong>DISABLED:</strong> No FTA exit analysis is performed. Enable this if you want to be alerted about positions that may be underperforming.
                       </>
                     )}
                   </AlertDescription>

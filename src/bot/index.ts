@@ -818,22 +818,24 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
           // Non-blocking - MAE tracking failure shouldn't affect trading
         }
 
-        // Register position with FTA Exit Service for early exit monitoring
-        const symbolConfig = this.config?.symbols[data.symbol];
-        if (symbolConfig && data.qualityScore) {
-          ftaExitService.addPosition({
-            symbol: data.symbol,
-            side: data.side,
-            entryPrice: data.price,
-            stopLossPrice: data.side === 'BUY' 
-              ? data.price * (1 - symbolConfig.slPercent / 100)
-              : data.price * (1 + symbolConfig.slPercent / 100),
-            takeProfitPrice: data.side === 'BUY'
-              ? data.price * (1 + symbolConfig.tpPercent / 100)
-              : data.price * (1 - symbolConfig.tpPercent / 100),
-            qualityScore: data.qualityScore?.totalScore ?? 2,
-          });
-          logWithTimestamp(`📊 FTA monitoring registered for ${data.symbol} (quality: ${data.qualityScore?.totalScore ?? 2}/3)`);
+        // Register position with FTA Exit Service for early exit monitoring (if enabled)
+        if (this.config?.global.useFTAExitAnalysis === true) {
+          const symbolConfig = this.config?.symbols[data.symbol];
+          if (symbolConfig && data.qualityScore) {
+            ftaExitService.addPosition({
+              symbol: data.symbol,
+              side: data.side,
+              entryPrice: data.price,
+              stopLossPrice: data.side === 'BUY' 
+                ? data.price * (1 - symbolConfig.slPercent / 100)
+                : data.price * (1 + symbolConfig.slPercent / 100),
+              takeProfitPrice: data.side === 'BUY'
+                ? data.price * (1 + symbolConfig.tpPercent / 100)
+                : data.price * (1 - symbolConfig.tpPercent / 100),
+              qualityScore: data.qualityScore?.totalScore ?? 2,
+            });
+            logWithTimestamp(`📊 FTA monitoring registered for ${data.symbol} (quality: ${data.qualityScore?.totalScore ?? 2}/3)`);
+          }
         }
 
         // Subscribe to price updates for the new position's symbol
@@ -867,9 +869,13 @@ logErrorWithTimestamp('❌ Hunter error:', error);
       await this.hunter.start();
 logWithTimestamp('✅ Liquidation Hunter started');
 
-      // Start the FTA Exit Service for early exit monitoring
-      ftaExitService.start();
-logWithTimestamp('✅ FTA Exit Service started');
+      // Start the FTA Exit Service for early exit monitoring (if enabled)
+      if (this.config.global.useFTAExitAnalysis === true) {
+        ftaExitService.start();
+        logWithTimestamp('✅ FTA Exit Service started');
+      } else {
+        logWithTimestamp('ℹ️ FTA Exit Service disabled (enable with useFTAExitAnalysis in config)');
+      }
 
       // Start the cleanup scheduler for liquidation database
       const dbConfig = this.config.global.liquidationDatabase;

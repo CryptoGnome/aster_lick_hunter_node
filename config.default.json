@@ -11,6 +11,7 @@
     "maxOpenPositions": 10,
     "useThresholdSystem": false,
     "useTradeQualityScoring": false,
+    "useFTAExitAnalysis": false,
     "debugMode": false,
     "server": {
       "dashboardPassword": "admin",
