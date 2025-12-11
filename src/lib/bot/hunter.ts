@@ -996,14 +996,22 @@ logWithTimestamp(`Hunter: Skipping trade - already have pending order for ${symb
         }
 
         // Check global max positions limit (including pending orders)
+        // BUT: if we already have a position in the same direction, we're adding to it, not opening new
         const maxPositions = this.config.global.maxOpenPositions || 10;
         const currentPositionCount = this.positionTracker.getUniquePositionCount(this.isHedgeMode);
         const pendingOrderCount = this.getPendingOrderCount();
         const totalPositions = currentPositionCount + pendingOrderCount;
+        
+        // Check if this would be adding to an existing position (same symbol, same direction)
+        const isAddingToExisting = this.positionTracker.hasPositionInDirection(symbol, side, this.isHedgeMode);
 
-        if (totalPositions >= maxPositions) {
+        if (totalPositions >= maxPositions && !isAddingToExisting) {
 logWithTimestamp(`Hunter: Skipping trade - max positions reached (current: ${currentPositionCount}, pending: ${pendingOrderCount}, max: ${maxPositions})`);
           return;
+        }
+        
+        if (isAddingToExisting) {
+logWithTimestamp(`Hunter: Adding to existing ${side === 'BUY' ? 'LONG' : 'SHORT'} position for ${symbol} (not counting against max positions)`);
         }
 
         // Note: Periodic cleanup now happens automatically every 30 seconds

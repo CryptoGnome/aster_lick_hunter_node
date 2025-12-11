@@ -64,6 +64,7 @@ export interface PositionTracker {
   getTotalPositionCount(): number;
   getUniquePositionCount(isHedgeMode: boolean): number;
   getPositionsMap(): Map<string, ExchangePosition>;
+  hasPositionInDirection(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): boolean;
 }
 
 export class PositionManager extends EventEmitter implements PositionTracker {
@@ -2721,6 +2722,33 @@ logWithTimestamp(`PositionManager: Closed position ${symbol} ${side}`);
     for (const position of this.currentPositions.values()) {
       if (position.symbol === symbol && Math.abs(parseFloat(position.positionAmt)) > 0) {
         return true;
+      }
+    }
+    return false;
+  }
+
+  // Check if position exists for a specific symbol and direction
+  // In HEDGE mode: checks positionSide (LONG/SHORT)
+  // In ONE-WAY mode: checks if positionAmt is positive (long) or negative (short)
+  public hasPositionInDirection(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): boolean {
+    for (const position of this.currentPositions.values()) {
+      if (position.symbol !== symbol) continue;
+      
+      const positionAmt = parseFloat(position.positionAmt);
+      if (Math.abs(positionAmt) === 0) continue;
+      
+      if (isHedgeMode) {
+        // In hedge mode, BUY opens LONG, SELL opens SHORT
+        const targetSide = side === 'BUY' ? 'LONG' : 'SHORT';
+        if (position.positionSide === targetSide) {
+          return true;
+        }
+      } else {
+        // In one-way mode, positive = long, negative = short
+        const isLong = positionAmt > 0;
+        if ((side === 'BUY' && isLong) || (side === 'SELL' && !isLong)) {
+          return true;
+        }
       }
     }
     return false;
