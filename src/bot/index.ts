@@ -16,6 +16,8 @@ import { getRateLimitManager } from '../lib/api/rateLimitManager';
 import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
+import { cascadeDetector } from '../lib/services/cascadeDetector';
+import { accountHealthMonitor } from '../lib/services/accountHealthMonitor';
 import { ftaExitService } from '../lib/services/ftaExitService';
 import { tradeQualityDb } from '../lib/db/tradeQualityDb';
 import { getMAEService } from '../lib/services/maeService';
@@ -321,6 +323,53 @@ logErrorWithTimestamp('Failed to initialize balance service:', error);
             }
           );
           // Continue anyway - bot can work without balance service
+        }
+
+        // Initialize Account Health Monitor (drawdown protection)
+        try {
+          const healthConfig = this.config.global.accountHealth;
+          if (healthConfig) {
+            accountHealthMonitor.updateConfig(healthConfig);
+          }
+          if (healthConfig?.enabled !== false) {
+            await accountHealthMonitor.initialize(this.config.api);
+
+            // Wire emergency close-all to position manager (will be connected after PM starts)
+            accountHealthMonitor.on('emergencyCloseAll', async (data: any) => {
+              logErrorWithTimestamp(`🔴 EMERGENCY CLOSE-ALL triggered: ${data.reason}`);
+              this.statusBroadcaster.broadcast('emergency_close_all', data);
+              this.statusBroadcaster.logActivity(`🔴 EMERGENCY: ${data.reason}`);
+              // Close all positions via position manager
+              if (this.positionManager) {
+                try {
+                  await this.positionManager.closeAllPositions();
+                  logWithTimestamp('✅ All positions closed by emergency close-all');
+                } catch (err) {
+                  logErrorWithTimestamp('❌ Failed to close all positions during emergency:', err);
+                }
+              }
+            });
+
+            // Wire health events to UI
+            accountHealthMonitor.on('tradingPaused', (data: any) => {
+              this.statusBroadcaster.broadcast('account_health_paused', data);
+              this.statusBroadcaster.logActivity(`⚠️ Account health: New positions paused (DCA still allowed)`);
+            });
+            accountHealthMonitor.on('tradingResumed', (data: any) => {
+              this.statusBroadcaster.broadcast('account_health_resumed', data);
+              this.statusBroadcaster.logActivity(`✅ Account health: Trading resumed`);
+            });
+            accountHealthMonitor.on('healthUpdate', (state: any) => {
+              this.statusBroadcaster.broadcast('account_health_update', state);
+            });
+
+            logWithTimestamp(`✅ Account Health Monitor initialized (pause at ${healthConfig?.maxDrawdownPercent ?? 25}% drawdown, resume at ${healthConfig?.resumeAtDrawdownPercent ?? 15}%)`);
+          } else {
+            logWithTimestamp('ℹ️  Account Health Monitor disabled in config');
+          }
+        } catch (error: any) {
+          logErrorWithTimestamp('⚠️  Account Health Monitor failed to initialize:', error.message);
+          // Continue without health monitoring
         }
 
         // Check and set position mode
@@ -766,6 +815,19 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.broadcastThresholdUpdate(thresholdUpdate);
       });
 
+      // Listen for cascade detector events and broadcast to UI
+      cascadeDetector.removeAllListeners();
+      cascadeDetector.on('cascadeDetected', (data: any) => {
+        logWarnWithTimestamp(`🚨 Cascade protection activated - new entries paused`);
+        this.statusBroadcaster.broadcast('cascade_detected', data);
+        this.statusBroadcaster.logActivity(`🚨 CASCADE: Trading paused - ${data.reasons.join(', ')}`);
+      });
+      cascadeDetector.on('cascadeCleared', (data: any) => {
+        logWithTimestamp(`✅ Cascade protection cleared - trading resumed`);
+        this.statusBroadcaster.broadcast('cascade_cleared', data);
+        this.statusBroadcaster.logActivity(`✅ CASCADE CLEARED: Trading resumed`);
+      });
+
       // Listen for FTA exit signals and broadcast to UI
       ftaExitService.on('exitSignal', (signal: any) => {
         logWithTimestamp(`⚠️ FTA Exit Signal: ${signal.symbol} ${signal.side} - ${signal.reason}`);
@@ -1052,6 +1114,14 @@ logWithTimestamp('✅ Position Manager stopped');
       // Stop FTA Exit Service
       ftaExitService.stop();
 logWithTimestamp('✅ FTA Exit Service stopped');
+
+      // Stop cascade detector
+      cascadeDetector.stop();
+logWithTimestamp('✅ Cascade detector stopped');
+
+      // Stop account health monitor
+      accountHealthMonitor.stop();
+logWithTimestamp('✅ Account health monitor stopped');
 
       // Stop other services
       vwapStreamer.stop();

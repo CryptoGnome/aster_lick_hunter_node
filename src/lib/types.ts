@@ -83,18 +83,53 @@ export interface PaperTradingConfig {
   enableRealisticFills?: boolean; // Simulate more realistic order fills (default: false)
 }
 
+export interface LiquidationDatabaseConfig {
+  retentionDays?: number;       // Number of days to retain liquidation data (default: 90)
+  cleanupIntervalHours?: number; // How often to run cleanup in hours (default: 24)
+}
+
+export interface CascadeProtectionConfig {
+  enabled?: boolean;                  // Enable cascade detection (default: true)
+  mode?: 'BLOCK' | 'LOG_ONLY' | 'REDUCE'; // BLOCK=hard stop, LOG_ONLY=log but allow trades, REDUCE=trade at reduced size (default: LOG_ONLY)
+  reducedPositionMultiplier?: number; // Position size multiplier during cascade when mode=REDUCE (default: 0.5)
+  rollingWindowMinutes?: number;      // Window for detecting abnormal activity (default: 5)
+  baselineWindowMinutes?: number;     // Window for calculating normal volume baseline (default: 30)
+  volumeMultiplierThreshold?: number; // Volume spike multiplier to trigger detection (default: 3.0)
+  minSymbolsForCascade?: number;      // Minimum symbols liquidating simultaneously (default: 3)
+  directionalSkewThreshold?: number;  // Directional skew threshold 0-1 (default: 0.8)
+  cooldownMinutes?: number;           // Minutes to pause after cascade detected (default: 10)
+  minVolumeForDetection?: number;     // Minimum volume in window before detection (default: 50000)
+}
+
+export interface AccountHealthConfig {
+  enabled?: boolean;                     // Enable account health monitoring (default: true)
+  maxDrawdownPercent?: number;           // Pause new trades if account drops X% from session peak balance (default: 25)
+  maxUnrealizedLossPercent?: number;     // Pause new trades if total unrealized loss exceeds X% of balance (default: 20)
+  resumeAtDrawdownPercent?: number;      // Resume trading when drawdown recovers to X% (default: 15) — must be < maxDrawdownPercent
+  checkIntervalSeconds?: number;         // How often to check account health (default: 60)
+  closeAllAtDrawdownPercent?: number;    // Emergency: close ALL positions if drawdown exceeds X% (default: 0 = disabled)
+}
+
 export interface GlobalConfig {
   riskPercent: number;     // Max risk per trade as % of account balance
   paperMode: boolean;      // If true, simulate trades without executing
   positionMode?: 'ONE_WAY' | 'HEDGE'; // Position mode preference (optional)
   maxOpenPositions?: number; // Max number of open positions (hedged pairs count as one)
+  maxLongPositions?: number; // Max number of LONG positions allowed simultaneously (default: unlimited)
+  maxShortPositions?: number; // Max number of SHORT positions allowed simultaneously (default: unlimited)
   useThresholdSystem?: boolean; // Enable 60-second rolling volume threshold system (default: false)
   useTradeQualityScoring?: boolean; // Enable trade quality scoring - VWAP regime, spike analysis (default: true)
   useFTAExitAnalysis?: boolean; // Enable FTA early exit analysis - logs signals for long-running/losing trades (default: false)
+  enableTrailingTP?: boolean;   // Enable trailing take profit globally (default: false)
+  trailingTPActivation?: number; // Profit % at which trailing TP activates (default: 0.5)
+  trailingTPCallback?: number;  // Callback % from peak profit to trigger close (default: 0.3)
+  minEntrySpacingPercent?: number; // Minimum price spacing % between entries on same symbol/direction for DCA safety (default: 0.5)
   debugMode?: boolean;      // Enable verbose console logging for debugging (default: false)
   server?: ServerConfig;    // Optional server configuration
   rateLimit?: RateLimitConfig; // Rate limit configuration
   liquidationDatabase?: LiquidationDatabaseConfig; // Liquidation data retention settings
+  cascadeProtection?: CascadeProtectionConfig; // Cascade detection & circuit breaker settings
+  accountHealth?: AccountHealthConfig; // Account drawdown & health monitoring settings
   paperTrading?: PaperTradingConfig; // Paper trading configuration
 }
 

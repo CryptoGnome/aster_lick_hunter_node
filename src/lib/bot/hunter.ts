@@ -7,6 +7,8 @@ import { calculateOptimalPrice, validateOrderParams, analyzeOrderBookDepth, getS
 import { getPositionSide, getPositionMode } from '../api/positionMode';
 import { PositionTracker } from './positionManager';
 import { liquidationStorage } from '../services/liquidationStorage';
+import { cascadeDetector } from '../services/cascadeDetector';
+import { accountHealthMonitor } from '../services/accountHealthMonitor';
 import { vwapService } from '../services/vwapService';
 import { vwapStreamer } from '../services/vwapStreamer';
 import { thresholdMonitor } from '../services/thresholdMonitor';
@@ -44,6 +46,7 @@ export class Hunter extends EventEmitter {
   private statusLogInterval: NodeJS.Timeout | null = null; // Periodic status logging
   private shouldReconnect: boolean = true; // Flag to control automatic reconnection
   private reconnectTimeout: NodeJS.Timeout | null = null; // Track scheduled reconnection
+  private cascadeMultiplier: number = 1.0; // Temporary per-trade multiplier during cascade REDUCE mode
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -52,6 +55,21 @@ export class Hunter extends EventEmitter {
 
     // Initialize threshold monitor with config
     thresholdMonitor.updateConfig(config);
+
+    // Initialize cascade detector with config
+    const cascadeConfig = config.global.cascadeProtection;
+    if (cascadeConfig) {
+      cascadeDetector.updateConfig({
+        enabled: cascadeConfig.enabled !== false,
+        rollingWindowMs: (cascadeConfig.rollingWindowMinutes || 5) * 60 * 1000,
+        baselineWindowMs: (cascadeConfig.baselineWindowMinutes || 30) * 60 * 1000,
+        volumeMultiplierThreshold: cascadeConfig.volumeMultiplierThreshold || 3.0,
+        minSymbolsForCascade: cascadeConfig.minSymbolsForCascade || 3,
+        directionalSkewThreshold: cascadeConfig.directionalSkewThreshold || 0.8,
+        cooldownMs: (cascadeConfig.cooldownMinutes || 10) * 60 * 1000,
+        minVolumeForDetection: cascadeConfig.minVolumeForDetection || 50000,
+      });
+    }
   }
 
   // Set status broadcaster for order events
@@ -283,6 +301,14 @@ logWithTimestamp(`Hunter: ${symbol} - Threshold system active (cooldown: ${coold
       });
     } else {
 logWithTimestamp('Hunter: Global threshold system DISABLED - using instant triggers');
+    }
+
+    // Log cascade protection configuration on startup
+    const cascadeConfig = this.config.global.cascadeProtection;
+    if (cascadeConfig?.enabled !== false) {
+      logWithTimestamp(`Hunter: Cascade protection ENABLED - window: ${cascadeConfig?.rollingWindowMinutes || 5}min, multiplier: ${cascadeConfig?.volumeMultiplierThreshold || 3.0}x, cooldown: ${cascadeConfig?.cooldownMinutes || 10}min`);
+    } else {
+      logWithTimestamp('Hunter: Cascade protection DISABLED');
     }
 
     // Sync position mode on startup
@@ -599,6 +625,10 @@ logErrorWithTimestamp('Hunter: Failed to initialize symbol precision manager:', 
     });
     console.log(`[Hunter] Finished emitting liquidationDetected for ${liquidation.symbol}`);
 
+    // Feed ALL liquidations to cascade detector (market-wide, not just configured symbols)
+    // This must happen before symbol filtering so we detect cascades across all symbols
+    cascadeDetector.processLiquidation(liquidation, volumeUSDT);
+
     // Store ALL liquidations in database (non-blocking) - useful for analyzing potential symbols
     liquidationStorage.saveLiquidation(liquidation, volumeUSDT).catch(error => {
       logErrorWithTimestamp('Hunter: Failed to store liquidation:', error);
@@ -618,6 +648,22 @@ logErrorWithTimestamp('Hunter: Failed to initialize symbol precision manager:', 
 
     const symbolConfig = this.config.symbols[liquidation.symbol];
     if (!symbolConfig) return; // Symbol not in config - skip trading logic but liquidation was already stored
+
+    // CASCADE PROTECTION: Block new entries during detected cascades
+    // Existing positions keep their SL/TP — only new entries are paused
+    if (cascadeDetector.isCascadeActive()) {
+      const remaining = Math.ceil(cascadeDetector.getCooldownRemaining() / 1000);
+      logWithTimestamp(`🚨 CASCADE ACTIVE — Skipping ${liquidation.symbol} trade (resumes in ${remaining}s)`);
+      this.emit('tradeBlocked', {
+        symbol: liquidation.symbol,
+        side: liquidation.side === 'SELL' ? 'BUY' : 'SELL',
+        reason: `Cascade protection active — ${cascadeDetector.getState().reason}`,
+        blockType: 'CASCADE_PROTECTION',
+        signalPrice: liquidation.price,
+        cascadeState: cascadeDetector.getState(),
+      });
+      return;
+    }
 
     // Record ALL liquidations for configured symbols to the quality service
     // This enables spike detection and volume trend analysis even before threshold is met
@@ -1010,8 +1056,68 @@ logWithTimestamp(`Hunter: Skipping trade - max positions reached (current: ${cur
           return;
         }
         
+        // Check directional position limits (max long / max short)
+        if (!isAddingToExisting) {
+          const direction: 'LONG' | 'SHORT' = side === 'BUY' ? 'LONG' : 'SHORT';
+          const maxDirectional = direction === 'LONG' 
+            ? this.config.global.maxLongPositions 
+            : this.config.global.maxShortPositions;
+          
+          if (maxDirectional !== undefined && maxDirectional > 0) {
+            const currentDirectionalCount = this.positionTracker.getDirectionalPositionCount(direction, this.isHedgeMode);
+            
+            // Count pending orders in same direction
+            let pendingDirectionalCount = 0;
+            for (const order of this.pendingOrders.values()) {
+              if (order.side === side) pendingDirectionalCount++;
+            }
+            
+            const totalDirectional = currentDirectionalCount + pendingDirectionalCount;
+            
+            if (totalDirectional >= maxDirectional) {
+logWithTimestamp(`Hunter: Skipping trade - max ${direction} positions reached (current: ${currentDirectionalCount}, pending: ${pendingDirectionalCount}, max: ${maxDirectional})`);
+              return;
+            }
+logWithTimestamp(`Hunter: Directional limit check passed - ${direction}: ${totalDirectional}/${maxDirectional}`);
+          }
+        }
+
+        // DCA spacing check - ensure new entries aren't too close to existing positions
+        if (isAddingToExisting) {
+          const minSpacingPercent = this.config.global.minEntrySpacingPercent ?? 0;
+          if (minSpacingPercent > 0) {
+            const existingEntryPrice = this.positionTracker.getPositionEntryPrice(symbol, side, this.isHedgeMode);
+            if (existingEntryPrice && existingEntryPrice > 0) {
+              const priceDiffPercent = Math.abs((entryPrice - existingEntryPrice) / existingEntryPrice) * 100;
+              if (priceDiffPercent < minSpacingPercent) {
+logWithTimestamp(`Hunter: Skipping DCA - price too close to existing entry for ${symbol} ${side === 'BUY' ? 'LONG' : 'SHORT'} (current: ${entryPrice.toFixed(4)}, existing: ${existingEntryPrice.toFixed(4)}, distance: ${priceDiffPercent.toFixed(2)}%, min required: ${minSpacingPercent}%)`);
+                return;
+              }
+logWithTimestamp(`Hunter: DCA spacing OK for ${symbol} - distance: ${priceDiffPercent.toFixed(2)}% >= ${minSpacingPercent}% minimum`);
+            }
+          }
+        }
+
         if (isAddingToExisting) {
 logWithTimestamp(`Hunter: Adding to existing ${side === 'BUY' ? 'LONG' : 'SHORT'} position for ${symbol} (not counting against max positions)`);
+        }
+
+        // ACCOUNT HEALTH CHECK: Block new positions during drawdowns, but ALWAYS allow DCA
+        // DCA improves average entry price during drawdowns — exactly what we want
+        if (!isAddingToExisting && accountHealthMonitor.shouldBlockNewPositions()) {
+          const healthState = accountHealthMonitor.getState();
+          accountHealthMonitor.recordBlockedTrade();
+          logWarnWithTimestamp(`\u{1F6B7} ACCOUNT HEALTH — Skipping NEW ${side} position for ${symbol} (drawdown: ${healthState.drawdownPercent.toFixed(1)}%, unrealized: $${healthState.totalUnrealizedPnL.toFixed(2)})`);
+          logWarnWithTimestamp(`  DCA into existing positions is still allowed. ${healthState.blockReason}`);
+          this.emit('tradeBlocked', {
+            symbol,
+            side,
+            reason: `Account health: ${healthState.blockReason}`,
+            blockType: 'ACCOUNT_HEALTH',
+            signalPrice: entryPrice,
+            healthState,
+          });
+          return;
         }
 
         // Note: Periodic cleanup now happens automatically every 30 seconds
@@ -1224,6 +1330,13 @@ logErrorWithTimestamp(`Hunter: Could not fetch symbol info for ${symbol}`);
       
       // Apply quality-based position size multiplier
       tradeSizeUSDT = tradeSizeUSDT * positionSizeMultiplier;
+
+      // Apply cascade REDUCE multiplier (1.0 = no cascade, <1.0 = cascade active in REDUCE mode)
+      if (this.cascadeMultiplier < 1.0) {
+        logWithTimestamp(`Hunter: Applying cascade REDUCE multiplier: ${this.cascadeMultiplier}x for ${symbol}`);
+        tradeSizeUSDT = tradeSizeUSDT * this.cascadeMultiplier;
+        this.cascadeMultiplier = 1.0; // Reset for next trade
+      }
 
       // Re-apply minPositionSize after quality multiplier (quality can reduce size below minimum)
       if (symbolConfig.minPositionSize !== undefined && tradeSizeUSDT < symbolConfig.minPositionSize) {

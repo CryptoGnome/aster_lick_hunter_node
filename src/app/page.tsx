@@ -11,7 +11,9 @@ import {
   TrendingDown,
   Wallet,
   Activity,
-  Target
+  Target,
+  ShieldAlert,
+  Heart,
 } from 'lucide-react';
 import MinimalBotStatus from '@/components/MinimalBotStatus';
 import LiquidationSidebar from '@/components/LiquidationSidebar';
@@ -54,6 +56,10 @@ export default function DashboardPage() {
   const [markPrices, setMarkPrices] = useState<Record<string, number>>({});
   const [selectedSymbol, setSelectedSymbol] = useState<string>('');
   const [availableChartSymbols, setAvailableChartSymbols] = useState<string[]>([]);
+  const [cascadeActive, setCascadeActive] = useState(false);
+  const [cascadeCooldown, setCascadeCooldown] = useState<number | null>(null);
+  const [healthPaused, setHealthPaused] = useState(false);
+  const [healthDrawdown, setHealthDrawdown] = useState(0);
 
   // Initialize toast notifications
   useOrderNotifications();
@@ -95,6 +101,21 @@ export default function DashboardPage() {
             setAvailableChartSymbols(Object.keys(config.symbols));
           }
         }
+
+        // Fetch cascade protection state
+        try {
+          const cascadeResp = await fetch('/api/cascade');
+          const cascadeData = await cascadeResp.json();
+          if (cascadeData.success) {
+            setCascadeActive(cascadeData.isActive || false);
+            if (cascadeData.isActive && cascadeData.resumesAt) {
+              setCascadeCooldown(cascadeData.resumesAt);
+            }
+          }
+        } catch (error) {
+          // Non-critical, cascade state will update via WebSocket
+          logger.error('[Dashboard] Failed to fetch cascade state:', error);
+        }
       } catch (error) {
         logger.error('[Dashboard] Failed to load initial data:', error);
         setBalanceStatus({ error: error instanceof Error ? error.message : 'Unknown error' });
@@ -129,6 +150,21 @@ export default function DashboardPage() {
 
     // Set up WebSocket listener for real-time updates
     const handleWebSocketMessage = (message: any) => {
+      // Handle cascade protection events
+      if (message.type === 'cascade_detected') {
+        setCascadeActive(true);
+        if (message.data?.resumesAt) {
+          setCascadeCooldown(message.data.resumesAt);
+        }
+      } else if (message.type === 'cascade_cleared') {
+        setCascadeActive(false);
+        setCascadeCooldown(null);
+      } else if (message.type === 'account_health_update') {
+        if (message.data) {
+          setHealthPaused(message.data.isPaused || false);
+          setHealthDrawdown(message.data.currentDrawdownPercent || 0);
+        }
+      }
       // Forward all messages to data store for centralized handling
       // (including paper_balance_update, paper_position_opened, etc.)
       dataStore.handleWebSocketMessage(message);
@@ -428,6 +464,39 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
+
+            {/* Cascade Protection Status */}
+            {config?.global?.cascadeProtection?.enabled !== false && cascadeActive && (
+              <>
+                <div className="hidden sm:block w-px h-8 bg-border" />
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4 text-red-500 animate-pulse" />
+                  <div className="flex flex-col">
+                    <span className="text-xs text-muted-foreground">Cascade Protection</span>
+                    <Badge variant="destructive" className="h-5 text-[10px] px-2 animate-pulse">
+                      🚨 {config?.global?.cascadeProtection?.mode === 'BLOCK' ? 'PAUSED' : config?.global?.cascadeProtection?.mode === 'REDUCE' ? 'REDUCED' : 'DETECTED'}
+                      {cascadeCooldown && ` — ${Math.max(0, Math.ceil((cascadeCooldown - Date.now()) / 60000))}m remaining`}
+                    </Badge>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Account Health Status */}
+            {healthPaused && (
+              <>
+                <div className="hidden sm:block w-px h-8 bg-border" />
+                <div className="flex items-center gap-2">
+                  <Heart className="h-4 w-4 text-orange-500 animate-pulse" />
+                  <div className="flex flex-col">
+                    <span className="text-xs text-muted-foreground">Account Health</span>
+                    <Badge variant="destructive" className="h-5 text-[10px] px-2 animate-pulse bg-orange-600">
+                      ⚠️ DRAWDOWN {healthDrawdown.toFixed(1)}% — New entries paused
+                    </Badge>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {/* PnL Chart - Full Width */}

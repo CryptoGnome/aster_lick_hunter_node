@@ -62,3 +62,4 @@ ecosystem.config.js
 scripts/aster-notifier.cjs
 *.swp
 .*.swp
+core

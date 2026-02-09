@@ -4,25 +4,18 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { 
   TrendingUp, 
   TrendingDown, 
-  Activity, 
-  Zap, 
-  BarChart3, 
   AlertTriangle,
   CheckCircle2,
   XCircle,
-  Target,
   ChevronDown,
-  ChevronUp,
-  LineChart,
   Gauge,
-  Clock,
   ArrowUpDown,
-  Percent,
-  Volume2
+  Filter,
+  Info,
 } from 'lucide-react';
 import websocketService from '@/lib/services/websocketService';
 import { cn } from '@/lib/utils';
@@ -75,140 +68,15 @@ interface FTAExitSignal {
   timestamp: number;
 }
 
-interface SymbolMetrics {
-  symbol: string;
-  vwapCrossCount: number;
-  vwapCrossesPerHour: number;
-  isChoppyRegime: boolean;
-  isTrendingRegime: boolean;
-  lastPriceChange: number;
-  lastVolumeRatio: number;
-  recentScores: number[];
-  lastUpdate: number;
-}
-
-// Mini bar chart for visualizing scores
-function MiniBarChart({ values, maxValue = 3, color = 'blue' }: { values: number[], maxValue?: number, color?: string }) {
-  const colors: Record<string, string> = {
-    blue: 'bg-blue-500',
-    green: 'bg-green-500',
-    yellow: 'bg-yellow-500',
-    red: 'bg-red-500',
-    purple: 'bg-purple-500'
-  };
-  
-  return (
-    <div className="flex items-end gap-0.5 h-8">
-      {values.slice(-10).map((val, idx) => (
-        <div
-          key={idx}
-          className={cn("w-2 rounded-t transition-all", colors[color] || colors.blue)}
-          style={{ 
-            height: `${Math.min((val / maxValue) * 100, 100)}%`,
-            opacity: 0.3 + (idx / 10) * 0.7
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
-// Circular gauge for displaying scores
-function ScoreGauge({ score, maxScore = 3, label, size = 'sm', tooltip }: { score: number, maxScore?: number, label: string, size?: 'sm' | 'md', tooltip?: string }) {
-  const percentage = (score / maxScore) * 100;
-  const radius = size === 'sm' ? 20 : 28;
-  const strokeWidth = size === 'sm' ? 4 : 5;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (percentage / 100) * circumference;
-  
-  const getColor = () => {
-    if (percentage >= 80) return 'text-green-500 stroke-green-500';
-    if (percentage >= 50) return 'text-blue-500 stroke-blue-500';
-    if (percentage >= 30) return 'text-yellow-500 stroke-yellow-500';
-    return 'text-red-500 stroke-red-500';
-  };
-
-  return (
-    <div className="flex flex-col items-center cursor-help" title={tooltip}>
-      <div className="relative" style={{ width: (radius + strokeWidth) * 2, height: (radius + strokeWidth) * 2 }}>
-        <svg className="transform -rotate-90" width="100%" height="100%">
-          <circle
-            cx={radius + strokeWidth}
-            cy={radius + strokeWidth}
-            r={radius}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={strokeWidth}
-            className="text-muted/20"
-          />
-          <circle
-            cx={radius + strokeWidth}
-            cy={radius + strokeWidth}
-            r={radius}
-            fill="none"
-            strokeWidth={strokeWidth}
-            strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
-            strokeLinecap="round"
-            className={cn("transition-all duration-500", getColor())}
-          />
-        </svg>
-        <div className={cn("absolute inset-0 flex items-center justify-center font-bold", getColor(), size === 'sm' ? 'text-sm' : 'text-lg')}>
-          {score}
-        </div>
-      </div>
-      <span className="text-[10px] text-muted-foreground mt-1">{label}</span>
-    </div>
-  );
-}
-
-// VWAP Cross Indicator
-function VWAPCrossIndicator({ crossCount, isChoppy, isTrending }: { crossCount: number, isChoppy: boolean, isTrending: boolean }) {
-  const dots = Array.from({ length: 10 }, (_, i) => i < Math.min(crossCount, 10));
-  
-  return (
-    <div 
-      className="space-y-1 cursor-help" 
-      title="VWAP Crosses: How many times price crossed VWAP in the last hour. 0-2 = trending (worse for reversals), 3-5 = neutral, 6+ = choppy (best for mean reversion)."
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">VWAP Crosses/hr</span>
-        <span className={cn(
-          "text-sm font-bold",
-          isChoppy ? "text-red-400" : isTrending ? "text-green-400" : "text-blue-400"
-        )}>
-          {crossCount}
-        </span>
-      </div>
-      <div className="flex gap-0.5">
-        {dots.map((active, idx) => (
-          <div
-            key={idx}
-            className={cn(
-              "flex-1 h-2 rounded-full transition-all",
-              active 
-                ? idx < 3 ? "bg-green-500" : idx < 6 ? "bg-yellow-500" : "bg-red-500"
-                : "bg-muted/30"
-            )}
-          />
-        ))}
-      </div>
-      <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>Trending</span>
-        <span>Neutral</span>
-        <span>Choppy</span>
-      </div>
-    </div>
-  );
-}
+type SignalFilter = 'ALL' | 'TAKEN' | 'SKIPPED';
 
 export default function TradeQualityPanel({ className, isPassiveMode = false }: { className?: string; isPassiveMode?: boolean }) {
   const [recentOpportunities, setRecentOpportunities] = useState<TradeOpportunity[]>([]);
   const [ftaAlerts, setFtaAlerts] = useState<FTAExitSignal[]>([]);
-  const [symbolMetrics, setSymbolMetrics] = useState<Map<string, SymbolMetrics>>(new Map());
   const [isConnected, setIsConnected] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(true);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [expandedSignal, setExpandedSignal] = useState<number | null>(null);
+  const [filter, setFilter] = useState<SignalFilter>('ALL');
 
   const handleMessage = useCallback((message: any) => {
     if (message.type === 'trade_opportunity') {
@@ -216,48 +84,17 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
         ...message.data,
         timestamp: Date.now()
       };
-      
-      setRecentOpportunities(prev => {
-        const updated = [opportunity, ...prev].slice(0, 10);
-        return updated;
-      });
-
-      // Update symbol metrics
-      if (opportunity.qualityScore?.metrics) {
-        const metrics = opportunity.qualityScore.metrics;
-        const score = opportunity.qualityScore;
-        
-        setSymbolMetrics(prev => {
-          const updated = new Map(prev);
-          const existing = updated.get(opportunity.symbol);
-          
-          updated.set(opportunity.symbol, {
-            symbol: opportunity.symbol,
-            vwapCrossCount: metrics.vwapCrossCount,
-            vwapCrossesPerHour: metrics.vwapCrossesPerHour,
-            isChoppyRegime: metrics.isChoppyRegime,
-            isTrendingRegime: metrics.isTrendingRegime,
-            lastPriceChange: metrics.priceChangePercent,
-            lastVolumeRatio: metrics.recentVolumeRatio,
-            recentScores: [...(existing?.recentScores || []), score.totalScore].slice(-10),
-            lastUpdate: Date.now()
-          });
-          return updated;
-        });
-      }
+      setRecentOpportunities(prev => [opportunity, ...prev].slice(0, 50));
     } else if (message.type === 'fta_exit_signal') {
       const alert: FTAExitSignal = {
         ...message.data,
         timestamp: Date.now()
       };
-      
       setFtaAlerts(prev => [alert, ...prev].slice(0, 5));
-
       setTimeout(() => {
         setFtaAlerts(prev => prev.filter(a => a.timestamp !== alert.timestamp));
       }, 30000);
     } else if (message.type === 'trade_blocked') {
-      // Handle both QUALITY_FILTER and VWAP_FILTER blocks
       const blockType = message.data?.blockType;
       if (blockType === 'QUALITY_FILTER' || blockType === 'VWAP_FILTER') {
         const blockedOpp: TradeOpportunity = {
@@ -273,8 +110,7 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
           timestamp: Date.now(),
           signalPrice: message.data.signalPrice
         };
-        
-        setRecentOpportunities(prev => [blockedOpp, ...prev].slice(0, 10));
+        setRecentOpportunities(prev => [blockedOpp, ...prev].slice(0, 50));
       }
     }
   }, []);
@@ -282,7 +118,6 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
   useEffect(() => {
     const cleanupMessageHandler = websocketService.addMessageHandler(handleMessage);
     const cleanupConnectionListener = websocketService.addConnectionListener(setIsConnected);
-
     return () => {
       cleanupMessageHandler();
       cleanupConnectionListener();
@@ -293,8 +128,7 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
   useEffect(() => {
     const loadPersistedData = async () => {
       try {
-        // Load recent trade signals from database
-        const signalsRes = await fetch('/api/trade-quality?limit=20');
+        const signalsRes = await fetch('/api/trade-quality?limit=50');
         if (signalsRes.ok) {
           const data = await signalsRes.json();
           if (data.success && data.signals?.length > 0) {
@@ -335,36 +169,14 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
               signalPrice: s.signalPrice
             }));
             setRecentOpportunities(opportunities);
-            
-            // Build symbol metrics from loaded data
-            const metricsMap = new Map<string, SymbolMetrics>();
-            for (const opp of opportunities) {
-              if (opp.qualityScore?.metrics) {
-                const existing = metricsMap.get(opp.symbol);
-                metricsMap.set(opp.symbol, {
-                  symbol: opp.symbol,
-                  vwapCrossCount: opp.qualityScore.metrics.vwapCrossCount,
-                  vwapCrossesPerHour: opp.qualityScore.metrics.vwapCrossesPerHour,
-                  isChoppyRegime: opp.qualityScore.metrics.isChoppyRegime,
-                  isTrendingRegime: opp.qualityScore.metrics.isTrendingRegime,
-                  lastPriceChange: opp.qualityScore.metrics.priceChangePercent,
-                  lastVolumeRatio: opp.qualityScore.metrics.recentVolumeRatio,
-                  recentScores: [...(existing?.recentScores || []), opp.qualityScore.totalScore].slice(-10),
-                  lastUpdate: opp.timestamp
-                });
-              }
-            }
-            setSymbolMetrics(metricsMap);
           }
         }
 
-        // Load recent FTA signals
         const ftaRes = await fetch('/api/trade-quality?type=fta&limit=5');
         if (ftaRes.ok) {
           const data = await ftaRes.json();
           if (data.success && data.signals?.length > 0) {
-            // Only show FTA alerts from last 30 seconds
-            const recentAlerts = data.signals.filter((s: any) => 
+            const recentAlerts = data.signals.filter((s: any) =>
               Date.now() - s.timestamp < 30000
             ).map((s: any) => ({
               symbol: s.symbol,
@@ -381,395 +193,335 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
         console.error('Failed to load persisted trade quality data:', error);
       }
     };
-
     loadPersistedData();
   }, []);
-
-  const getQualityBadgeStyle = (score: number | undefined) => {
-    if (score === undefined) return 'bg-gray-500/20 text-gray-400';
-    if (score >= 3) return 'bg-green-500/20 text-green-400 border-green-500/50';
-    if (score === 2) return 'bg-blue-500/20 text-blue-400 border-blue-500/50';
-    if (score === 1) return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50';
-    return 'bg-red-500/20 text-red-400 border-red-500/50';
-  };
-
-  const getRecommendationIcon = (rec: string | undefined) => {
-    switch (rec) {
-      case 'STRONG': return <CheckCircle2 className="h-4 w-4 text-green-400" />;
-      case 'NORMAL': return <Target className="h-4 w-4 text-blue-400" />;
-      case 'WEAK': return <AlertTriangle className="h-4 w-4 text-yellow-400" />;
-      case 'SKIP': return <XCircle className="h-4 w-4 text-red-400" />;
-      case 'VWAP': return <ArrowUpDown className="h-4 w-4 text-orange-400" />;
-      default: return null;
-    }
-  };
 
   const formatTime = (timestamp: number) => {
     const seconds = Math.floor((Date.now() - timestamp) / 1000);
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes}m`;
-    return `${Math.floor(minutes / 60)}h`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    return `${Math.floor(hours / 24)}d`;
   };
 
-  // Get aggregated stats
-  const stats = {
-    totalOpportunities: recentOpportunities.length,
-    strongSignals: recentOpportunities.filter(o => o.qualityRecommendation === 'STRONG').length,
-    skippedTrades: recentOpportunities.filter(o => o.qualityRecommendation === 'SKIP' || o.qualityRecommendation === 'VWAP').length,
-    vwapBlocked: recentOpportunities.filter(o => o.blockType === 'VWAP_FILTER').length,
-    avgQuality: recentOpportunities.length > 0 
-      ? (recentOpportunities.reduce((sum, o) => sum + (o.qualityScore?.totalScore || 0), 0) / recentOpportunities.length).toFixed(1)
-      : '0.0'
+  const getOutcome = (opp: TradeOpportunity): { label: string; color: string; icon: React.ReactNode } => {
+    if (opp.blockType === 'VWAP_FILTER') {
+      return { label: 'VWAP', color: 'text-orange-400 bg-orange-500/15 border-orange-500/30', icon: <ArrowUpDown className="h-3 w-3" /> };
+    }
+    if (opp.blockType === 'QUALITY_FILTER' || opp.qualityRecommendation === 'SKIP') {
+      return { label: 'SKIP', color: 'text-red-400 bg-red-500/15 border-red-500/30', icon: <XCircle className="h-3 w-3" /> };
+    }
+    if (opp.qualityRecommendation === 'STRONG') {
+      return { label: 'STRONG', color: 'text-green-400 bg-green-500/15 border-green-500/30', icon: <CheckCircle2 className="h-3 w-3" /> };
+    }
+    if (opp.qualityRecommendation === 'WEAK') {
+      return { label: 'WEAK', color: 'text-yellow-400 bg-yellow-500/15 border-yellow-500/30', icon: <AlertTriangle className="h-3 w-3" /> };
+    }
+    return { label: 'NORMAL', color: 'text-blue-400 bg-blue-500/15 border-blue-500/30', icon: <CheckCircle2 className="h-3 w-3" /> };
+  };
+
+  const isBlocked = (opp: TradeOpportunity) =>
+    opp.blockType === 'VWAP_FILTER' || opp.blockType === 'QUALITY_FILTER' || opp.qualityRecommendation === 'SKIP';
+
+  // Compute stats
+  const taken = recentOpportunities.filter(o => !isBlocked(o));
+  const skipped = recentOpportunities.filter(o => isBlocked(o));
+  const avgScore = recentOpportunities.length > 0
+    ? (recentOpportunities.reduce((sum, o) => sum + (o.qualityScore?.totalScore || 0), 0) / recentOpportunities.length)
+    : 0;
+
+  // Filter the displayed list
+  const filteredOpportunities = filter === 'ALL'
+    ? recentOpportunities
+    : filter === 'TAKEN'
+    ? taken
+    : skipped;
+
+  const formatPrice = (price: number) => {
+    if (price < 0.01) return price.toFixed(6);
+    if (price < 1) return price.toFixed(4);
+    if (price < 100) return price.toFixed(2);
+    return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
   };
 
   return (
     <Card className={cn("bg-card/50 backdrop-blur-sm border-border/50", className)}>
       <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="flex items-center justify-between w-full hover:opacity-80 transition-opacity"
+        >
+          <CardTitle className="text-base font-medium flex items-center gap-2">
             <Gauge className="h-4 w-4 text-primary" />
-            Trade Quality Analysis
+            Signal Feed
+            <Badge variant="secondary" className="h-5 text-xs px-1.5">
+              {recentOpportunities.length}
+            </Badge>
           </CardTitle>
           <div className="flex items-center gap-2">
-            <Badge 
-              variant={isConnected ? (isPassiveMode ? "outline" : "default") : "secondary"} 
+            {/* Compact stats always visible */}
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-green-400 font-medium">{taken.length}&#x2713;</span>
+              <span className="text-muted-foreground">/</span>
+              <span className="text-red-400 font-medium">{skipped.length}&#x2717;</span>
+              {avgScore > 0 && (
+                <>
+                  <span className="text-muted-foreground">&middot;</span>
+                  <span className={cn(
+                    "font-medium",
+                    avgScore >= 2 ? "text-green-400" : avgScore >= 1 ? "text-blue-400" : "text-yellow-400"
+                  )}>
+                    Q{avgScore.toFixed(1)}
+                  </span>
+                </>
+              )}
+            </div>
+            <Badge
+              variant={isConnected ? (isPassiveMode ? "outline" : "default") : "secondary"}
               className={cn(
-                "text-xs",
+                "text-[10px] h-4",
                 isPassiveMode && isConnected && "border-yellow-500 text-yellow-500"
               )}
             >
-              {isConnected ? (isPassiveMode ? 'Passive' : 'Live') : 'Offline'}
+              {isConnected ? (isPassiveMode ? 'Passive' : 'Live') : 'Off'}
             </Badge>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0"
-              onClick={() => setIsExpanded(!isExpanded)}
-            >
-              {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            </Button>
+            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform text-muted-foreground", !isExpanded && '-rotate-90')} />
           </div>
-        </div>
+        </button>
       </CardHeader>
-      
+
       {isExpanded && (
-        <CardContent className="space-y-4">
+        <CardContent className="pt-0 space-y-3">
           {/* FTA Alerts - Always visible when present */}
           {ftaAlerts.length > 0 && (
-            <div className="p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30 space-y-2">
-              <div className="flex items-center gap-2 text-yellow-400">
-                <AlertTriangle className="h-4 w-4 animate-pulse" />
+            <div className="p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+              <div className="flex items-center gap-2 text-yellow-400 mb-1">
+                <AlertTriangle className="h-3 w-3 animate-pulse" />
                 <span className="text-xs font-medium">Early Exit Signals</span>
               </div>
               {ftaAlerts.map((alert, idx) => (
-                <div key={`${alert.symbol}-${alert.timestamp}-${idx}`} className="text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{alert.symbol}</span>
-                    <span className="text-muted-foreground">{formatTime(alert.timestamp)}</span>
-                  </div>
-                  <p className="text-muted-foreground">{alert.reason}</p>
+                <div key={`fta-${alert.timestamp}-${idx}`} className="text-xs flex items-center justify-between">
+                  <span><span className="font-medium">{alert.symbol}</span> &mdash; {alert.reason}</span>
+                  <span className="text-muted-foreground ml-2">{formatTime(alert.timestamp)}</span>
                 </div>
               ))}
             </div>
           )}
 
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid w-full grid-cols-3 h-8">
-              <TabsTrigger value="overview" className="text-xs">Overview</TabsTrigger>
-              <TabsTrigger value="signals" className="text-xs">Signals</TabsTrigger>
-              <TabsTrigger value="symbols" className="text-xs">Symbols</TabsTrigger>
-            </TabsList>
+          {/* Filter tabs */}
+          <div className="flex items-center gap-1">
+            {(['ALL', 'TAKEN', 'SKIPPED'] as SignalFilter[]).map(f => (
+              <Button
+                key={f}
+                variant={filter === f ? 'default' : 'ghost'}
+                size="sm"
+                className={cn("h-6 text-[10px] px-2", filter === f && f === 'TAKEN' && 'bg-green-600 hover:bg-green-700', filter === f && f === 'SKIPPED' && 'bg-red-600 hover:bg-red-700')}
+                onClick={() => setFilter(f)}
+              >
+                <Filter className="h-2.5 w-2.5 mr-1" />
+                {f} {f === 'TAKEN' ? `(${taken.length})` : f === 'SKIPPED' ? `(${skipped.length})` : `(${recentOpportunities.length})`}
+              </Button>
+            ))}
+          </div>
 
-            <TabsContent value="overview" className="mt-3 space-y-4">
-              {/* Summary Stats */}
-              <div className="grid grid-cols-4 gap-2">
-                <div className="text-center p-2 rounded-lg bg-muted/30">
-                  <div className="text-lg font-bold">{stats.totalOpportunities}</div>
-                  <div className="text-[10px] text-muted-foreground">Signals</div>
-                </div>
-                <div className="text-center p-2 rounded-lg bg-green-500/10">
-                  <div className="text-lg font-bold text-green-400">{stats.strongSignals}</div>
-                  <div className="text-[10px] text-muted-foreground">Strong</div>
-                </div>
-                <div className="text-center p-2 rounded-lg bg-red-500/10">
-                  <div className="text-lg font-bold text-red-400">{stats.skippedTrades}</div>
-                  <div className="text-[10px] text-muted-foreground">Skipped</div>
-                </div>
-                <div className="text-center p-2 rounded-lg bg-blue-500/10">
-                  <div className="text-lg font-bold text-blue-400">{stats.avgQuality}</div>
-                  <div className="text-[10px] text-muted-foreground">Avg Q</div>
-                </div>
-              </div>
+          {/* Signal Feed */}
+          <div className="max-h-[320px] overflow-y-auto space-y-1">
+            {filteredOpportunities.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-6">
+                {filter === 'ALL' ? 'Waiting for signals...' : `No ${filter.toLowerCase()} signals`}
+              </p>
+            ) : (
+              filteredOpportunities.map((opp, idx) => {
+                const outcome = getOutcome(opp);
+                const blocked = isBlocked(opp);
+                const isOpen = expandedSignal === idx;
+                const qs = opp.qualityScore;
 
-              {/* Latest Signal Details */}
-              {recentOpportunities[0] && (
-                <div className="p-3 rounded-lg bg-muted/20 border border-border/50">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      {recentOpportunities[0].side === 'BUY' ? (
-                        <TrendingUp className="h-4 w-4 text-green-400" />
+                return (
+                  <div
+                    key={`${opp.symbol}-${opp.timestamp}-${idx}`}
+                    className={cn(
+                      "rounded-lg border transition-all cursor-pointer",
+                      blocked ? "border-border/30 opacity-75" : "border-border/50"
+                    )}
+                    onClick={() => setExpandedSignal(isOpen ? null : idx)}
+                  >
+                    {/* Compact row - always visible */}
+                    <div className="flex items-center gap-2 px-2.5 py-1.5">
+                      {/* Direction */}
+                      {opp.side === 'BUY' ? (
+                        <TrendingUp className="h-3 w-3 text-green-400 shrink-0" />
                       ) : (
-                        <TrendingDown className="h-4 w-4 text-red-400" />
+                        <TrendingDown className="h-3 w-3 text-red-400 shrink-0" />
                       )}
-                      <span className="font-medium">{recentOpportunities[0].symbol}</span>
-                      {recentOpportunities[0].signalPrice && (
-                        <span className="text-xs text-muted-foreground">
-                          @ ${recentOpportunities[0].signalPrice < 1 
-                            ? recentOpportunities[0].signalPrice.toFixed(4) 
-                            : recentOpportunities[0].signalPrice.toFixed(2)}
+
+                      {/* Symbol + Price */}
+                      <span className="text-sm font-medium min-w-[80px]">{opp.symbol}</span>
+                      {opp.signalPrice && (
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          ${formatPrice(opp.signalPrice)}
                         </span>
                       )}
-                      <Badge variant="outline" className={cn("text-xs", getQualityBadgeStyle(recentOpportunities[0].qualityScore?.totalScore))}>
-                        Q{recentOpportunities[0].qualityScore?.totalScore ?? '?'}/3
-                      </Badge>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {getRecommendationIcon(recentOpportunities[0].qualityRecommendation)}
-                      <span className={cn(
-                        "text-xs font-medium",
-                        recentOpportunities[0].blockType === 'VWAP_FILTER' && "text-orange-400"
-                      )}>
-                        {recentOpportunities[0].blockType === 'VWAP_FILTER' ? 'VWAP BLOCK' : recentOpportunities[0].qualityRecommendation}
-                      </span>
-                    </div>
-                  </div>
 
-                  {/* Block Reason Banner - show prominently for blocked trades */}
-                  {(recentOpportunities[0].blockType === 'VWAP_FILTER' || recentOpportunities[0].qualityRecommendation === 'SKIP') && recentOpportunities[0].reason && (
-                    <div className={cn(
-                      "p-2 rounded mb-3 text-xs",
-                      recentOpportunities[0].blockType === 'VWAP_FILTER' 
-                        ? "bg-orange-500/10 border border-orange-500/30 text-orange-300"
-                        : "bg-red-500/10 border border-red-500/30 text-red-300"
-                    )}>
-                      <div className="flex items-start gap-2">
-                        {recentOpportunities[0].blockType === 'VWAP_FILTER' ? (
-                          <ArrowUpDown className="h-4 w-4 shrink-0 mt-0.5" />
-                        ) : (
-                          <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                        )}
-                        <span>{recentOpportunities[0].reason}</span>
-                      </div>
-                    </div>
-                  )}
+                      {/* Spacer */}
+                      <div className="flex-1" />
 
-                  {recentOpportunities[0].qualityScore && (
-                    <>
-                      {/* Score Gauges */}
-                      <div className="flex justify-around mb-3">
-                        <ScoreGauge 
-                          score={recentOpportunities[0].qualityScore.spikeScore} 
-                          maxScore={1} 
-                          label="Spike" 
-                          tooltip="Spike Score: Fast price moves (spikes) are better for mean reversion. Higher = sharper move detected."
-                        />
-                        <ScoreGauge 
-                          score={recentOpportunities[0].qualityScore.volumeTrendScore} 
-                          maxScore={1} 
-                          label="Volume" 
-                          tooltip="Volume Score: Lower/decreasing volume suggests exhaustion. Higher = volume declining (good for reversals)."
-                        />
-                        <ScoreGauge 
-                          score={recentOpportunities[0].qualityScore.regimeScore} 
-                          maxScore={1} 
-                          label="Regime" 
-                          tooltip="Regime Score: Choppy markets (3+ VWAP crosses/hr) favor reversals. Higher = choppy range-bound market."
-                        />
-                        <ScoreGauge 
-                          score={recentOpportunities[0].qualityScore.totalScore} 
-                          maxScore={3} 
-                          label="Total" 
-                          size="md"
-                          tooltip="Total Score: Combined quality score (0-3). Higher scores = better trade quality. Above 2 is excellent."
-                        />
-                      </div>
-
-                      {/* Detailed Metrics */}
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        <div 
-                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
-                          title="Price Move: The % change in the spike detection window. Larger moves = stronger signal."
-                        >
-                          <span className="text-muted-foreground flex items-center gap-1">
-                            <Zap className="h-3 w-3" /> Price Move
-                          </span>
-                          <span className={recentOpportunities[0].qualityScore.metrics.priceChangePercent > 0 ? 'text-green-400' : 'text-red-400'}>
-                            {recentOpportunities[0].qualityScore.metrics.priceChangePercent.toFixed(2)}%
-                          </span>
-                        </div>
-                        <div 
-                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
-                          title="Spike Time: How quickly the move happened. Faster spikes are often more likely to revert."
-                        >
-                          <span className="text-muted-foreground flex items-center gap-1">
-                            <Clock className="h-3 w-3" /> Spike Time
-                          </span>
-                          <span>{recentOpportunities[0].qualityScore.metrics.spikeTimeSeconds.toFixed(1)}s</span>
-                        </div>
-                        <div 
-                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
-                          title="Vol Ratio: Recent vs average volume. Below 1 (green) = decreasing volume, good for reversals."
-                        >
-                          <span className="text-muted-foreground flex items-center gap-1">
-                            <Volume2 className="h-3 w-3" /> Vol Ratio
-                          </span>
-                          <span className={recentOpportunities[0].qualityScore.metrics.recentVolumeRatio < 1 ? 'text-green-400' : 'text-yellow-400'}>
-                            {recentOpportunities[0].qualityScore.metrics.recentVolumeRatio.toFixed(2)}x
-                          </span>
-                        </div>
-                        <div 
-                          className="flex items-center justify-between p-1.5 rounded bg-muted/30 cursor-help"
-                          title="VWAP Dist: Distance from volume-weighted average price. Shows how extended price is from fair value."
-                        >
-                          <span className="text-muted-foreground flex items-center gap-1">
-                            <ArrowUpDown className="h-3 w-3" /> VWAP Dist
-                          </span>
-                          <span>{recentOpportunities[0].qualityScore.metrics.vwapDistance.toFixed(2)}%</span>
-                        </div>
-                      </div>
-
-                      {/* VWAP Cross Indicator */}
-                      <div className="mt-3">
-                        <VWAPCrossIndicator 
-                          crossCount={recentOpportunities[0].qualityScore.metrics.vwapCrossCount}
-                          isChoppy={recentOpportunities[0].qualityScore.metrics.isChoppyRegime}
-                          isTrending={recentOpportunities[0].qualityScore.metrics.isTrendingRegime}
-                        />
-                      </div>
-
-                      {/* Position Size Adjustment */}
-                      {recentOpportunities[0].qualityScore.positionSizeMultiplier !== 1 && (
-                        <div className="mt-2 p-2 rounded bg-muted/30 text-xs">
-                          <div className="flex items-center justify-between">
-                            <span className="text-muted-foreground">Position Size Adjustment</span>
+                      {/* Quality score pill */}
+                      {qs && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
                             <span className={cn(
-                              "font-bold",
-                              recentOpportunities[0].qualityScore.positionSizeMultiplier > 1 ? 'text-green-400' : 'text-yellow-400'
+                              "text-[10px] font-mono px-1.5 rounded cursor-help",
+                              qs.totalScore >= 2 ? "text-green-400 bg-green-500/10" :
+                              qs.totalScore === 1 ? "text-yellow-400 bg-yellow-500/10" :
+                              "text-red-400 bg-red-500/10"
                             )}>
-                              {recentOpportunities[0].qualityScore.positionSizeMultiplier}x
+                              {qs.spikeScore}/{qs.volumeTrendScore}/{qs.regimeScore}
                             </span>
-                          </div>
-                        </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-[280px] text-left leading-relaxed">
+                            <p className="font-semibold mb-1">Quality Score: {qs.totalScore}/3 (S/V/R)</p>
+                            <p><strong>S</strong>pike: {qs.spikeScore === 1 ? '✅' : '❌'} Fast price crash/pump into level</p>
+                            <p><strong>V</strong>olume: {qs.volumeTrendScore === 1 ? '✅' : '❌'} Liq volume is decreasing/flat</p>
+                            <p><strong>R</strong>egime: {qs.regimeScore === 1 ? '✅' : '❌'} Choppy range (≥3 VWAP crosses/hr)</p>
+                            <p className="mt-1 text-[10px] opacity-80">3/3 = STRONG (1.5× size) · 2/3 = NORMAL · 1/3 = WEAK (0.5×) · 0/3 = SKIP</p>
+                          </TooltipContent>
+                        </Tooltip>
                       )}
 
-                      {/* Reasons */}
-                      {recentOpportunities[0].qualityScore.reasons.length > 0 && (
-                        <div className="mt-2 space-y-1">
-                          {recentOpportunities[0].qualityScore.reasons.slice(0, 3).map((reason, idx) => (
-                            <p key={idx} className="text-[10px] text-muted-foreground">{reason}</p>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-            </TabsContent>
+                      {/* Outcome badge */}
+                      <Badge variant="outline" className={cn("text-[10px] h-4 px-1.5 border", outcome.color)}>
+                        {outcome.icon}
+                        <span className="ml-0.5">{outcome.label}</span>
+                      </Badge>
 
-            <TabsContent value="signals" className="mt-3">
-              <div className="h-[280px] overflow-y-auto">
-                <div className="space-y-2">
-                  {recentOpportunities.length === 0 ? (
-                    <p className="text-xs text-muted-foreground text-center py-8">
-                      Waiting for trade signals...
-                    </p>
-                  ) : (
-                    recentOpportunities.map((opp, idx) => (
-                      <div
-                        key={`${opp.symbol}-${opp.timestamp}-${idx}`}
-                        className={cn(
-                          "p-2 rounded-lg border transition-all",
-                          opp.qualityRecommendation === 'SKIP' 
-                            ? 'bg-red-500/5 border-red-500/20 opacity-70'
-                            : opp.qualityRecommendation === 'STRONG'
-                            ? 'bg-green-500/5 border-green-500/20'
-                            : 'bg-card border-border/50'
-                        )}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            {opp.side === 'BUY' ? (
-                              <TrendingUp className="h-3 w-3 text-green-400" />
-                            ) : (
-                              <TrendingDown className="h-3 w-3 text-red-400" />
-                            )}
-                            <span className="text-sm font-medium">{opp.symbol}</span>
-                            {opp.signalPrice && (
-                              <span className="text-[10px] text-muted-foreground">
-                                @ ${opp.signalPrice < 1 ? opp.signalPrice.toFixed(4) : opp.signalPrice.toFixed(2)}
-                              </span>
-                            )}
-                            <Badge variant="outline" className={cn("text-[10px]", getQualityBadgeStyle(opp.qualityScore?.totalScore))}>
-                              {opp.qualityRecommendation}
-                            </Badge>
-                          </div>
-                          <span className="text-[10px] text-muted-foreground">{formatTime(opp.timestamp)}</span>
-                        </div>
-                        
-                        {opp.qualityScore && (
-                          <div className="mt-1.5 flex items-center gap-3 text-[10px]">
-                            <span className="text-muted-foreground">
-                              S:{opp.qualityScore.spikeScore} V:{opp.qualityScore.volumeTrendScore} R:{opp.qualityScore.regimeScore}
-                            </span>
-                            {opp.qualityScore.positionSizeMultiplier !== 1 && (
-                              <span className="text-blue-400">{opp.qualityScore.positionSizeMultiplier}x size</span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </TabsContent>
+                      {/* Time ago */}
+                      <span className="text-[10px] text-muted-foreground min-w-[24px] text-right">{formatTime(opp.timestamp)}</span>
+                    </div>
 
-            <TabsContent value="symbols" className="mt-3">
-              <div className="h-[280px] overflow-y-auto">
-                <div className="space-y-3">
-                  {symbolMetrics.size === 0 ? (
-                    <p className="text-xs text-muted-foreground text-center py-8">
-                      No symbol data yet...
-                    </p>
-                  ) : (
-                    Array.from(symbolMetrics.values()).map((metrics) => (
-                      <div key={metrics.symbol} className="p-2 rounded-lg bg-muted/20 border border-border/50">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="font-medium text-sm">{metrics.symbol}</span>
-                          <Badge variant="outline" className={cn(
-                            "text-[10px]",
-                            metrics.isChoppyRegime 
-                              ? "text-red-400 border-red-400/50" 
-                              : metrics.isTrendingRegime 
-                              ? "text-green-400 border-green-400/50" 
-                              : "text-blue-400 border-blue-400/50"
+                    {/* Expanded detail - shown on click */}
+                    {isOpen && (
+                      <div className="px-2.5 pb-2 space-y-1.5 border-t border-border/30 pt-1.5">
+                        {/* Block reason - prominent */}
+                        {blocked && opp.reason && (
+                          <div className={cn(
+                            "text-xs px-2 py-1 rounded flex items-start gap-1.5",
+                            opp.blockType === 'VWAP_FILTER'
+                              ? "bg-orange-500/10 text-orange-300"
+                              : "bg-red-500/10 text-red-300"
                           )}>
-                            {metrics.isChoppyRegime ? 'Choppy' : metrics.isTrendingRegime ? 'Trending' : 'Neutral'}
-                          </Badge>
-                        </div>
-                        
-                        <VWAPCrossIndicator 
-                          crossCount={metrics.vwapCrossCount}
-                          isChoppy={metrics.isChoppyRegime}
-                          isTrending={metrics.isTrendingRegime}
-                        />
-                        
-                        {metrics.recentScores.length > 0 && (
-                          <div className="mt-2">
-                            <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
-                              <span>Recent Scores</span>
-                              <span>Avg: {(metrics.recentScores.reduce((a, b) => a + b, 0) / metrics.recentScores.length).toFixed(1)}</span>
-                            </div>
-                            <MiniBarChart values={metrics.recentScores} color="blue" />
+                            {opp.blockType === 'VWAP_FILTER' ? (
+                              <ArrowUpDown className="h-3 w-3 shrink-0 mt-0.5" />
+                            ) : (
+                              <XCircle className="h-3 w-3 shrink-0 mt-0.5" />
+                            )}
+                            <span>{opp.reason}</span>
+                          </div>
+                        )}
+
+                        {/* Metrics grid */}
+                        {qs?.metrics && (
+                          <div className="grid grid-cols-4 gap-1 text-[10px]">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="px-1.5 py-1 rounded bg-muted/30 cursor-help">
+                                  <span className="text-muted-foreground flex items-center gap-0.5">Move <Info className="h-2.5 w-2.5 opacity-50" /></span>
+                                  <span className={qs.metrics.priceChangePercent > 0 ? 'text-green-400' : 'text-red-400'}>
+                                    {qs.metrics.priceChangePercent.toFixed(2)}%
+                                  </span>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom" className="max-w-[260px] text-left leading-relaxed">
+                                <p className="font-semibold">Price Move</p>
+                                <p>The % price moved during the detected spike. For BUY entries, this is the crash size. For SELL, the pump size.</p>
+                                <p className="mt-1"><span className="text-green-400">≥0.5%</span> = significant move (scores 1 for spike). <span className="text-yellow-400">&lt;0.5%</span> = minor move (needs high velocity to score).</p>
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="px-1.5 py-1 rounded bg-muted/30 cursor-help">
+                                  <span className="text-muted-foreground flex items-center gap-0.5">Spike <Info className="h-2.5 w-2.5 opacity-50" /></span>
+                                  <span className={qs.metrics.spikeTimeSeconds > 0 && qs.metrics.spikeTimeSeconds < 30 ? 'text-green-400' : qs.metrics.spikeTimeSeconds === 0 ? 'text-muted-foreground' : 'text-yellow-400'}>
+                                    {qs.metrics.spikeTimeSeconds === 0 ? 'none' : `${qs.metrics.spikeTimeSeconds.toFixed(1)}s`}
+                                  </span>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom" className="max-w-[260px] text-left leading-relaxed">
+                                <p className="font-semibold">Spike Duration</p>
+                                <p>How quickly the price move happened. Measures from where the rapid move started to now within a 2-min window.</p>
+                                <p className="mt-1"><span className="text-green-400">&lt;30s</span> = fast spike, likely to bounce. <span className="text-yellow-400">&gt;60s</span> = slow grind, may continue. <span className="text-muted-foreground">none</span> = no qualifying move in expected direction.</p>
+                                <p className="mt-1 text-[10px] opacity-80">Velocity (move÷time) &gt;0.1%/s scores as fast spike regardless of duration.</p>
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="px-1.5 py-1 rounded bg-muted/30 cursor-help">
+                                  <span className="text-muted-foreground flex items-center gap-0.5">Vol <Info className="h-2.5 w-2.5 opacity-50" /></span>
+                                  <span className={qs.metrics.recentVolumeRatio <= 1.1 ? 'text-green-400' : 'text-yellow-400'}>
+                                    {qs.metrics.recentVolumeRatio.toFixed(2)}&times;
+                                  </span>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom" className="max-w-[260px] text-left leading-relaxed">
+                                <p className="font-semibold">Liquidation Volume Trend</p>
+                                <p>Ratio of recent liq volume vs older liq volume. Compares the 2nd half of the volume window to the 1st half.</p>
+                                <p className="mt-1"><span className="text-green-400">≤1.1×</span> = flat/decreasing volume (exhaustion — good for reversal, scores 1). <span className="text-yellow-400">&gt;1.1×</span> = increasing volume (momentum building — risky).</p>
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="px-1.5 py-1 rounded bg-muted/30 cursor-help">
+                                  <span className="text-muted-foreground flex items-center gap-0.5">VWAP <Info className="h-2.5 w-2.5 opacity-50" /></span>
+                                  <span>{qs.metrics.vwapDistance.toFixed(2)}%</span>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom" className="max-w-[260px] text-left leading-relaxed">
+                                <p className="font-semibold">VWAP Distance & Regime</p>
+                                <p>Current price distance from 1hr VWAP. Used for regime detection: how many times price crossed VWAP in the last hour.</p>
+                                <p className="mt-1"><span className="text-green-400">≥3 crosses/hr</span> = choppy (range-bound — ideal for mean reversion, scores 1). <span className="text-yellow-400">1-2 crosses</span> = neutral. <span className="text-red-400">≤1 cross</span> = trending (scores 0).</p>
+                                <p className="mt-1 text-[10px] opacity-80">Currently {qs.metrics.vwapCrossesPerHour} crosses/hr · {qs.metrics.isChoppyRegime ? 'Choppy ✅' : qs.metrics.isTrendingRegime ? 'Trending ❌' : 'Neutral ⚠️'}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        )}
+
+                        {/* Quality reasons */}
+                        {qs?.reasons && qs.reasons.length > 0 && (
+                          <div className="space-y-0.5">
+                            {qs.reasons.map((reason, ridx) => (
+                              <p key={ridx} className="text-[10px] text-muted-foreground pl-1">
+                                &bull; {reason}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Position size adjustment */}
+                        {qs && qs.positionSizeMultiplier !== 1 && (
+                          <div className="text-[10px] flex items-center gap-1">
+                            <span className="text-muted-foreground">Size adj:</span>
+                            <span className={qs.positionSizeMultiplier > 1 ? 'text-green-400 font-medium' : 'text-yellow-400 font-medium'}>
+                              {qs.positionSizeMultiplier}&times;
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Liq volume if available */}
+                        {opp.liquidationVolume > 0 && (
+                          <div className="text-[10px] flex items-center gap-1">
+                            <span className="text-muted-foreground">Liq vol:</span>
+                            <span className="font-mono">${opp.liquidationVolume.toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
                           </div>
                         )}
                       </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </TabsContent>
-          </Tabs>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
         </CardContent>
       )}
     </Card>

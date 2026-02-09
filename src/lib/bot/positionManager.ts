@@ -63,8 +63,10 @@ export interface PositionTracker {
   getMarginUsage(symbol: string): number;
   getTotalPositionCount(): number;
   getUniquePositionCount(isHedgeMode: boolean): number;
+  getDirectionalPositionCount(direction: 'LONG' | 'SHORT', isHedgeMode: boolean): number;
   getPositionsMap(): Map<string, ExchangePosition>;
   hasPositionInDirection(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): boolean;
+  getPositionEntryPrice(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): number | null;
 }
 
 export class PositionManager extends EventEmitter implements PositionTracker {
@@ -77,12 +79,16 @@ export class PositionManager extends EventEmitter implements PositionTracker {
   private keepaliveInterval?: NodeJS.Timeout;
   private riskCheckInterval?: NodeJS.Timeout;
   private orderCheckInterval?: NodeJS.Timeout;
+  private trailingTPInterval?: NodeJS.Timeout;
   private isRunning = false;
   private statusBroadcaster: any; // Will be injected
   private isHedgeMode: boolean;
   private orderPlacementLocks: Set<string> = new Set(); // Prevent concurrent order placement for same position
   private orderCancellationLocks: Set<string> = new Set(); // Prevent concurrent order cancellation for same symbol
   private symbolLeverage: Map<string, number> = new Map(); // Track leverage per symbol from ACCOUNT_CONFIG_UPDATE
+  
+  // Trailing TP state: key -> { entryPrice, highWatermark, activated }
+  private trailingTPState: Map<string, { entryPrice: number; highWatermark: number; activated: boolean; symbol: string; isLong: boolean; quantity: number; positionSide: string }> = new Map();
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -211,6 +217,7 @@ logWithTimestamp('PositionManager: Stopping...');
     if (this.keepaliveInterval) clearInterval(this.keepaliveInterval);
     if (this.riskCheckInterval) clearInterval(this.riskCheckInterval);
     if (this.orderCheckInterval) clearInterval(this.orderCheckInterval);
+    if (this.trailingTPInterval) clearInterval(this.trailingTPInterval);
     if (this.ws) this.ws.close();
     if (this.listenKey) await this.closeUserDataStream();
   }
@@ -236,6 +243,12 @@ logWithTimestamp('PositionManager WS connected');
       this.riskCheckInterval = setInterval(() => this.checkRisk(), 5 * 60 * 1000);
       // Order check every 30 seconds to ensure SL/TP quantities match positions
       this.orderCheckInterval = setInterval(() => this.checkAndAdjustOrders(), 30 * 1000);
+
+      // Trailing TP monitor every 5 seconds (needs fast response)
+      if (this.config.global.enableTrailingTP) {
+        this.trailingTPInterval = setInterval(() => this.checkTrailingTakeProfits(), 5 * 1000);
+logWithTimestamp(`PositionManager: Trailing TP monitoring started (activation: ${this.config.global.trailingTPActivation ?? 0.5}%, callback: ${this.config.global.trailingTPCallback ?? 0.3}%)`);
+      }
 
       // Clean up orphaned orders immediately on startup, then every 30 seconds
       this.cleanupOrphanedOrders().catch(error => {
@@ -1517,6 +1530,25 @@ logErrorWithTimestamp('PositionManager: Failed to check existing orders, proceed
     }
 
     try {
+      // Check if trailing TP is enabled globally — if so, skip placing a fixed TP order
+      // Instead, register this position for trailing TP monitoring
+      if (this.config.global.enableTrailingTP && placeTP) {
+        const trailingKey = this.getPositionKey(symbol, position.positionSide, posAmt);
+        if (!this.trailingTPState.has(trailingKey)) {
+          this.trailingTPState.set(trailingKey, {
+            entryPrice,
+            highWatermark: entryPrice,
+            activated: false,
+            symbol,
+            isLong,
+            quantity,
+            positionSide: position.positionSide || 'BOTH',
+          });
+logWithTimestamp(`PositionManager: Trailing TP registered for ${symbol} ${isLong ? 'LONG' : 'SHORT'} at entry ${entryPrice.toFixed(4)} (activation: ${this.config.global.trailingTPActivation ?? 0.5}%, callback: ${this.config.global.trailingTPCallback ?? 0.3}%)`);
+        }
+        placeTP = false; // Don't place fixed TP — trailing will manage it
+      }
+
       // Use batch orders when placing both SL and TP to save API calls
       if (placeSL && placeTP) {
         // Get current market price to validate stop loss placement
@@ -2005,13 +2037,27 @@ logErrorWithTimestamp(`PositionManager: Failed to place protective orders for ${
   }
 
   private async checkRisk(): Promise<void> {
-    // Check total PnL
-    const _riskPercent = this.config.global.riskPercent / 100;
-    // Simplified: assume some PnL calculation
-    // If unrealized PnL < -risk * balance, close all positions
-    // Implementation depends on balance query
+    try {
+      // Calculate total unrealized PnL from tracked positions
+      let totalUnrealizedPnL = 0;
+      let positionCount = 0;
+      for (const position of this.currentPositions.values()) {
+        const pnl = parseFloat(position.unRealizedProfit || '0');
+        const posAmt = parseFloat(position.positionAmt || '0');
+        if (Math.abs(posAmt) > 0) {
+          totalUnrealizedPnL += pnl;
+          positionCount++;
+        }
+      }
 
-logWithTimestamp(`PositionManager: Risk check complete`);
+      if (positionCount > 0) {
+        logWithTimestamp(`PositionManager: Risk check — ${positionCount} positions, unrealized PnL: $${totalUnrealizedPnL.toFixed(2)}`);
+      } else {
+        logWithTimestamp(`PositionManager: Risk check complete — no open positions`);
+      }
+    } catch (error) {
+      logErrorWithTimestamp('PositionManager: Risk check error:', error);
+    }
   }
 
   // Clean up orphaned orders (orders for symbols without active positions) and duplicates
@@ -2712,6 +2758,41 @@ logWithTimestamp(`PositionManager: Closed position ${symbol} ${side}`);
     this.refreshBalance();
   }
 
+  /**
+   * Close all open positions at market price.
+   * Used by emergency close-all (account health) and manual UI actions.
+   */
+  public async closeAllPositions(): Promise<void> {
+    const positions = this.getPositions();
+    const openPositions = positions.filter(p => Math.abs(parseFloat(p.positionAmt)) > 0);
+
+    if (openPositions.length === 0) {
+      logWithTimestamp('PositionManager: No open positions to close');
+      return;
+    }
+
+    logWarnWithTimestamp(`PositionManager: Closing ALL ${openPositions.length} positions (emergency close-all)`);
+
+    const results: { symbol: string; side: string; success: boolean; error?: string }[] = [];
+
+    for (const position of openPositions) {
+      const posAmt = parseFloat(position.positionAmt);
+      const side = posAmt > 0 ? 'LONG' : 'SHORT';
+      try {
+        await this.closePosition(position.symbol, side);
+        results.push({ symbol: position.symbol, side, success: true });
+        logWithTimestamp(`  ✅ Closed ${position.symbol} ${side}`);
+      } catch (error: any) {
+        results.push({ symbol: position.symbol, side, success: false, error: error.message });
+        logErrorWithTimestamp(`  ❌ Failed to close ${position.symbol} ${side}: ${error.message}`);
+      }
+    }
+
+    const succeeded = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+    logWithTimestamp(`PositionManager: Close-all complete — ${succeeded} closed, ${failed} failed`);
+  }
+
   // Get current positions for API/UI
   public getPositions(): ExchangePosition[] {
     return Array.from(this.currentPositions.values());
@@ -2752,6 +2833,159 @@ logWithTimestamp(`PositionManager: Closed position ${symbol} ${side}`);
       }
     }
     return false;
+  }
+
+  // ===== Trailing Take Profit Monitoring =====
+
+  private async checkTrailingTakeProfits(): Promise<void> {
+    if (this.trailingTPState.size === 0) return;
+
+    const { getPriceService } = await import('../services/priceService');
+    const priceService = getPriceService();
+    
+    const activationPercent = this.config.global.trailingTPActivation ?? 0.5;
+    const callbackPercent = this.config.global.trailingTPCallback ?? 0.3;
+
+    for (const [key, state] of this.trailingTPState.entries()) {
+      try {
+        // Check if position still exists
+        let positionStillOpen = false;
+        for (const position of this.currentPositions.values()) {
+          if (position.symbol === state.symbol) {
+            const posAmt = parseFloat(position.positionAmt);
+            if (Math.abs(posAmt) > 0) {
+              const isLong = posAmt > 0;
+              if (isLong === state.isLong) {
+                positionStillOpen = true;
+                // Update quantity in case it changed (DCA)
+                state.quantity = Math.abs(posAmt);
+                break;
+              }
+            }
+          }
+        }
+
+        if (!positionStillOpen) {
+          this.trailingTPState.delete(key);
+          continue;
+        }
+
+        // Get current price
+        let currentPrice: number | null = null;
+        if (priceService) {
+          const priceData = priceService.getMarkPrice(state.symbol);
+          if (priceData) {
+            currentPrice = parseFloat(priceData.markPrice);
+          }
+        }
+        
+        if (!currentPrice) {
+          // Fallback to API
+          try {
+            const markPriceData = await getMarkPrice(state.symbol);
+            const data = Array.isArray(markPriceData) ? markPriceData[0] : markPriceData;
+            currentPrice = parseFloat(data.markPrice);
+          } catch {
+            continue; // Skip this cycle if we can't get price
+          }
+        }
+
+        if (!currentPrice || currentPrice <= 0) continue;
+
+        // Calculate current profit %
+        const profitPercent = state.isLong
+          ? ((currentPrice - state.entryPrice) / state.entryPrice) * 100
+          : ((state.entryPrice - currentPrice) / state.entryPrice) * 100;
+
+        // Check activation
+        if (!state.activated) {
+          if (profitPercent >= activationPercent) {
+            state.activated = true;
+            state.highWatermark = currentPrice;
+logWithTimestamp(`PositionManager: 🎯 Trailing TP ACTIVATED for ${state.symbol} ${state.isLong ? 'LONG' : 'SHORT'} - profit: ${profitPercent.toFixed(2)}% >= ${activationPercent}%, tracking from ${currentPrice.toFixed(4)}`);
+          }
+          continue; // Not activated yet, skip
+        }
+
+        // Update high watermark
+        if (state.isLong && currentPrice > state.highWatermark) {
+          state.highWatermark = currentPrice;
+        } else if (!state.isLong && currentPrice < state.highWatermark) {
+          state.highWatermark = currentPrice;
+        }
+
+        // Calculate drawdown from peak
+        const drawdownFromPeak = state.isLong
+          ? ((state.highWatermark - currentPrice) / state.highWatermark) * 100
+          : ((currentPrice - state.highWatermark) / state.highWatermark) * 100;
+
+        // Check if callback threshold triggered
+        if (drawdownFromPeak >= callbackPercent) {
+          // Ensure we're still in profit before closing
+          if (profitPercent > 0) {
+logWithTimestamp(`PositionManager: 📈 Trailing TP TRIGGERED for ${state.symbol} ${state.isLong ? 'LONG' : 'SHORT'}`);
+logWithTimestamp(`  Entry: ${state.entryPrice.toFixed(4)}, Peak: ${state.highWatermark.toFixed(4)}, Current: ${currentPrice.toFixed(4)}`);
+logWithTimestamp(`  Profit: ${profitPercent.toFixed(2)}%, Drawdown from peak: ${drawdownFromPeak.toFixed(2)}%, Callback: ${callbackPercent}%`);
+
+            // Close the position at market
+            await this.closePositionForTrailingTP(state);
+            this.trailingTPState.delete(key);
+          } else {
+            // Price has dropped below entry — let the SL handle it, deactivate trailing
+logWithTimestamp(`PositionManager: Trailing TP deactivated for ${state.symbol} - profit turned negative (${profitPercent.toFixed(2)}%)`);
+            state.activated = false;
+            state.highWatermark = state.entryPrice;
+          }
+        }
+      } catch (error) {
+logErrorWithTimestamp(`PositionManager: Trailing TP check error for ${key}:`, error);
+      }
+    }
+  }
+
+  private async closePositionForTrailingTP(state: { symbol: string; isLong: boolean; quantity: number; positionSide: string }): Promise<void> {
+    try {
+      const formattedQuantity = symbolPrecision.formatQuantity(state.symbol, state.quantity);
+      const side = state.isLong ? 'SELL' : 'BUY';
+
+      const orderParams: any = {
+        symbol: state.symbol,
+        side,
+        type: 'MARKET',
+        quantity: formattedQuantity,
+        positionSide: state.positionSide,
+        newClientOrderId: `trail_tp_${state.symbol}_${Date.now() % 10000000000}`,
+      };
+
+      if (state.positionSide === 'BOTH') {
+        orderParams.reduceOnly = true;
+      }
+
+      const order = await placeOrder(orderParams, this.config.api);
+logWithTimestamp(`PositionManager: ✅ Trailing TP closed ${state.symbol} ${state.isLong ? 'LONG' : 'SHORT'} at market. OrderID: ${order.orderId}`);
+
+      // Cancel any remaining SL order for this position
+      const key = `${state.symbol}_${state.positionSide}`;
+      const orders = this.positionOrders.get(key);
+      if (orders?.slOrderId) {
+logWithTimestamp(`PositionManager: Cancelling SL order ${orders.slOrderId} after trailing TP close`);
+        this.cancelOrderById(state.symbol, orders.slOrderId).catch(err => {
+logErrorWithTimestamp(`PositionManager: Failed to cancel SL after trailing TP:`, err?.response?.data || err?.message);
+        });
+        this.positionOrders.delete(key);
+      }
+
+      if (this.statusBroadcaster) {
+        this.statusBroadcaster.broadcastPositionClosed({
+          symbol: state.symbol,
+          side: state.isLong ? 'LONG' : 'SHORT',
+          quantity: state.quantity,
+          reason: 'Trailing TP triggered',
+        });
+      }
+    } catch (error: any) {
+logErrorWithTimestamp(`PositionManager: Failed to close position via trailing TP for ${state.symbol}:`, error?.response?.data || error?.message);
+    }
   }
 
   // ===== Position Tracking Methods for Hunter =====
@@ -2844,5 +3078,56 @@ logErrorWithTimestamp('PositionManager: Failed to refresh balance:', error);
   // Get Map of positions for direct access
   public getPositionsMap(): Map<string, ExchangePosition> {
     return this.currentPositions;
+  }
+
+  // Get count of positions in a specific direction (LONG or SHORT)
+  public getDirectionalPositionCount(direction: 'LONG' | 'SHORT', isHedgeMode: boolean): number {
+    let count = 0;
+    const countedSymbols = new Set<string>();
+
+    for (const position of this.currentPositions.values()) {
+      const positionAmt = parseFloat(position.positionAmt);
+      if (Math.abs(positionAmt) === 0) continue;
+
+      if (isHedgeMode) {
+        // In hedge mode, check positionSide
+        if (position.positionSide === direction) {
+          count++;
+        }
+      } else {
+        // In one-way mode, positive = LONG, negative = SHORT
+        const isLong = positionAmt > 0;
+        if ((direction === 'LONG' && isLong) || (direction === 'SHORT' && !isLong)) {
+          if (!countedSymbols.has(position.symbol)) {
+            countedSymbols.add(position.symbol);
+            count++;
+          }
+        }
+      }
+    }
+    return count;
+  }
+
+  // Get entry price for a position in a specific direction (for DCA spacing)
+  public getPositionEntryPrice(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): number | null {
+    for (const position of this.currentPositions.values()) {
+      if (position.symbol !== symbol) continue;
+
+      const positionAmt = parseFloat(position.positionAmt);
+      if (Math.abs(positionAmt) === 0) continue;
+
+      if (isHedgeMode) {
+        const targetSide = side === 'BUY' ? 'LONG' : 'SHORT';
+        if (position.positionSide === targetSide) {
+          return parseFloat(position.entryPrice);
+        }
+      } else {
+        const isLong = positionAmt > 0;
+        if ((side === 'BUY' && isLong) || (side === 'SELL' && !isLong)) {
+          return parseFloat(position.entryPrice);
+        }
+      }
+    }
+    return null;
   }
 }

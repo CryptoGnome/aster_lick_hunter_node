@@ -5,13 +5,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
-import { BarChart3, TrendingUp, TrendingDown, Shield, Target, ChevronDown, X, AlertTriangle, Plus, LineChart } from 'lucide-react';
+import { BarChart3, TrendingUp, TrendingDown, Shield, Target, ChevronDown, X, AlertTriangle, Plus, LineChart, Scissors } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { ScaleOutModal, ScaleOutSettings } from '@/components/ScaleOutModal';
 import { AddToPositionModal } from '@/components/AddToPositionModal';
+import { ReducePositionModal } from '@/components/ReducePositionModal';
 import websocketService from '@/lib/services/websocketService';
 import { useConfig } from '@/components/ConfigProvider';
 import { useSymbolPrecision } from '@/hooks/useSymbolPrecision';
@@ -97,6 +98,13 @@ export default function PositionTable({
       markPrice: number;
       leverage: number;
     } | null;
+  }>({
+    isOpen: false,
+    position: null,
+  });
+  const [reducePositionModal, setReducePositionModal] = useState<{
+    isOpen: boolean;
+    position: Position | null;
   }>({
     isOpen: false,
     position: null,
@@ -447,6 +455,54 @@ export default function PositionTable({
     });
   }, []);
 
+  // Handle reduce position
+  const handleReducePosition = useCallback((position: Position) => {
+    setReducePositionModal({ isOpen: true, position });
+  }, []);
+
+  const confirmReducePosition = useCallback(async (percent: number) => {
+    const position = reducePositionModal.position;
+    if (!position) return;
+
+    try {
+      const response = await fetch(`/api/positions/${position.symbol}/${position.side}/reduce`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ percent }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast.success(`Reduced ${position.symbol} ${position.side} by ${percent}%`, {
+          description: `Closed ${formatQuantity(position.symbol, result.quantity || position.quantity * (percent / 100))} contracts`,
+          duration: 5000,
+        });
+
+        // Refresh positions
+        dataStore.fetchPositions().then((data) => {
+          setRealPositions(data);
+        }).catch((error) => {
+          console.error('[PositionTable] Failed to refresh after reduce:', error);
+        });
+
+        setReducePositionModal({ isOpen: false, position: null });
+      } else {
+        showTradingError(
+          'Failed to reduce position',
+          result.error || 'An unknown error occurred',
+          { symbol: position.symbol, component: 'PositionTable', rawError: result }
+        );
+      }
+    } catch (error) {
+      showApiError(
+        'Network error',
+        'Failed to connect to the server',
+        { symbol: position.symbol, component: 'PositionTable', rawError: error }
+      );
+    }
+  }, [reducePositionModal, formatQuantity]);
+
   const handleDeactivateProtection = useCallback(async (position: Position) => {
     try {
       const response = await fetch('/api/positions/scale-out/deactivate', {
@@ -752,6 +808,15 @@ export default function PositionTable({
                         Add
                       </Button>
                       <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => { e.stopPropagation(); handleReducePosition(position); }}
+                        className="flex-1 h-8 text-xs text-orange-600 border-orange-600"
+                      >
+                        <Scissors className="h-3 w-3 mr-1" />
+                        Reduce
+                      </Button>
+                      <Button
                         variant="destructive"
                         size="sm"
                         onClick={(e) => { e.stopPropagation(); handleClosePosition(position); }}
@@ -1039,6 +1104,18 @@ export default function PositionTable({
                         Add
                       </Button>
                       <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReducePosition(position);
+                        }}
+                        className="h-7 px-2 text-xs text-orange-600 border-orange-600 hover:bg-orange-50 dark:hover:bg-orange-950"
+                      >
+                        <Scissors className="h-3 w-3 mr-1" />
+                        Reduce
+                      </Button>
+                      <Button
                         variant="destructive"
                         size="sm"
                         onClick={(e) => {
@@ -1150,6 +1227,23 @@ export default function PositionTable({
           currentPrice={addPositionModal.position.markPrice}
           entryPrice={addPositionModal.position.entryPrice}
           leverage={addPositionModal.position.leverage}
+        />
+      )}
+
+      {/* Reduce Position Modal */}
+      {reducePositionModal.position && (
+        <ReducePositionModal
+          isOpen={reducePositionModal.isOpen}
+          onClose={() => setReducePositionModal({ isOpen: false, position: null })}
+          symbol={reducePositionModal.position.symbol}
+          side={reducePositionModal.position.side}
+          quantity={reducePositionModal.position.quantity}
+          entryPrice={reducePositionModal.position.entryPrice}
+          markPrice={reducePositionModal.position.markPrice}
+          pnl={reducePositionModal.position.pnl}
+          pnlPercent={reducePositionModal.position.pnlPercent}
+          formatQuantity={formatQuantity}
+          onConfirm={confirmReducePosition}
         />
       )}
     </Card>

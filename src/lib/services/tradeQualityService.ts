@@ -325,6 +325,10 @@ export class TradeQualityService extends EventEmitter {
 
   /**
    * Detect if a fast spike just occurred
+   * 
+   * Instead of always measuring from the oldest price in the window (which always 
+   * gives ~119s), this scans backward to find where the rapid move actually started.
+   * This gives meaningful spike durations like "0.5% in 8s" instead of "0.5% in 119s".
    */
   private detectSpike(symbol: string, currentPrice: number, timestamp: number): void {
     const history = this.priceHistory.get(symbol);
@@ -336,43 +340,63 @@ export class TradeQualityService extends EventEmitter {
     
     if (recentPrices.length < 2) return;
 
-    const startPrice = recentPrices[0].price;
+    // First check: is there a total move >= threshold from oldest to now?
+    const oldestPrice = recentPrices[0].price;
+    const totalChange = ((currentPrice - oldestPrice) / oldestPrice) * 100;
+    
+    if (Math.abs(totalChange) < this.SPIKE_THRESHOLD_PERCENT) return;
+
+    // Now find the actual start of the move by scanning backward.
+    // Walk from the most recent price backward until the cumulative move 
+    // from that point to currentPrice drops below threshold.
+    // The last point where it's still >= threshold is the true spike start.
+    let spikeStartIdx = 0;
+    for (let i = recentPrices.length - 1; i >= 0; i--) {
+      const changeFromHere = ((currentPrice - recentPrices[i].price) / recentPrices[i].price) * 100;
+      if (Math.abs(changeFromHere) >= this.SPIKE_THRESHOLD_PERCENT) {
+        spikeStartIdx = i;
+      } else {
+        // Once move drops below threshold going backward, the next point forward is the true start
+        break;
+      }
+    }
+
+    const startPrice = recentPrices[spikeStartIdx].price;
+    const startTime = recentPrices[spikeStartIdx].time;
     const endPrice = currentPrice;
     const changePercent = ((endPrice - startPrice) / startPrice) * 100;
+    const durationSeconds = (timestamp - startTime) / 1000;
     
-    // Check if this qualifies as a spike
-    if (Math.abs(changePercent) >= this.SPIKE_THRESHOLD_PERCENT) {
-      const spike: PriceSpike = {
-        symbol,
-        startPrice,
-        endPrice,
-        startTime: recentPrices[0].time,
-        endTime: timestamp,
-        changePercent,
-        direction: changePercent > 0 ? 'up' : 'down',
-      };
+    const spike: PriceSpike = {
+      symbol,
+      startPrice,
+      endPrice,
+      startTime,
+      endTime: timestamp,
+      changePercent,
+      direction: changePercent > 0 ? 'up' : 'down',
+    };
 
-      const spikes = this.recentSpikes.get(symbol) || [];
-      
-      // Rate-limited logging: only log significant thresholds with cooldown
-      const currentThreshold = Math.floor(Math.abs(changePercent) * 2) / 2; // Round to nearest 0.5%
-      const lastLog = this.lastSpikeLog.get(symbol);
-      const shouldLog = currentThreshold >= 0.5 && (
-        !lastLog || 
-        currentThreshold > lastLog.threshold || 
-        (timestamp - lastLog.time) > this.SPIKE_LOG_COOLDOWN_MS
-      );
-      
-      if (shouldLog) {
-        console.log(`📊 Quality: SPIKE ${symbol} ${spike.direction} ${Math.abs(changePercent).toFixed(2)}% in ${((timestamp - recentPrices[0].time) / 1000).toFixed(0)}s`);
-        this.lastSpikeLog.set(symbol, { threshold: currentThreshold, time: timestamp });
-      }
-      
-      spikes.push(spike);
-      this.recentSpikes.set(symbol, spikes);
-
-      this.emit('spikeDetected', spike);
+    const spikes = this.recentSpikes.get(symbol) || [];
+    
+    // Rate-limited logging: only log significant thresholds with cooldown
+    const currentThreshold = Math.floor(Math.abs(changePercent) * 2) / 2; // Round to nearest 0.5%
+    const lastLog = this.lastSpikeLog.get(symbol);
+    const shouldLog = currentThreshold >= 0.5 && (
+      !lastLog || 
+      currentThreshold > lastLog.threshold || 
+      (timestamp - lastLog.time) > this.SPIKE_LOG_COOLDOWN_MS
+    );
+    
+    if (shouldLog) {
+      console.log(`📊 Quality: SPIKE ${symbol} ${spike.direction} ${Math.abs(changePercent).toFixed(2)}% in ${durationSeconds.toFixed(0)}s`);
+      this.lastSpikeLog.set(symbol, { threshold: currentThreshold, time: timestamp });
     }
+    
+    spikes.push(spike);
+    this.recentSpikes.set(symbol, spikes);
+
+    this.emit('spikeDetected', spike);
   }
 
   /**

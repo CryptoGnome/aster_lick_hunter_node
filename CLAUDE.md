@@ -144,6 +144,20 @@ npm run test:tranche:all          # Run all tranche tests
 - **pnlService.ts**: Real-time P&L tracking and session metrics
 - **thresholdMonitor.ts**: 60-second rolling volume threshold tracking
 - **trancheManager.ts**: Multi-tranche position tracking and lifecycle management
+- **tradeQualityService.ts**: Trade quality scoring (spike/volume/regime analysis, 0-3 score)
+- **cascadeDetector.ts**: Cascade protection — detects rapid consecutive entries and can LOG_ONLY, REDUCE, or BLOCK
+- **accountHealthMonitor.ts**: Account health monitoring — tracks drawdown %, pauses trading, emergency close-all
+
+### Key UI Components
+
+- **TradeQualityPanel.tsx**: Signal feed showing trade opportunities with S/V/R quality scores, TAKEN/SKIPPED filters, expandable details with info tooltips
+- **ReducePositionModal.tsx**: Partial position close modal (25/50/75/100% presets + custom %)
+- **PositionTable.tsx**: Position table with Scale Out, Add, Reduce, and Close actions
+
+### API Endpoints
+
+- **`/api/positions/[symbol]/[side]/reduce`**: POST — partial position close at market (accepts `{ percent }`)
+- **`/api/cascade/status`**: GET — cascade protection status
 
 ### API Layer (`src/lib/api/`)
 
@@ -688,3 +702,26 @@ The custom process manager (`scripts/process-manager.js`) handles:
 9. **Paper Mode**: Always recommend starting in paper mode when testing new features or strategies.
 
 10. **Documentation**: Refer to `docs/STRATEGY.md` for trading strategy details and `docs/aster-finance-futures-api.md` for API documentation.
+
+## Recent Session Changelog (Feb 2026)
+
+### Safety & Risk Management
+- **Cascade Protection** (`cascadeDetector.ts`): Detects rapid consecutive entries into the same symbol. Three modes: `LOG_ONLY` (monitor), `REDUCE` (enter with reduced size via `reducedPositionMultiplier`), `BLOCK` (prevent entry). Changed default to LOG_ONLY after analysis showed cascades spread over days/weeks, not minutes.
+- **Account Health Monitor** (`accountHealthMonitor.ts`): Tracks account drawdown %. Can pause new entries at configurable drawdown threshold, resume when recovered, and emergency close-all at critical levels. Broadcasts `account_health_update` events to dashboard.
+- **Dashboard visuals**: Orange pulsing badge for active drawdown, mode-aware cascade badge (DETECTED/REDUCED/PAUSED).
+- **Config UI**: Added cascade `mode` dropdown (LOG_ONLY/REDUCE/BLOCK), `reducedPositionMultiplier` input, and full Account Health config card with 5 fields.
+
+### Position Management
+- **Reduce Position** (end-to-end): New `ReducePositionModal` with 25%/50%/75%/100% preset buttons + custom %. API endpoint at `/api/positions/[symbol]/[side]/reduce` places MARKET reduce-only orders. Handles HEDGE mode, precision formatting, paper mode. Wired into `PositionTable` (orange ✂ Reduce button in both mobile & desktop).
+
+### Trade Quality Analysis
+- **Signal Feed redesign** (`TradeQualityPanel.tsx`): Complete rewrite from 778→340 lines. Removed: 3-tab layout, SVG circular gauges, VWAP cross dot indicator, mini bar charts. Added: collapsed-by-default compact feed, click-to-expand signal details, ALL/TAKEN/SKIPPED filters, 50 signal history.
+- **Spike detection fix** (`tradeQualityService.ts`): Fixed `detectSpike()` which always showed 0s or 119s. Was measuring from oldest price in 2-min window; now scans backward to find where the rapid move actually started, giving meaningful durations like "0.5% in 8s".
+- **Metric info tooltips**: Added (i) icons with detailed explanations to all metrics (Move, Spike, Vol, VWAP) and the S/V/R score triplet. Each tooltip explains what the metric measures, scoring thresholds, and what good/bad values look like.
+
+### Trade Quality Scoring Reference (S/V/R)
+Each trade opportunity scores 0-3 based on three criteria:
+- **S**pike (0/1): Was there a fast price move into the level? Scores 1 if velocity >0.1%/s OR total move ≥0.5%
+- **V**olume (0/1): Is liquidation volume decreasing? Scores 1 if recent/older volume ratio ≤1.1×
+- **R**egime (0/1): Is the market choppy? Scores 1 if ≥3 VWAP crosses/hour (range-bound = good for reversals)
+- **3/3 STRONG** → 1.5× position size | **2/3 NORMAL** → 1× | **1/3 WEAK** → 0.5× | **0/3 SKIP** → blocked
