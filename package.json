@@ -46,7 +46,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@types/sqlite3": "^5.1.0",
     "@types/uuid": "^11.0.0",
-    "axios": "^1.12.2",
+    "axios": "^1.13.5",
     "better-sqlite3": "^12.4.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
