@@ -54,7 +54,7 @@ interface TradeOpportunity {
   confidence: number;
   qualityScore?: TradeQualityScore;
   qualityRecommendation?: string;
-  blockType?: 'QUALITY_FILTER' | 'VWAP_FILTER';
+  blockType?: 'QUALITY_FILTER' | 'VWAP_FILTER' | 'CASCADE_PROTECTION';
   timestamp: number;
   signalPrice?: number;
 }
@@ -96,7 +96,7 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
       }, 30000);
     } else if (message.type === 'trade_blocked') {
       const blockType = message.data?.blockType;
-      if (blockType === 'QUALITY_FILTER' || blockType === 'VWAP_FILTER') {
+      if (blockType === 'QUALITY_FILTER' || blockType === 'VWAP_FILTER' || blockType === 'CASCADE_PROTECTION') {
         const blockedOpp: TradeOpportunity = {
           symbol: message.data.symbol,
           side: message.data.side,
@@ -105,7 +105,7 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
           priceImpact: 0,
           confidence: 0,
           qualityScore: message.data.qualityScore,
-          qualityRecommendation: blockType === 'VWAP_FILTER' ? 'VWAP' : 'SKIP',
+          qualityRecommendation: blockType === 'VWAP_FILTER' ? 'VWAP' : blockType === 'CASCADE_PROTECTION' ? 'CASCADE' : 'SKIP',
           blockType: blockType,
           timestamp: Date.now(),
           signalPrice: message.data.signalPrice
@@ -163,8 +163,8 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                 recommendation: s.recommendation,
                 reasons: s.reasons || []
               },
-              qualityRecommendation: s.blockReason === 'VWAP_FILTER' ? 'VWAP' : s.recommendation,
-              blockType: s.blockReason === 'VWAP_FILTER' ? 'VWAP_FILTER' : (s.wasBlocked ? 'QUALITY_FILTER' : undefined),
+              qualityRecommendation: s.blockReason === 'VWAP_FILTER' ? 'VWAP' : s.blockReason === 'CASCADE_PROTECTION' ? 'CASCADE' : s.recommendation,
+              blockType: s.blockReason === 'VWAP_FILTER' ? 'VWAP_FILTER' : s.blockReason === 'CASCADE_PROTECTION' ? 'CASCADE_PROTECTION' : (s.wasBlocked ? 'QUALITY_FILTER' : undefined),
               timestamp: s.timestamp,
               signalPrice: s.signalPrice
             }));
@@ -207,23 +207,32 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
   };
 
   const getOutcome = (opp: TradeOpportunity): { label: string; color: string; icon: React.ReactNode } => {
+    if (opp.blockType === 'CASCADE_PROTECTION') {
+      return { label: 'CASCADE', color: 'text-purple-400 bg-purple-500/15 border-purple-500/30', icon: <AlertTriangle className="h-3 w-3" /> };
+    }
     if (opp.blockType === 'VWAP_FILTER') {
       return { label: 'VWAP', color: 'text-orange-400 bg-orange-500/15 border-orange-500/30', icon: <ArrowUpDown className="h-3 w-3" /> };
     }
-    if (opp.blockType === 'QUALITY_FILTER' || opp.qualityRecommendation === 'SKIP') {
+    if (opp.blockType === 'QUALITY_FILTER') {
       return { label: 'SKIP', color: 'text-red-400 bg-red-500/15 border-red-500/30', icon: <XCircle className="h-3 w-3" /> };
     }
+    // Taken trades — show quality recommendation
     if (opp.qualityRecommendation === 'STRONG') {
       return { label: 'STRONG', color: 'text-green-400 bg-green-500/15 border-green-500/30', icon: <CheckCircle2 className="h-3 w-3" /> };
     }
     if (opp.qualityRecommendation === 'WEAK') {
       return { label: 'WEAK', color: 'text-yellow-400 bg-yellow-500/15 border-yellow-500/30', icon: <AlertTriangle className="h-3 w-3" /> };
     }
+    if (opp.qualityRecommendation === 'SKIP') {
+      // In passive mode, SKIP recommendation still got taken — show as WEAK/TAKEN not SKIP
+      return { label: 'LOW-Q', color: 'text-yellow-400 bg-yellow-500/15 border-yellow-500/30', icon: <AlertTriangle className="h-3 w-3" /> };
+    }
     return { label: 'NORMAL', color: 'text-blue-400 bg-blue-500/15 border-blue-500/30', icon: <CheckCircle2 className="h-3 w-3" /> };
   };
 
+  // Only count as blocked if there's an actual blockType (not just a low quality recommendation)
   const isBlocked = (opp: TradeOpportunity) =>
-    opp.blockType === 'VWAP_FILTER' || opp.blockType === 'QUALITY_FILTER' || opp.qualityRecommendation === 'SKIP';
+    opp.blockType === 'VWAP_FILTER' || opp.blockType === 'QUALITY_FILTER' || opp.blockType === 'CASCADE_PROTECTION';
 
   // Compute stats
   const taken = recentOpportunities.filter(o => !isBlocked(o));
@@ -408,11 +417,15 @@ export default function TradeQualityPanel({ className, isPassiveMode = false }: 
                         {blocked && opp.reason && (
                           <div className={cn(
                             "text-xs px-2 py-1 rounded flex items-start gap-1.5",
-                            opp.blockType === 'VWAP_FILTER'
+                            opp.blockType === 'CASCADE_PROTECTION'
+                              ? "bg-purple-500/10 text-purple-300"
+                              : opp.blockType === 'VWAP_FILTER'
                               ? "bg-orange-500/10 text-orange-300"
                               : "bg-red-500/10 text-red-300"
                           )}>
-                            {opp.blockType === 'VWAP_FILTER' ? (
+                            {opp.blockType === 'CASCADE_PROTECTION' ? (
+                              <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                            ) : opp.blockType === 'VWAP_FILTER' ? (
                               <ArrowUpDown className="h-3 w-3 shrink-0 mt-0.5" />
                             ) : (
                               <XCircle className="h-3 w-3 shrink-0 mt-0.5" />

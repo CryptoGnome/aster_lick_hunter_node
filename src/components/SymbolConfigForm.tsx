@@ -31,6 +31,7 @@ import {
   Crosshair,
   ArrowUpDown,
   Heart,
+  Gauge,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { TrancheSettingsSection } from './TrancheSettingsSection';
@@ -1014,6 +1015,84 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
 
               <Separator />
 
+              {/* Trade Size Multiplier (Risk Mode) */}
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <Gauge className="h-4 w-4" />
+                    Trade Size Multiplier
+                    {(() => {
+                      const m = config.global.tradeSizeMultiplier ?? 1.0;
+                      if (m > 2.0) return <Badge variant="destructive" className="ml-2 text-[10px]">HIGH RISK</Badge>;
+                      if (m > 1.0) return <Badge className="ml-2 text-[10px] bg-yellow-500 hover:bg-yellow-600">RISK-ON</Badge>;
+                      if (m < 1.0) return <Badge variant="secondary" className="ml-2 text-[10px]">RISK-OFF</Badge>;
+                      return <Badge variant="outline" className="ml-2 text-[10px]">NORMAL</Badge>;
+                    })()}
+                  </Label>
+                  <p className="text-sm text-muted-foreground">
+                    Scale all trade sizes globally. Quick risk-on/risk-off switch without editing each symbol.
+                  </p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex gap-2">
+                    {[
+                      { label: '0.5×', value: 0.5, desc: 'Half size' },
+                      { label: '1×', value: 1.0, desc: 'Normal' },
+                      { label: '1.5×', value: 1.5, desc: '' },
+                      { label: '2×', value: 2.0, desc: '' },
+                      { label: '3×', value: 3.0, desc: '' },
+                    ].map((preset) => (
+                      <Button
+                        key={preset.value}
+                        type="button"
+                        size="sm"
+                        variant={(config.global.tradeSizeMultiplier ?? 1.0) === preset.value ? 'default' : 'outline'}
+                        className={`px-3 ${
+                          preset.value > 2.0 && (config.global.tradeSizeMultiplier ?? 1.0) === preset.value
+                            ? 'bg-red-600 hover:bg-red-700'
+                            : preset.value > 1.0 && (config.global.tradeSizeMultiplier ?? 1.0) === preset.value
+                            ? 'bg-yellow-600 hover:bg-yellow-700'
+                            : ''
+                        }`}
+                        onClick={() => handleGlobalChange('tradeSizeMultiplier', preset.value)}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <span className="text-sm text-muted-foreground">or</span>
+                  <NumberInput
+                    id="tradeSizeMultiplier"
+                    value={config.global.tradeSizeMultiplier ?? ''}
+                    onChange={(value) => handleGlobalChange('tradeSizeMultiplier', value)}
+                    defaultValue={1.0}
+                    className="w-24"
+                    min="0.1"
+                    max="5"
+                    step="0.1"
+                  />
+                </div>
+                {(config.global.tradeSizeMultiplier ?? 1.0) > 1.0 && (
+                  <Alert className={(config.global.tradeSizeMultiplier ?? 1.0) > 2.0 ? 'border-red-500 bg-red-50 dark:bg-red-950/20' : 'border-yellow-500 bg-yellow-50 dark:bg-yellow-950/20'}>
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      {(config.global.tradeSizeMultiplier ?? 1.0) > 2.0 ? (
+                        <><strong>⚠️ HIGH RISK:</strong> Trade sizes are {config.global.tradeSizeMultiplier}× normal. Losses will also be {config.global.tradeSizeMultiplier}× larger. Make sure you understand the risk.</>
+                      ) : (
+                        <>Trade sizes are {config.global.tradeSizeMultiplier ?? 1.0}× normal. Each position will use proportionally more margin. Capped by maxPositionSize per symbol.</>
+                      )}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {(config.global.tradeSizeMultiplier ?? 1.0) < 1.0 && (
+                  <p className="text-xs text-blue-600 dark:text-blue-400">
+                    🔵 Risk-off mode: Trade sizes reduced to {((config.global.tradeSizeMultiplier ?? 1.0) * 100).toFixed(0)}% of normal
+                  </p>
+                )}
+              </div>
+
+              <Separator />
+
               {/* Threshold System Setting */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -1709,6 +1788,54 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 </p>
               </div>
 
+              {/* DCA Guardrails */}
+              <div className="border-t pt-4">
+                <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+                  🛡️ DCA Guardrails
+                  <span className="text-xs text-muted-foreground font-normal">— Hard limits on position growth</span>
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="maxPositionNotional">Max Position Notional ($)</Label>
+                    <NumberInput
+                      id="maxPositionNotional"
+                      value={config.global.accountHealth?.maxPositionNotional ?? ''}
+                      onChange={(value) =>
+                        handleGlobalChange('accountHealth', {
+                          ...config.global.accountHealth,
+                          maxPositionNotional: typeof value === 'number' ? Math.max(0, value) : 0
+                        })
+                      }
+                      defaultValue={0}
+                      className="w-full"
+                      min="0"
+                      max="10000"
+                      step="5"
+                    />
+                    <p className="text-xs text-muted-foreground">Stop DCA when position notional value reaches this cap (0 = unlimited)</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="maxDCAEntries">Max DCA Entries</Label>
+                    <NumberInput
+                      id="maxDCAEntries"
+                      value={config.global.accountHealth?.maxDCAEntries ?? ''}
+                      onChange={(value) =>
+                        handleGlobalChange('accountHealth', {
+                          ...config.global.accountHealth,
+                          maxDCAEntries: typeof value === 'number' ? Math.max(0, Math.round(value)) : 0
+                        })
+                      }
+                      defaultValue={0}
+                      className="w-full"
+                      min="0"
+                      max="100"
+                      step="1"
+                    />
+                    <p className="text-xs text-muted-foreground">Max number of DCA entries per position (0 = unlimited)</p>
+                  </div>
+                </div>
+              </div>
+
               <Alert>
                 <Heart className="h-4 w-4" />
                 <AlertDescription>
@@ -1718,6 +1845,9 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   Trading resumes when drawdown recovers below {config.global.accountHealth?.resumeAtDrawdownPercent || 15}%.
                   {(config.global.accountHealth?.closeAllAtDrawdownPercent || 0) > 0 
                     ? ` Emergency close-all triggers at ${config.global.accountHealth?.closeAllAtDrawdownPercent}% drawdown.` 
+                    : ''}
+                  {(config.global.accountHealth?.maxPositionNotional || 0) > 0 || (config.global.accountHealth?.maxDCAEntries || 0) > 0
+                    ? ' DCA guardrails limit individual position growth even when DCA is allowed.'
                     : ''}
                 </AlertDescription>
               </Alert>

@@ -45,17 +45,17 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
   const { config: _config } = useConfig();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('FILLED');
   const [symbolFilter, setSymbolFilter] = useState<string>('ALL');
-  const [showMore, setShowMore] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
   const [flashingOrders, setFlashingOrders] = useState<Set<number>>(new Set());
-  const [hasMore, setHasMore] = useState(true);
-  const [currentLimit, setCurrentLimit] = useState(50); // Start with 50 orders
+  const [totalCount, setTotalCount] = useState(0);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [editModalOrder, setEditModalOrder] = useState<Order | null>(null);
-  const LOAD_MORE_INCREMENT = 50; // Load 50 more each time
+  const INITIAL_ROWS = 15;
+  const PAGE_SIZE = 50;
 
   // Get available symbols from orders (not just configured symbols)
   const availableSymbols = useMemo(() => {
@@ -65,18 +65,14 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
     return Array.from(symbolSet).sort();
   }, [orders]);
 
-  // Load initial orders
-  const loadOrders = useCallback(async (force = false, isLoadMore = false) => {
+  // Load orders
+  const loadOrders = useCallback(async (force = false) => {
     try {
-      if (isLoadMore) {
-        setLoadingMore(true);
-      } else {
-        setLoading(true);
-        setCurrentLimit(50); // Reset to initial limit
-      }
+      setLoading(true);
       setError(null);
 
-      const limitToUse = isLoadMore ? currentLimit + LOAD_MORE_INCREMENT : 50;
+      // Fetch a generous amount so we can paginate client-side
+      const fetchLimit = 500;
 
       // Handle REDUCE filter separately - it's a custom filter, not a real order status
       // For REDUCE filter, we need to fetch FILLED orders and then filter client-side
@@ -86,7 +82,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
       orderStore.setFilters({
         status: actualStatusFilter === 'ALL' ? undefined : actualStatusFilter as OrderStatus,
         symbol: symbolFilter === 'ALL' ? undefined : symbolFilter,
-        limit: limitToUse,
+        limit: fetchLimit,
       });
 
       // Fetch orders
@@ -96,13 +92,11 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
       // If REDUCE filter is active, filter to only reduce-only orders
       if (statusFilter === 'REDUCE') {
         filteredOrders = filteredOrders.filter(order => {
-          // Check if this is a reduce-only order (closing/reducing position)
           const hasRealizedPnL = order.realizedProfit !== undefined &&
                                  order.realizedProfit !== null &&
                                  order.realizedProfit !== '' &&
                                  order.realizedProfit !== '0';
 
-          // Check if it's a reduce-only order or SL/TP type
           const isReduceOrder = order.reduceOnly ||
                                order.type === OrderType.STOP_MARKET ||
                                order.type === OrderType.TAKE_PROFIT_MARKET ||
@@ -114,23 +108,21 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
         });
       }
 
-      // Show orders from all symbols, not just configured ones
       setOrders(filteredOrders);
-
-      // Check if there are more orders to load
-      setHasMore(filteredOrders.length >= limitToUse);
-
-      if (isLoadMore) {
-        setCurrentLimit(limitToUse);
-      }
+      setTotalCount(filteredOrders.length);
     } catch (err) {
       console.error('Failed to load orders:', err);
       setError('Failed to load orders');
     } finally {
       setLoading(false);
-      setLoadingMore(false);
     }
-  }, [statusFilter, symbolFilter, currentLimit, LOAD_MORE_INCREMENT]);
+  }, [statusFilter, symbolFilter]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+    setExpanded(false);
+  }, [statusFilter, symbolFilter]);
 
   // Initial load
   useEffect(() => {
@@ -399,7 +391,16 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
     };
   }, [orders]);
 
-  const displayedOrders = showMore ? orders : orders.slice(0, 10);
+  // Pagination logic
+  const totalPages = expanded ? Math.max(1, Math.ceil(totalCount / PAGE_SIZE)) : 1;
+  const displayedOrders = useMemo(() => {
+    if (!expanded) {
+      return orders.slice(0, INITIAL_ROWS);
+    }
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return orders.slice(start, start + PAGE_SIZE);
+  }, [orders, expanded, currentPage, INITIAL_ROWS, PAGE_SIZE]);
+  const hasMoreToExpand = !expanded && orders.length > INITIAL_ROWS;
 
   return (
     <Card>
@@ -410,7 +411,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
         >
           <CardTitle className="text-base font-medium">Recent Orders</CardTitle>
           <Badge variant="outline" className="h-5 text-[10px] hidden sm:inline-flex">
-            {orders.length} {hasMore ? `of ${currentLimit}+` : ''}
+            {totalCount} orders
           </Badge>
           <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
         </button>
@@ -666,38 +667,57 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
               </Table>
             </div>
 
-            <div className="mt-4 flex items-center justify-center gap-4">
-              {orders.length > 10 && (
+            <div className="mt-4 flex items-center justify-center gap-3">
+              {!expanded && hasMoreToExpand && (
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setShowMore(!showMore)}
+                  onClick={() => { setExpanded(true); setCurrentPage(1); }}
                   className="gap-2"
                 >
-                  {showMore ? 'Show Less' : `Show More (${orders.length - 10} more)`}
-                  <ChevronDown className={`h-4 w-4 transition-transform ${showMore ? 'rotate-180' : ''}`} />
+                  Show More ({totalCount - INITIAL_ROWS} more)
+                  <ChevronDown className="h-4 w-4" />
                 </Button>
               )}
 
-              {showMore && hasMore && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => loadOrders(true, true)}
-                  disabled={loadingMore}
-                  className="gap-2"
-                >
-                  {loadingMore ? (
+              {expanded && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setExpanded(false); setCurrentPage(1); }}
+                    className="gap-1.5 text-xs"
+                  >
+                    Collapse
+                    <ChevronDown className="h-3.5 w-3.5 rotate-180" />
+                  </Button>
+
+                  {totalPages > 1 && (
                     <>
-                      <RefreshCw className="h-4 w-4 animate-spin" />
-                      Loading...
-                    </>
-                  ) : (
-                    <>
-                      Load {LOAD_MORE_INCREMENT} More Orders
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage <= 1}
+                        className="h-8 w-8 p-0 text-xs"
+                      >
+                        ‹
+                      </Button>
+                      <span className="text-xs text-muted-foreground min-w-[80px] text-center">
+                        Page {currentPage} of {totalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        disabled={currentPage >= totalPages}
+                        className="h-8 w-8 p-0 text-xs"
+                      >
+                        ›
+                      </Button>
                     </>
                   )}
-                </Button>
+                </div>
               )}
             </div>
           </>

@@ -14,6 +14,7 @@ import {
   Target,
   ShieldAlert,
   Heart,
+  Gauge,
 } from 'lucide-react';
 import MinimalBotStatus from '@/components/MinimalBotStatus';
 import LiquidationSidebar from '@/components/LiquidationSidebar';
@@ -464,6 +465,33 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
+
+            {/* Cascade Protection Status */}
+            {(() => {
+              const m = config?.global?.tradeSizeMultiplier ?? 1.0;
+              if (m === 1.0) return null;
+              const isHigh = m > 2.0;
+              const isRiskOn = m > 1.0;
+              return (
+                <>
+                  <div className="hidden sm:block w-px h-8 bg-border" />
+                  <div className="flex items-center gap-2">
+                    <Gauge className={`h-4 w-4 ${isHigh ? 'text-red-500' : isRiskOn ? 'text-yellow-500' : 'text-blue-500'}`} />
+                    <div className="flex flex-col">
+                      <span className="text-xs text-muted-foreground">Trade Size</span>
+                      <Badge
+                        variant={isHigh ? 'destructive' : 'secondary'}
+                        className={`h-5 text-[10px] px-2 ${
+                          isHigh ? 'animate-pulse' : isRiskOn ? 'bg-yellow-500 text-white hover:bg-yellow-600' : 'bg-blue-500 text-white hover:bg-blue-600'
+                        }`}
+                      >
+                        {isHigh ? '🔴' : isRiskOn ? '🟡' : '🔵'} {m}× {isHigh ? 'HIGH RISK' : isRiskOn ? 'RISK-ON' : 'RISK-OFF'}
+                      </Badge>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
 
             {/* Cascade Protection Status */}
             {config?.global?.cascadeProtection?.enabled !== false && cascadeActive && (

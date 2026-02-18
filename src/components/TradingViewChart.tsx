@@ -812,7 +812,7 @@ export default function TradingViewChart({
   }, [positions, openOrders, showPositions, debouncedUpdatePositions]);
 
   // --- Recent orders overlay logic ---
-  // Use filled orders from orderStore (same as RecentOrdersTable)
+  // Fetch from local trade history DB for deep history, with orderStore as real-time supplement
   const [filledOrders, setFilledOrders] = React.useState<any[]>([]);
   useEffect(() => {
     const loadOrders = async () => {
@@ -822,7 +822,32 @@ export default function TradingViewChart({
         return;
       }
       
-      // Get ALL orders from store data, then filter locally for this symbol
+      // Try local DB first for deep history (90 days)
+      try {
+        const params = new URLSearchParams({
+          symbol,
+          format: 'orders',
+          limit: '500',
+          startTime: (Date.now() - 90 * 24 * 60 * 60 * 1000).toString(),
+        });
+        const res = await fetch(`/api/trades/history?${params}`);
+        if (res.ok) {
+          const dbOrders = await res.json();
+          if (dbOrders.length > 0) {
+            // Merge with any real-time orders from orderStore not yet in DB
+            const dbOrderIds = new Set(dbOrders.map((o: any) => o.orderId));
+            const realtimeOrders = orderStore.getOrders().data.filter((o: any) =>
+              o.status === 'FILLED' && o.symbol === symbol && !dbOrderIds.has(o.orderId)
+            );
+            setFilledOrders([...realtimeOrders, ...dbOrders]);
+            return;
+          }
+        }
+      } catch {
+        // Fall through to orderStore
+      }
+
+      // Fallback: Get from orderStore (exchange API, limited history)
       const allOrders = orderStore.getOrders().data;
       const symbolFilledOrders = allOrders.filter((order: any) => 
         order.status === 'FILLED' && order.symbol === symbol
@@ -832,15 +857,20 @@ export default function TradingViewChart({
     
     loadOrders();
     
-    // Listen for updates
+    // Listen for real-time updates
     const handleUpdate = () => {
-      if (!showRecentOrders) return; // Don't update if toggle is off
-      // Get ALL orders from store data, then filter locally for this symbol
+      if (!showRecentOrders) return;
+      // For real-time updates, merge new order into existing list
       const allOrders = orderStore.getOrders().data;
-      const symbolFilledOrders = allOrders.filter((order: any) => 
+      const newSymbolOrders = allOrders.filter((order: any) => 
         order.status === 'FILLED' && order.symbol === symbol
       );
-      setFilledOrders(symbolFilledOrders);
+      setFilledOrders(prev => {
+        const existingIds = new Set(prev.map((o: any) => o.orderId));
+        const brandNew = newSymbolOrders.filter((o: any) => !existingIds.has(o.orderId));
+        if (brandNew.length === 0) return prev;
+        return [...brandNew, ...prev];
+      });
     };
     orderStore.on('orders:updated', handleUpdate);
     orderStore.on('orders:filtered', handleUpdate);
