@@ -114,6 +114,12 @@ export async function calculateOptimalPrice(
     const bestBid = parseFloat(bookTicker.bidPrice);
     const bestAsk = parseFloat(bookTicker.askPrice);
 
+    // Validate we got valid prices from the exchange
+    if (!isFinite(bestBid) || !isFinite(bestAsk) || bestBid <= 0 || bestAsk <= 0) {
+      console.error(`calculateOptimalPrice: Invalid bid/ask from exchange for ${symbol} - bid: ${bookTicker.bidPrice}, ask: ${bookTicker.askPrice}`);
+      return null;
+    }
+
     // Get symbol filters for price precision
     const symbolInfo = await getSymbolFilters(symbol);
     const tickSize = symbolInfo?.filters.find(f => f.filterType === 'PRICE_FILTER')?.tickSize || '0.01';

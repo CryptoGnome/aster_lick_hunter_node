@@ -7,11 +7,14 @@ import { calculateOptimalPrice, validateOrderParams, analyzeOrderBookDepth, getS
 import { getPositionSide, getPositionMode } from '../api/positionMode';
 import { PositionTracker } from './positionManager';
 import { liquidationStorage } from '../services/liquidationStorage';
+import { cascadeDetector } from '../services/cascadeDetector';
+import { accountHealthMonitor } from '../services/accountHealthMonitor';
 import { vwapService } from '../services/vwapService';
 import { vwapStreamer } from '../services/vwapStreamer';
 import { thresholdMonitor } from '../services/thresholdMonitor';
-import { getTrancheManager } from '../services/trancheManager';
+import { tradeQualityService, TradeQualityScore } from '../services/tradeQualityService';
 import { symbolPrecision } from '../utils/symbolPrecision';
+import { calculatePositionSize } from '../utils/positionSizing';
 import {
   parseExchangeError,
   NotionalError,
@@ -29,7 +32,6 @@ export class Hunter extends EventEmitter {
   private ws: WebSocket | null = null;
   private config: Config;
   private isRunning = false;
-  private isPaused = false;
   private statusBroadcaster: any; // Will be injected
   private isHedgeMode: boolean;
   private positionTracker: PositionTracker | null = null;
@@ -38,6 +40,13 @@ export class Hunter extends EventEmitter {
   private cleanupInterval: NodeJS.Timeout | null = null; // Periodic cleanup timer
   private syncInterval: NodeJS.Timeout | null = null; // Position mode sync timer
   private lastModeSync: number = Date.now(); // Track last mode sync time
+  private wsKeepAliveInterval: NodeJS.Timeout | null = null; // WebSocket keepalive ping timer
+  private wsInactivityTimeout: NodeJS.Timeout | null = null; // WebSocket inactivity detector
+  private lastLiquidationTime: number = Date.now(); // Track last liquidation received
+  private statusLogInterval: NodeJS.Timeout | null = null; // Periodic status logging
+  private shouldReconnect: boolean = true; // Flag to control automatic reconnection
+  private reconnectTimeout: NodeJS.Timeout | null = null; // Track scheduled reconnection
+  private cascadeMultiplier: number = 1.0; // Temporary per-trade multiplier during cascade REDUCE mode
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -46,6 +55,23 @@ export class Hunter extends EventEmitter {
 
     // Initialize threshold monitor with config
     thresholdMonitor.updateConfig(config);
+
+    // Initialize cascade detector with config
+    const cascadeConfig = config.global.cascadeProtection;
+    if (cascadeConfig) {
+      cascadeDetector.updateConfig({
+        enabled: cascadeConfig.enabled !== false,
+        mode: cascadeConfig.mode || 'LOG_ONLY',
+        reducedPositionMultiplier: cascadeConfig.reducedPositionMultiplier || 0.5,
+        rollingWindowMs: (cascadeConfig.rollingWindowMinutes || 5) * 60 * 1000,
+        baselineWindowMs: (cascadeConfig.baselineWindowMinutes || 30) * 60 * 1000,
+        volumeMultiplierThreshold: cascadeConfig.volumeMultiplierThreshold || 3.0,
+        minSymbolsForCascade: cascadeConfig.minSymbolsForCascade || 3,
+        directionalSkewThreshold: cascadeConfig.directionalSkewThreshold || 0.8,
+        cooldownMs: (cascadeConfig.cooldownMinutes || 10) * 60 * 1000,
+        minVolumeForDetection: cascadeConfig.minVolumeForDetection || 50000,
+      });
+    }
   }
 
   // Set status broadcaster for order events
@@ -92,16 +118,11 @@ logWithTimestamp('Hunter: Switching from paper mode to live mode');
           this.connectWebSocket();
         }
       }
-      // If switching from live mode to paper mode without API keys
-      else if (!oldConfig.global.paperMode && newConfig.global.paperMode && !newConfig.api.apiKey) {
-logWithTimestamp('Hunter: Switching from live mode to paper mode');
-        if (this.ws) {
-          this.ws.close();
-          this.ws = null;
-        }
-        if (this.isRunning) {
-          this.simulateLiquidations();
-        }
+      // If switching from live mode to paper mode, keep WebSocket connection
+      // Paper mode uses real liquidations, only simulates order execution
+      else if (!oldConfig.global.paperMode && newConfig.global.paperMode) {
+logWithTimestamp('Hunter: Switching to paper mode - continuing to monitor real liquidations');
+        // Keep WebSocket connected to receive real liquidation data
       }
     }
 
@@ -260,6 +281,16 @@ logErrorWithTimestamp('Hunter: Failed to sync position mode with exchange:', err
     if (this.isRunning) return;
     this.isRunning = true;
 
+    // Always start trade quality service for monitoring/recording
+    // When disabled in config, scores are still calculated but not used to block trades
+    // Pass config so it can monitor real-time prices for configured symbols
+    tradeQualityService.start(this.config);
+    if (this.config.global.useTradeQualityScoring !== false) {
+      logWithTimestamp('Hunter: Trade Quality Service started (ACTIVE - will filter trades)');
+    } else {
+      logWithTimestamp('Hunter: Trade Quality Service started (PASSIVE - recording only, not filtering trades)');
+    }
+
     // Log threshold system configuration on startup
     if (this.config.global.useThresholdSystem) {
 logWithTimestamp('Hunter: Global threshold system ENABLED');
@@ -272,6 +303,15 @@ logWithTimestamp(`Hunter: ${symbol} - Threshold system active (cooldown: ${coold
       });
     } else {
 logWithTimestamp('Hunter: Global threshold system DISABLED - using instant triggers');
+    }
+
+    // Log cascade protection configuration on startup
+    const cascadeConfig2 = this.config.global.cascadeProtection;
+    if (cascadeConfig2?.enabled !== false) {
+      const mode = cascadeConfig2?.mode || 'LOG_ONLY';
+      logWithTimestamp(`Hunter: Cascade protection ENABLED - mode: ${mode}, window: ${cascadeConfig2?.rollingWindowMinutes || 5}min, multiplier: ${cascadeConfig2?.volumeMultiplierThreshold || 3.0}x, cooldown: ${cascadeConfig2?.cooldownMinutes || 10}min`);
+    } else {
+      logWithTimestamp('Hunter: Cascade protection DISABLED');
     }
 
     // Sync position mode on startup
@@ -308,18 +348,24 @@ logErrorWithTimestamp('Hunter: Failed to initialize symbol precision manager:', 
       // Continue anyway, will use default precision values
     }
 
-    // In paper mode, simulate liquidation events (regardless of API keys)
-    if (this.config.global.paperMode) {
-logWithTimestamp('Hunter: Running in PAPER MODE - simulating liquidations with real market prices');
-      this.simulateLiquidations();
-    } else {
-      this.connectWebSocket();
-    }
+    // Always connect to real liquidation WebSocket feed
+    // Paper mode only affects order execution, not the liquidation data source
+    this.connectWebSocket();
   }
 
   stop(): void {
     this.isRunning = false;
-    this.isPaused = false;
+    this.shouldReconnect = false; // Disable auto-reconnect on shutdown
+
+    // Cancel any scheduled reconnections
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+
+    // Stop trade quality service (always running for monitoring)
+    tradeQualityService.stop();
+    logWithTimestamp('Hunter: Trade Quality Service stopped');
 
     // Stop periodic cleanup
     this.stopPeriodicCleanup();
@@ -328,46 +374,112 @@ logWithTimestamp('Hunter: Running in PAPER MODE - simulating liquidations with r
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
-logWithTimestamp('Hunter: Stopped periodic position mode sync');
+      logWithTimestamp('Hunter: Stopped periodic position mode sync');
     }
+
+    // Clean up WebSocket keepalive and inactivity timers
+    this.cleanupWebSocketTimers();
 
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
-  }
 
-  pause(): void {
-    if (!this.isRunning || this.isPaused) {
-logWithTimestamp('Hunter: Cannot pause - not running or already paused');
-      return;
-    }
-    this.isPaused = true;
-logWithTimestamp('Hunter: Paused - no new trades will be placed');
-  }
-
-  resume(): void {
-    if (!this.isRunning || !this.isPaused) {
-logWithTimestamp('Hunter: Cannot resume - not running or not paused');
-      return;
-    }
-    this.isPaused = false;
-logWithTimestamp('Hunter: Resumed - trading active');
+    // Remove all event listeners to prevent memory leaks and duplicate event handlers
+    this.removeAllListeners();
   }
 
   private connectWebSocket(): void {
+    // Cancel any pending reconnection attempts
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+
+    // Clean up any existing keepalive/inactivity timers
+    if (this.wsKeepAliveInterval) {
+      clearInterval(this.wsKeepAliveInterval);
+      this.wsKeepAliveInterval = null;
+    }
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+      this.wsInactivityTimeout = null;
+    }
+    if (this.statusLogInterval) {
+      clearInterval(this.statusLogInterval);
+      this.statusLogInterval = null;
+    }
+
+    // CRITICAL: Close and remove all listeners from old WebSocket before creating new one
+    // This prevents duplicate event handlers from accumulating
+    if (this.ws) {
+      try {
+        // Temporarily disable auto-reconnect to prevent close event from triggering reconnection
+        const wasAutoReconnectEnabled = this.shouldReconnect;
+        this.shouldReconnect = false;
+        
+        this.ws.removeAllListeners();
+        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+          this.ws.close();
+        }
+        
+        // Restore auto-reconnect flag
+        this.shouldReconnect = wasAutoReconnectEnabled;
+      } catch (error) {
+        logErrorWithTimestamp('Hunter: Error closing old WebSocket:', error);
+      }
+      this.ws = null;
+    }
+
     this.ws = new WebSocket('wss://fstream.asterdex.com/ws/!forceOrder@arr');
 
     this.ws.on('open', () => {
-logWithTimestamp('Hunter WS connected');
+      logWithTimestamp('Hunter WS connected');
+      this.lastLiquidationTime = Date.now();
+      
+      // Start ping/pong keepalive - send ping every 30 seconds
+      this.wsKeepAliveInterval = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.ping();
+        }
+      }, 30000);
+      
+      // Start inactivity monitor - reconnect if no liquidations for 5 minutes
+      this.startInactivityMonitor();
+      
+      // Start periodic status logging - every 2 minutes
+      this.statusLogInterval = setInterval(() => {
+        const timeSinceLastLiq = Date.now() - this.lastLiquidationTime;
+        const minutesInactive = Math.floor(timeSinceLastLiq / 60000);
+        const secondsInactive = Math.floor((timeSinceLastLiq % 60000) / 1000);
+        
+        if (minutesInactive >= 1) {
+          logWithTimestamp(`📊 Hunter: Monitoring | Last liquidation: ${minutesInactive}m ${secondsInactive}s ago`);
+        } else {
+          logWithTimestamp(`📊 Hunter: Monitoring | Last liquidation: ${secondsInactive}s ago`);
+        }
+      }, 120000); // Every 2 minutes
+    });
+
+    this.ws.on('ping', () => {
+      // Server sent ping, respond with pong (ws library handles this automatically)
+    });
+
+    this.ws.on('pong', () => {
+      // Received pong response from server - connection is alive
     });
 
     this.ws.on('message', (data: Buffer) => {
       try {
         const event = JSON.parse(data.toString());
+        
+        // Update last liquidation time for any valid message
+        this.lastLiquidationTime = Date.now();
+        this.startInactivityMonitor(); // Reset inactivity timer
+        
         this.handleLiquidationEvent(event);
       } catch (error) {
-logErrorWithTimestamp('Hunter: WS message parse error:', error);
+        logErrorWithTimestamp('Hunter: WS message parse error:', error);
         // Log to error database
         errorLogger.logError(error instanceof Error ? error : new Error(String(error)), {
           type: 'websocket',
@@ -393,7 +505,7 @@ logErrorWithTimestamp('Hunter: WS message parse error:', error);
     });
 
     this.ws.on('error', (error) => {
-logErrorWithTimestamp('Hunter WS error:', error);
+      logErrorWithTimestamp('Hunter WS error:', error);
       // Log to error database
       errorLogger.logWebSocketError(
         'wss://fstream.asterdex.com/ws/!forceOrder@arr',
@@ -411,30 +523,75 @@ logErrorWithTimestamp('Hunter WS error:', error);
           }
         );
       }
-      // Reconnect after delay
-      setTimeout(() => this.connectWebSocket(), 5000);
+      // Clean up timers before reconnecting
+      this.cleanupWebSocketTimers();
+      // Reconnect after delay (only if auto-reconnect is enabled)
+      if (this.shouldReconnect && this.isRunning) {
+        this.reconnectTimeout = setTimeout(() => this.connectWebSocket(), 5000);
+      }
     });
 
     this.ws.on('close', () => {
-logWithTimestamp('Hunter WS closed');
-      if (this.isRunning) {
-        // Broadcast reconnection attempt to UI
-        if (this.statusBroadcaster) {
-          this.statusBroadcaster.broadcastWebSocketError(
-            'Hunter WebSocket Closed',
-            'Liquidation stream disconnected. Reconnecting in 5 seconds...',
-            {
-              component: 'Hunter',
-            }
-          );
-        }
-        setTimeout(() => this.connectWebSocket(), 5000);
+      logWithTimestamp('Hunter WS closed');
+      // Clean up timers
+      this.cleanupWebSocketTimers();
+      
+      // Only reconnect if auto-reconnect is enabled and bot is running
+      // This prevents reconnection loops during manual disconnects
+      if (this.shouldReconnect && this.isRunning) {
+        this.reconnectTimeout = setTimeout(() => this.connectWebSocket(), 5000);
       }
     });
   }
 
+  private startInactivityMonitor(): void {
+    // Clear any existing inactivity timeout
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+    }
+    
+    // Set up new inactivity timeout - 5 minutes without liquidations
+    this.wsInactivityTimeout = setTimeout(() => {
+      const timeSinceLastLiq = Date.now() - this.lastLiquidationTime;
+      const minutesInactive = Math.floor(timeSinceLastLiq / 60000);
+      
+      logWarnWithTimestamp(`⚠️ Hunter: No liquidations for ${minutesInactive} minutes. Reconnecting stream...`);
+      
+      // Force reconnection (this is intentional, so we allow it)
+      if (this.ws) {
+        // Temporarily disable auto-reconnect to prevent close handler from double-reconnecting
+        this.shouldReconnect = false;
+        this.ws.close();
+        this.ws = null;
+        this.shouldReconnect = true;
+      }
+      this.connectWebSocket();
+    }, 5 * 60 * 1000); // 5 minutes
+  }
+
+  private cleanupWebSocketTimers(): void {
+    if (this.wsKeepAliveInterval) {
+      clearInterval(this.wsKeepAliveInterval);
+      this.wsKeepAliveInterval = null;
+    }
+    if (this.wsInactivityTimeout) {
+      clearTimeout(this.wsInactivityTimeout);
+      this.wsInactivityTimeout = null;
+    }
+    if (this.statusLogInterval) {
+      clearInterval(this.statusLogInterval);
+      this.statusLogInterval = null;
+    }
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+  }
+
   private async handleLiquidationEvent(event: any): Promise<void> {
     if (event.e !== 'forceOrder') return; // Not a liquidation event
+    
+    console.log(`[Hunter] handleLiquidationEvent START: ${event.o.s} @ ${Date.now()}`);
 
     const liquidation: LiquidationEvent = {
       symbol: event.o.s,
@@ -452,6 +609,10 @@ logWithTimestamp('Hunter WS closed');
       time: event.E, // Keep for backward compatibility
     };
 
+    // Log liquidation received with basic info
+    const volumeUSDT = liquidation.qty * liquidation.price;
+    logWithTimestamp(`💥 Liquidation: ${liquidation.symbol} ${liquidation.side} ${liquidation.qty.toFixed(4)} @ $${liquidation.price.toLocaleString()} ($${volumeUSDT.toFixed(2)})`);
+
     // Check if threshold system is enabled globally and for this symbol
     const useThresholdSystem = this.config.global.useThresholdSystem === true &&
                               this.config.symbols[liquidation.symbol]?.useThreshold === true;
@@ -460,19 +621,20 @@ logWithTimestamp('Hunter WS closed');
     const thresholdStatus = useThresholdSystem ? thresholdMonitor.processLiquidation(liquidation) : null;
 
     // Emit liquidation event to WebSocket clients (all liquidations) with threshold info
+    console.log(`[Hunter] About to emit liquidationDetected for ${liquidation.symbol}`);
     this.emit('liquidationDetected', {
       ...liquidation,
       thresholdStatus
     });
+    console.log(`[Hunter] Finished emitting liquidationDetected for ${liquidation.symbol}`);
 
-    const symbolConfig = this.config.symbols[liquidation.symbol];
-    if (!symbolConfig) return; // Symbol not in config
+    // Feed ALL liquidations to cascade detector (market-wide, not just configured symbols)
+    // This must happen before symbol filtering so we detect cascades across all symbols
+    cascadeDetector.processLiquidation(liquidation, volumeUSDT);
 
-    const volumeUSDT = liquidation.qty * liquidation.price;
-
-    // Store liquidation in database (non-blocking)
+    // Store ALL liquidations in database (non-blocking) - useful for analyzing potential symbols
     liquidationStorage.saveLiquidation(liquidation, volumeUSDT).catch(error => {
-logErrorWithTimestamp('Hunter: Failed to store liquidation:', error);
+      logErrorWithTimestamp('Hunter: Failed to store liquidation:', error);
       // Log to error database
       errorLogger.logError(error instanceof Error ? error : new Error(String(error)), {
         type: 'general',
@@ -486,6 +648,45 @@ logErrorWithTimestamp('Hunter: Failed to store liquidation:', error);
       });
       // Non-critical error, don't broadcast to UI to avoid spam
     });
+
+    const symbolConfig = this.config.symbols[liquidation.symbol];
+    if (!symbolConfig) return; // Symbol not in config - skip trading logic but liquidation was already stored
+
+    // CASCADE PROTECTION: Respond to detected cascades based on mode
+    // LOG_ONLY = detect & log but allow trades through
+    // REDUCE = allow trades but at reduced position size
+    // BLOCK = hard stop, skip the trade entirely
+    if (cascadeDetector.isCascadeActive()) {
+      const cascadeMode = cascadeDetector.getMode();
+      const remaining = Math.ceil(cascadeDetector.getCooldownRemaining() / 1000);
+      
+      if (cascadeMode === 'BLOCK') {
+        logWithTimestamp(`🚨 CASCADE BLOCK — Skipping ${liquidation.symbol} trade (resumes in ${remaining}s)`);
+        this.emit('tradeBlocked', {
+          symbol: liquidation.symbol,
+          side: liquidation.side === 'SELL' ? 'BUY' : 'SELL',
+          reason: `Cascade protection BLOCKED — ${cascadeDetector.getState().reason}`,
+          blockType: 'CASCADE_PROTECTION',
+          signalPrice: liquidation.price,
+          cascadeState: cascadeDetector.getState(),
+        });
+        return;
+      } else if (cascadeMode === 'REDUCE') {
+        logWithTimestamp(`⚠️ CASCADE REDUCE — ${liquidation.symbol} will trade at ${cascadeDetector.getReducedMultiplier()}x size (resumes in ${remaining}s)`);
+        // Don't return — let the trade proceed, size reduction is applied in placeTrade
+      } else {
+        // LOG_ONLY — just log it and proceed normally
+        logWithTimestamp(`📊 CASCADE DETECTED (LOG_ONLY) — ${liquidation.symbol} proceeding normally (${cascadeDetector.getState().reason})`);
+      }
+    }
+
+    // Record ALL liquidations for configured symbols to the quality service
+    // This enables spike detection and volume trend analysis even before threshold is met
+    try {
+      tradeQualityService.recordLiquidation(liquidation, volumeUSDT);
+    } catch (e) {
+      // Non-critical, don't block trading
+    }
 
     // Check if we should use threshold system or instant trigger
     if (useThresholdSystem && thresholdStatus) {
@@ -592,13 +793,12 @@ logWithTimestamp(`Hunter: ✓ Cooldown passed - Triggering ${tradeSide} trade fo
   }
 
   private async analyzeAndTrade(liquidation: LiquidationEvent, symbolConfig: SymbolConfig, _forcedSide?: 'BUY' | 'SELL'): Promise<void> {
-    // Check if bot is paused
-    if (this.isPaused) {
-logWithTimestamp(`Hunter: Skipping trade - bot is paused (${liquidation.symbol} ${liquidation.side})`);
-      return;
-    }
-
     try {
+      // Log the liquidation price for debugging
+      if (liquidation.price <= 0 || !isFinite(liquidation.price)) {
+        logWarnWithTimestamp(`Hunter: Received invalid liquidation price for ${liquidation.symbol}: ${liquidation.price} (side: ${liquidation.side})`);
+      }
+
       // Get mark price and recent 1m kline
       const [markPriceData] = Array.isArray(await getMarkPrice(liquidation.symbol)) ?
         await getMarkPrice(liquidation.symbol) as any[] :
@@ -611,6 +811,82 @@ logWithTimestamp(`Hunter: Skipping trade - bot is paused (${liquidation.symbol} 
       const priceRatio = liquidation.price / markPrice;
       const triggerBuy = liquidation.side === 'SELL' && priceRatio < 1.01; // 1% below
       const triggerSell = liquidation.side === 'BUY' && priceRatio > 0.99;  // 1% above
+      
+      // Trade Quality Assessment - ALWAYS calculated for monitoring/recording
+      // When useTradeQualityScoring is disabled, scores are recorded but don't block trades
+      let qualityScore: TradeQualityScore | null = null;
+      const volumeUSDT = liquidation.qty * liquidation.price;
+      const useQualityScoringToFilter = this.config.global.useTradeQualityScoring !== false; // Default to enabled
+      
+      if (triggerBuy || triggerSell) {
+        try {
+          // Record the liquidation for volume tracking (always)
+          tradeQualityService.recordLiquidation(liquidation, volumeUSDT);
+          
+          // Calculate quality score (always - for monitoring)
+          const tradeSide = triggerBuy ? 'BUY' : 'SELL';
+          qualityScore = tradeQualityService.calculateQualityScore(
+            liquidation.symbol,
+            tradeSide,
+            liquidation.price,
+            volumeUSDT
+          );
+          
+          // Log quality assessment
+          const filterStatus = useQualityScoringToFilter ? '' : ' [PASSIVE MODE]';
+          logWithTimestamp(`Hunter: Trade Quality for ${liquidation.symbol}${filterStatus} - Total: ${qualityScore.totalScore}/3, Spike: ${qualityScore.spikeScore}/1, Volume: ${qualityScore.volumeTrendScore}/1, Regime: ${qualityScore.regimeScore}/1`);
+          logWithTimestamp(`Hunter: Quality recommendation: ${qualityScore.recommendation}, Position multiplier: ${qualityScore.positionSizeMultiplier}x`);
+          
+          // Only skip/block trades if quality scoring is ACTIVE (not passive/recording-only mode)
+          if (useQualityScoringToFilter && (qualityScore.totalScore === 0 || qualityScore.recommendation === 'SKIP')) {
+            logWithTimestamp(`Hunter: SKIPPING trade for ${liquidation.symbol} - Quality score too low`);
+            qualityScore.reasons.forEach(r => logWithTimestamp(`  ${r}`));
+            
+            // Emit blocked trade for monitoring
+            this.emit('tradeBlocked', {
+              symbol: liquidation.symbol,
+              side: tradeSide,
+              reason: `Trade quality too low: ${qualityScore.totalScore}/3 (${qualityScore.recommendation})`,
+              qualityScore,
+              blockType: 'QUALITY_FILTER',
+              signalPrice: markPrice
+            });
+            
+            return;
+          } else if (!useQualityScoringToFilter && (qualityScore.totalScore === 0 || qualityScore.recommendation === 'SKIP')) {
+            // Log that we WOULD have skipped but didn't because scoring is passive
+            logWithTimestamp(`Hunter: Trade Quality PASSIVE - Would have skipped ${liquidation.symbol} (score ${qualityScore.totalScore}/3) but proceeding anyway`);
+          }
+        } catch (qualityError) {
+          // Non-blocking - if quality assessment fails, proceed with default quality
+          logWarnWithTimestamp(`Hunter: Quality assessment failed for ${liquidation.symbol}, proceeding with default quality:`, qualityError);
+          // Create default quality score
+          qualityScore = {
+            symbol: liquidation.symbol,
+            side: triggerBuy ? 'BUY' : 'SELL',
+            totalScore: 2,
+            spikeScore: 1,
+            volumeTrendScore: 1,
+            regimeScore: 0,
+            metrics: {
+              priceChangePercent: 0,
+              spikeTimeSeconds: 0,
+              spikeVelocity: 0,
+              recentVolumeRatio: 1,
+              vwapCrossCount: 0,
+              vwapCrossesPerHour: 0,
+              isChoppyRegime: false,
+              isTrendingRegime: false,
+              vwapDistance: 0,
+              isAboveVwap: false
+            },
+            recommendation: 'NORMAL',
+            positionSizeMultiplier: 1.0,
+            targetMultiplier: 1.0,
+            reasons: ['⚠️ Quality assessment failed, using default NORMAL quality']
+          };
+        }
+      }
 
       // Check VWAP protection if enabled
       if (symbolConfig.vwapProtection) {
@@ -646,14 +922,17 @@ logWithTimestamp(`Hunter: Skipping trade - bot is paused (${liquidation.symbol} 
           if (!vwapCheck.allowed) {
 logWithTimestamp(`Hunter: VWAP Protection - ${vwapCheck.reason}`);
 
-            // Emit blocked trade opportunity for monitoring
+            // Emit blocked trade opportunity for monitoring (include quality score if available)
             this.emit('tradeBlocked', {
               symbol: liquidation.symbol,
               side: 'BUY',
               reason: vwapCheck.reason,
               vwap: vwapCheck.vwap,
               currentPrice: liquidation.price,
-              blockType: 'VWAP_FILTER'
+              blockType: 'VWAP_FILTER',
+              qualityScore,
+              liquidationVolume: volumeUSDT,
+              signalPrice: markPrice
             });
 
             return; // Block the trade
@@ -689,14 +968,17 @@ logWithTimestamp(`Hunter: VWAP Check Passed - Price $${liquidation.price.toFixed
           if (!vwapCheck.allowed) {
 logWithTimestamp(`Hunter: VWAP Protection - ${vwapCheck.reason}`);
 
-            // Emit blocked trade opportunity for monitoring
+            // Emit blocked trade opportunity for monitoring (include quality score if available)
             this.emit('tradeBlocked', {
               symbol: liquidation.symbol,
               side: 'SELL',
               reason: vwapCheck.reason,
               vwap: vwapCheck.vwap,
               currentPrice: liquidation.price,
-              blockType: 'VWAP_FILTER'
+              blockType: 'VWAP_FILTER',
+              qualityScore,
+              liquidationVolume: volumeUSDT,
+              signalPrice: markPrice
             });
 
             return; // Block the trade
@@ -707,42 +989,44 @@ logWithTimestamp(`Hunter: VWAP Check Passed - Price $${liquidation.price.toFixed
       }
 
       if (triggerBuy) {
-        const volumeUSDT = liquidation.qty * liquidation.price;
-
-        // Emit trade opportunity
+        // Emit trade opportunity with quality score
         this.emit('tradeOpportunity', {
           symbol: liquidation.symbol,
           side: 'BUY',
           reason: `SELL liquidation at ${((1 - priceRatio) * 100).toFixed(2)}% below mark price`,
           liquidationVolume: volumeUSDT,
           priceImpact: (1 - priceRatio) * 100,
-          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10) // Higher confidence for larger volumes
+          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10), // Higher confidence for larger volumes
+          qualityScore: qualityScore || undefined,
+          qualityRecommendation: qualityScore?.recommendation,
+          signalPrice: markPrice
         });
 
         logWithTimestamp(`Hunter: Triggering BUY for ${liquidation.symbol} at ${liquidation.price}`);
-        await this.placeTrade(liquidation.symbol, 'BUY', symbolConfig, liquidation.price);
+        await this.placeTrade(liquidation.symbol, 'BUY', symbolConfig, liquidation.price, qualityScore || undefined);
       } else if (triggerSell) {
-        const volumeUSDT = liquidation.qty * liquidation.price;
-
-        // Emit trade opportunity
+        // Emit trade opportunity with quality score
         this.emit('tradeOpportunity', {
           symbol: liquidation.symbol,
           side: 'SELL',
           reason: `BUY liquidation at ${((priceRatio - 1) * 100).toFixed(2)}% above mark price`,
           liquidationVolume: volumeUSDT,
           priceImpact: (priceRatio - 1) * 100,
-          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10)
+          confidence: Math.min(95, 50 + (volumeUSDT / 1000) * 10),
+          qualityScore: qualityScore || undefined,
+          qualityRecommendation: qualityScore?.recommendation,
+          signalPrice: markPrice
         });
 
         logWithTimestamp(`Hunter: Triggering SELL for ${liquidation.symbol} at ${liquidation.price}`);
-        await this.placeTrade(liquidation.symbol, 'SELL', symbolConfig, liquidation.price);
+        await this.placeTrade(liquidation.symbol, 'SELL', symbolConfig, liquidation.price, qualityScore || undefined);
       }
     } catch (error) {
 logErrorWithTimestamp('Hunter: Analysis error:', error);
     }
   }
 
-  private async placeTrade(symbol: string, side: 'BUY' | 'SELL', symbolConfig: SymbolConfig, entryPrice: number): Promise<void> {
+  private async placeTrade(symbol: string, side: 'BUY' | 'SELL', symbolConfig: SymbolConfig, entryPrice: number, qualityScore?: TradeQualityScore): Promise<void> {
     // Track when this trade attempt started (for timestamp validation)
     const tradeStartTime = Date.now();
 
@@ -753,48 +1037,25 @@ logErrorWithTimestamp('Hunter: Analysis error:', error);
     let notionalUSDT: number | undefined;  // Don't initialize to 0 - use undefined
     let tradeSizeUSDT: number = symbolConfig.tradeSize; // Default to general tradeSize
     let order: any; // Declare order variable for error handling
+    
+    // Apply quality-based position size multiplier ONLY if quality scoring is ACTIVE (not passive mode)
+    const useQualityScoringToFilter = this.config.global.useTradeQualityScoring !== false;
+    let positionSizeMultiplier = (useQualityScoringToFilter && qualityScore?.positionSizeMultiplier) 
+      ? qualityScore.positionSizeMultiplier 
+      : 1.0;
+    
+    // Apply cascade REDUCE multiplier if cascade is active in REDUCE mode
+    if (cascadeDetector.isCascadeActive() && cascadeDetector.getMode() === 'REDUCE') {
+      const cascadeMultiplier = cascadeDetector.getReducedMultiplier();
+      positionSizeMultiplier *= cascadeMultiplier;
+      logWithTimestamp(`Hunter: Applying cascade REDUCE multiplier: ${cascadeMultiplier}x for ${symbol} (final: ${positionSizeMultiplier}x)`);
+    }
+    
+    if (positionSizeMultiplier !== 1.0) {
+      logWithTimestamp(`Hunter: Applying position multiplier: ${positionSizeMultiplier}x for ${symbol}`);
+    }
 
     try {
-      // Check tranche management limits (if enabled)
-      if (symbolConfig.enableTrancheManagement) {
-        try {
-          const trancheManager = getTrancheManager();
-          const trancheSide = side === 'BUY' ? 'LONG' : 'SHORT';
-
-          // Update P&L and check isolation conditions
-          const markPriceData = await getMarkPrice(symbol);
-          const price = parseFloat(Array.isArray(markPriceData) ? markPriceData[0].markPrice : markPriceData.markPrice);
-          await trancheManager.updateUnrealizedPnl(symbol, price);
-
-          // Check if we can open a new tranche
-          const canOpen = trancheManager.canOpenNewTranche(symbol, trancheSide);
-          if (!canOpen.allowed) {
-            logWithTimestamp(`Hunter: ${canOpen.reason}`);
-
-            // Broadcast to UI
-            if (this.statusBroadcaster) {
-              this.statusBroadcaster.broadcastTradingError(
-                `Tranche Limit Reached - ${symbol}`,
-                canOpen.reason || 'Cannot open new tranche',
-                {
-                  component: 'Hunter',
-                  symbol,
-                  details: {
-                    activeTranches: trancheManager.getTranches(symbol, trancheSide).length,
-                    maxTranches: symbolConfig.maxTranches || 3,
-                  }
-                }
-              );
-            }
-
-            return; // Block the trade
-          }
-        } catch (trancheError) {
-          // If TrancheManager is not initialized, log warning but continue
-          logWarnWithTimestamp('Hunter: TrancheManager check failed (not initialized?), continuing with trade:', trancheError);
-        }
-      }
-
       // Check position limits before placing trade
       if (this.positionTracker && !this.config.global.paperMode) {
         // Check if we already have a pending order for this symbol
@@ -804,13 +1065,142 @@ logWithTimestamp(`Hunter: Skipping trade - already have pending order for ${symb
         }
 
         // Check global max positions limit (including pending orders)
+        // BUT: if we already have a position in the same direction, we're adding to it, not opening new
         const maxPositions = this.config.global.maxOpenPositions || 10;
         const currentPositionCount = this.positionTracker.getUniquePositionCount(this.isHedgeMode);
         const pendingOrderCount = this.getPendingOrderCount();
         const totalPositions = currentPositionCount + pendingOrderCount;
+        
+        // Check if this would be adding to an existing position (same symbol, same direction)
+        const isAddingToExisting = this.positionTracker.hasPositionInDirection(symbol, side, this.isHedgeMode);
 
-        if (totalPositions >= maxPositions) {
+        if (totalPositions >= maxPositions && !isAddingToExisting) {
 logWithTimestamp(`Hunter: Skipping trade - max positions reached (current: ${currentPositionCount}, pending: ${pendingOrderCount}, max: ${maxPositions})`);
+          return;
+        }
+        
+        // Check directional position limits (max long / max short)
+        if (!isAddingToExisting) {
+          const direction: 'LONG' | 'SHORT' = side === 'BUY' ? 'LONG' : 'SHORT';
+          const maxDirectional = direction === 'LONG' 
+            ? this.config.global.maxLongPositions 
+            : this.config.global.maxShortPositions;
+          
+          if (maxDirectional !== undefined && maxDirectional > 0) {
+            const currentDirectionalCount = this.positionTracker.getDirectionalPositionCount(direction, this.isHedgeMode);
+            
+            // Count pending orders in same direction
+            let pendingDirectionalCount = 0;
+            for (const order of this.pendingOrders.values()) {
+              if (order.side === side) pendingDirectionalCount++;
+            }
+            
+            const totalDirectional = currentDirectionalCount + pendingDirectionalCount;
+            
+            if (totalDirectional >= maxDirectional) {
+logWithTimestamp(`Hunter: Skipping trade - max ${direction} positions reached (current: ${currentDirectionalCount}, pending: ${pendingDirectionalCount}, max: ${maxDirectional})`);
+              return;
+            }
+logWithTimestamp(`Hunter: Directional limit check passed - ${direction}: ${totalDirectional}/${maxDirectional}`);
+          }
+        }
+
+        // DCA spacing check - ensure new entries aren't too close to existing positions
+        if (isAddingToExisting) {
+          const minSpacingPercent = this.config.global.minEntrySpacingPercent ?? 0;
+          if (minSpacingPercent > 0) {
+            const existingEntryPrice = this.positionTracker.getPositionEntryPrice(symbol, side, this.isHedgeMode);
+            if (existingEntryPrice && existingEntryPrice > 0) {
+              const priceDiffPercent = Math.abs((entryPrice - existingEntryPrice) / existingEntryPrice) * 100;
+              if (priceDiffPercent < minSpacingPercent) {
+logWithTimestamp(`Hunter: Skipping DCA - price too close to existing entry for ${symbol} ${side === 'BUY' ? 'LONG' : 'SHORT'} (current: ${entryPrice.toFixed(4)}, existing: ${existingEntryPrice.toFixed(4)}, distance: ${priceDiffPercent.toFixed(2)}%, min required: ${minSpacingPercent}%)`);
+                return;
+              }
+logWithTimestamp(`Hunter: DCA spacing OK for ${symbol} - distance: ${priceDiffPercent.toFixed(2)}% >= ${minSpacingPercent}% minimum`);
+            }
+          }
+        }
+
+        if (isAddingToExisting) {
+logWithTimestamp(`Hunter: Adding to existing ${side === 'BUY' ? 'LONG' : 'SHORT'} position for ${symbol} (not counting against max positions)`);
+        }
+
+        // DCA GUARDRAILS: Enforce hard limits on position growth
+        if (isAddingToExisting) {
+          const healthConfig = accountHealthMonitor.getConfig();
+          const direction: 'LONG' | 'SHORT' = side === 'BUY' ? 'LONG' : 'SHORT';
+
+          // Check max DCA entries
+          if (healthConfig.maxDCAEntries > 0) {
+            const dcaCount = this.positionTracker.getDCAEntryCount(symbol, side, this.isHedgeMode);
+            if (dcaCount >= healthConfig.maxDCAEntries) {
+              logWarnWithTimestamp(`🛑 DCA LIMIT — Skipping DCA for ${symbol} ${direction}: ${dcaCount}/${healthConfig.maxDCAEntries} entries reached`);
+              this.emit('tradeBlocked', {
+                symbol,
+                side,
+                reason: `DCA entry limit reached: ${dcaCount}/${healthConfig.maxDCAEntries}`,
+                blockType: 'DCA_ENTRY_LIMIT',
+                signalPrice: entryPrice,
+              });
+              return;
+            }
+          }
+
+          // Check max position notional value
+          if (healthConfig.maxPositionNotional > 0) {
+            const currentNotional = this.positionTracker.getPositionNotional(symbol, side, this.isHedgeMode);
+            if (currentNotional >= healthConfig.maxPositionNotional) {
+              logWarnWithTimestamp(`🛑 DCA LIMIT — Skipping DCA for ${symbol} ${direction}: notional $${currentNotional.toFixed(2)} >= $${healthConfig.maxPositionNotional} cap`);
+              this.emit('tradeBlocked', {
+                symbol,
+                side,
+                reason: `Position notional cap reached: $${currentNotional.toFixed(2)}/$${healthConfig.maxPositionNotional}`,
+                blockType: 'DCA_NOTIONAL_LIMIT',
+                signalPrice: entryPrice,
+              });
+              return;
+            }
+          }
+
+          // TRANCHE LIMIT: Check if tranche system allows new entry
+          if (symbolConfig.enableTrancheManagement) {
+            try {
+              const { getTrancheManager } = await import('../services/trancheManager');
+              const trancheManager = getTrancheManager();
+              const trancheSide = side === 'BUY' ? 'LONG' : 'SHORT';
+              const trancheCheck = trancheManager.canOpenNewTranche(symbol, trancheSide as 'LONG' | 'SHORT');
+              if (!trancheCheck.allowed) {
+                logWarnWithTimestamp(`🛑 TRANCHE LIMIT — Skipping DCA for ${symbol} ${direction}: ${trancheCheck.reason}`);
+                this.emit('tradeBlocked', {
+                  symbol,
+                  side,
+                  reason: trancheCheck.reason,
+                  blockType: 'TRANCHE_LIMIT',
+                  signalPrice: entryPrice,
+                });
+                return;
+              }
+            } catch (_e) {
+              // TrancheManager not initialized — allow trade
+            }
+          }
+        }
+
+        // ACCOUNT HEALTH CHECK: Block new positions during drawdowns, but ALWAYS allow DCA
+        // DCA improves average entry price during drawdowns — exactly what we want
+        if (!isAddingToExisting && accountHealthMonitor.shouldBlockNewPositions()) {
+          const healthState = accountHealthMonitor.getState();
+          accountHealthMonitor.recordBlockedTrade();
+          logWarnWithTimestamp(`\u{1F6B7} ACCOUNT HEALTH — Skipping NEW ${side} position for ${symbol} (drawdown: ${healthState.drawdownPercent.toFixed(1)}%, unrealized: $${healthState.totalUnrealizedPnL.toFixed(2)})`);
+          logWarnWithTimestamp(`  DCA into existing positions is still allowed. ${healthState.blockReason}`);
+          this.emit('tradeBlocked', {
+            symbol,
+            side,
+            reason: `Account health: ${healthState.blockReason}`,
+            blockType: 'ACCOUNT_HEALTH',
+            signalPrice: entryPrice,
+            healthState,
+          });
           return;
         }
 
@@ -838,10 +1228,26 @@ logWithTimestamp(`Hunter: Skipping trade - would exceed max margin for ${symbol}
           const availableBalance = parseFloat(accountInfo.availableBalance || '0');
           const usedMargin = totalBalance - availableBalance;
 
-          // Use direction-specific trade size if available
-          const requiredMargin = side === 'BUY'
-            ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
-            : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+          // Calculate position size based on mode (FIXED or PERCENTAGE)
+          let calculatedTradeSize: number;
+          if (symbolConfig.positionSizingMode === 'PERCENTAGE' && symbolConfig.percentageOfBalance) {
+            calculatedTradeSize = calculatePositionSize(totalBalance, {
+              mode: 'PERCENTAGE',
+              fixedSize: symbolConfig.tradeSize,
+              percentageOfBalance: symbolConfig.percentageOfBalance,
+              minPositionSize: symbolConfig.minPositionSize,
+              maxPositionSize: symbolConfig.maxPositionSize,
+            });
+            logWithTimestamp(`Hunter: Dynamic position sizing for ${symbol}: ${calculatedTradeSize.toFixed(2)} USDT (${symbolConfig.percentageOfBalance}% of ${totalBalance.toFixed(2)} USDT balance)`);
+          } else {
+            // Use direction-specific trade size if available, otherwise fallback to general tradeSize
+            calculatedTradeSize = side === 'BUY'
+              ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
+              : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+          }
+
+          // Use the calculated trade size for margin checks
+          const requiredMargin = calculatedTradeSize;
 
 logWithTimestamp(`Hunter: Available margin check for ${symbol}`);
 logWithTimestamp(`  Total balance: ${totalBalance.toFixed(2)} USDT`);
@@ -892,15 +1298,36 @@ logWarnWithTimestamp(`Hunter: Proceeding with trade anyway - exchange will rejec
       }
 
       if (this.config.global.paperMode) {
-logWithTimestamp(`Hunter: PAPER MODE - Would place ${side} order for ${symbol}, quantity: ${symbolConfig.tradeSize}, leverage: ${symbolConfig.leverage}`);
-        this.emit('positionOpened', {
-          symbol,
-          side,
-          quantity: symbolConfig.tradeSize,
-          price: entryPrice,
-          leverage: symbolConfig.leverage,
-          paperMode: true
-        });
+logWithTimestamp(`Hunter: PAPER MODE - Placing ${side} order for ${symbol}, quantity: ${symbolConfig.tradeSize}, leverage: ${symbolConfig.leverage}`);
+        
+        // Actually place the paper trade through the order API
+        // This will route to the paper trading system
+        try {
+          const { placeOrder } = await import('../api/orders');
+          await placeOrder({
+            symbol,
+            side,
+            type: 'MARKET', // Use market order for paper trading
+            quantity: symbolConfig.tradeSize,
+            positionSide: this.config.global.positionMode === 'HEDGE' ? (side === 'BUY' ? 'LONG' : 'SHORT') : 'BOTH',
+          }, this.config.api);
+          
+logWithTimestamp(`📄 Paper Trading: Order placed for ${symbol} ${side}`);
+          
+          // Emit positionOpened event for paper trades with quality score
+          this.emit('positionOpened', {
+            symbol,
+            side,
+            quantity: symbolConfig.tradeSize,
+            price: entryPrice,
+            leverage: symbolConfig.leverage,
+            paperMode: true,
+            qualityScore
+          });
+        } catch (error) {
+logErrorWithTimestamp(`📄 Paper Trading: Failed to place order:`, error);
+        }
+        
         return;
       }
 
@@ -963,17 +1390,92 @@ logErrorWithTimestamp(`Hunter: Could not fetch symbol info for ${symbol}`);
       }
 
       // Calculate proper quantity based on USDT margin value
-      // Use direction-specific trade size if available, otherwise fall back to general tradeSize
-      tradeSizeUSDT = side === 'BUY'
-        ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
-        : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+      // Use dynamic position sizing if enabled, otherwise use direction-specific or general trade size
+      if (symbolConfig.positionSizingMode === 'PERCENTAGE' && symbolConfig.percentageOfBalance) {
+        // Dynamic sizing - recalculate based on current balance
+        const accountInfo = await getAccountInfo(this.config.api);
+        const totalBalance = parseFloat(accountInfo.totalWalletBalance || '0');
+        
+        tradeSizeUSDT = calculatePositionSize(totalBalance, {
+          mode: 'PERCENTAGE',
+          fixedSize: symbolConfig.tradeSize,
+          percentageOfBalance: symbolConfig.percentageOfBalance,
+          minPositionSize: symbolConfig.minPositionSize,
+          maxPositionSize: symbolConfig.maxPositionSize,
+        });
+        
+        logWithTimestamp(`Hunter: Using dynamic position size for ${symbol}: ${tradeSizeUSDT.toFixed(2)} USDT (${symbolConfig.percentageOfBalance}% of ${totalBalance.toFixed(2)} USDT balance)`);
+      } else {
+        // Fixed sizing - use direction-specific trade size if available
+        tradeSizeUSDT = side === 'BUY'
+          ? (symbolConfig.longTradeSize ?? symbolConfig.tradeSize)
+          : (symbolConfig.shortTradeSize ?? symbolConfig.tradeSize);
+      }
+      
+      // Apply quality-based position size multiplier
+      tradeSizeUSDT = tradeSizeUSDT * positionSizeMultiplier;
+
+      // Apply cascade REDUCE multiplier (1.0 = no cascade, <1.0 = cascade active in REDUCE mode)
+      if (this.cascadeMultiplier < 1.0) {
+        logWithTimestamp(`Hunter: Applying cascade REDUCE multiplier: ${this.cascadeMultiplier}x for ${symbol}`);
+        tradeSizeUSDT = tradeSizeUSDT * this.cascadeMultiplier;
+        this.cascadeMultiplier = 1.0; // Reset for next trade
+      }
+
+      // Apply global trade size multiplier (risk-on/risk-off scaling)
+      const globalMultiplier = this.config.global.tradeSizeMultiplier ?? 1.0;
+      if (globalMultiplier !== 1.0) {
+        const beforeMultiplier = tradeSizeUSDT;
+        tradeSizeUSDT = tradeSizeUSDT * globalMultiplier;
+        if (globalMultiplier > 2.0) {
+          logWarnWithTimestamp(`Hunter: ⚠️ HIGH RISK - Global trade size multiplier ${globalMultiplier}x active! ${beforeMultiplier.toFixed(2)} → ${tradeSizeUSDT.toFixed(2)} USDT for ${symbol}`);
+        } else {
+          logWithTimestamp(`Hunter: Global trade size multiplier ${globalMultiplier}x: ${beforeMultiplier.toFixed(2)} → ${tradeSizeUSDT.toFixed(2)} USDT for ${symbol}`);
+        }
+      }
+
+      // Cap at maxPositionSize if set (safety net after all multipliers)
+      if (symbolConfig.maxPositionSize !== undefined && tradeSizeUSDT > symbolConfig.maxPositionSize) {
+        logWarnWithTimestamp(`Hunter: Multiplied size ${tradeSizeUSDT.toFixed(2)} exceeds maxPositionSize ${symbolConfig.maxPositionSize} for ${symbol}, capping`);
+        tradeSizeUSDT = symbolConfig.maxPositionSize;
+      }
+
+      // Re-apply minPositionSize after quality multiplier (quality can reduce size below minimum)
+      if (symbolConfig.minPositionSize !== undefined && tradeSizeUSDT < symbolConfig.minPositionSize) {
+        logWithTimestamp(`Hunter: Quality-adjusted size ${tradeSizeUSDT.toFixed(2)} below minimum ${symbolConfig.minPositionSize}, using minimum`);
+        tradeSizeUSDT = symbolConfig.minPositionSize;
+      }
 
       notionalUSDT = tradeSizeUSDT * symbolConfig.leverage;
 
-      // Ensure we meet minimum notional requirement
+      // Check if notional is below exchange minimum - fail with warning instead of auto-adjusting
       if (notionalUSDT < minNotional) {
-logWithTimestamp(`Hunter: Adjusting notional from ${notionalUSDT} to minimum ${minNotional} for ${symbol}`);
-        notionalUSDT = minNotional * 1.01; // Add 1% buffer to ensure we're above minimum
+        const minMarginRequired = minNotional / symbolConfig.leverage;
+        logErrorWithTimestamp(`Hunter: Trade size too small for ${symbol} - notional ${notionalUSDT.toFixed(2)} below exchange minimum ${minNotional}`);
+        logErrorWithTimestamp(`  Current trade size (margin): ${tradeSizeUSDT.toFixed(2)} USDT`);
+        logErrorWithTimestamp(`  Notional value: ${notionalUSDT.toFixed(2)} USDT (at ${symbolConfig.leverage}x leverage)`);
+        logErrorWithTimestamp(`  Exchange minimum notional: ${minNotional} USDT`);
+        logErrorWithTimestamp(`  RECOMMENDED: Set minPositionSize to at least ${(minMarginRequired * 1.1).toFixed(2)} USDT`);
+        
+        // Broadcast error to UI
+        if (this.statusBroadcaster) {
+          this.statusBroadcaster.broadcastTradingError(
+            `Trade Size Below Exchange Minimum - ${symbol}`,
+            `Notional ${notionalUSDT.toFixed(2)} USDT is below exchange minimum ${minNotional} USDT`,
+            {
+              component: 'Hunter',
+              symbol,
+              details: {
+                tradeSize: tradeSizeUSDT,
+                notional: notionalUSDT,
+                exchangeMinimum: minNotional,
+                leverage: symbolConfig.leverage,
+                recommendedMinPositionSize: minMarginRequired * 1.1
+              }
+            }
+          );
+        }
+        return;
       }
 
       const calculatedQuantity = notionalUSDT / currentPrice;
@@ -1168,9 +1670,17 @@ logWarnWithTimestamp('Hunter: Cannot determine correct mode. Since we cannot ver
 
       // Only broadcast and emit if order was successfully placed
       if (order && order.orderId) {
+        // Record DCA entry for guardrail tracking
+        if (isAddingToExisting) {
+          this.positionTracker.recordDCAEntry(symbol, side, this.isHedgeMode);
+          const dcaCount = this.positionTracker.getDCAEntryCount(symbol, side, this.isHedgeMode);
+          logWithTimestamp(`Hunter: Recorded DCA entry #${dcaCount} for ${symbol} ${side === 'BUY' ? 'LONG' : 'SHORT'}`);
+        }
+
         // Create tranche if tranche management is enabled
         if (symbolConfig.enableTrancheManagement) {
           try {
+            const { getTrancheManager } = await import('../services/trancheManager');
             const trancheManager = getTrancheManager();
             const _trancheSide = side === 'BUY' ? 'LONG' : 'SHORT';
 
@@ -1212,7 +1722,8 @@ logWarnWithTimestamp('Hunter: Cannot determine correct mode. Since we cannot ver
           orderId: order.orderId,
           leverage: symbolConfig.leverage,
           orderType,
-          paperMode: false
+          paperMode: false,
+          qualityScore
         });
       }
 
@@ -1505,7 +2016,8 @@ logWithTimestamp(`Hunter: Fallback market order placed for ${symbol}, orderId: $
             orderId: fallbackOrder.orderId,
             leverage: symbolConfig.leverage,
             orderType: 'MARKET',
-            paperMode: false
+            paperMode: false,
+            qualityScore
           });
 
         } catch (fallbackError: any) {
@@ -1621,82 +2133,4 @@ logErrorWithTimestamp(`Hunter: Fallback order failed for ${symbol} (${fallbackTr
         }
       }
     }
-
-  private simulateLiquidations(): void {
-    // Simulate liquidation events for paper mode testing
-    const symbols = Object.keys(this.config.symbols);
-    if (symbols.length === 0) {
-logWithTimestamp('Hunter: No symbols configured for simulation');
-      return;
-    }
-
-    // Generate realistic liquidation events using actual market prices
-    const generateEvent = async () => {
-      if (!this.isRunning) return;
-
-      try {
-        // Pick a random symbol from config
-        const symbol = symbols[Math.floor(Math.random() * symbols.length)];
-        const symbolConfig = this.config.symbols[symbol];
-
-        // Fetch real market price
-        const markPriceData = await getMarkPrice(symbol);
-        const currentPrice = parseFloat(
-          Array.isArray(markPriceData) ? markPriceData[0].markPrice : markPriceData.markPrice
-        );
-
-        // Random side with slight bias
-        const side = Math.random() > 0.5 ? 'SELL' : 'BUY';
-
-        // Simulate price with small variance (±0.5%)
-        const priceVariance = 0.005;
-        const simulatedPrice = currentPrice * (1 + (Math.random() - 0.5) * priceVariance);
-
-        // Calculate realistic quantity based on configured thresholds
-        const thresholdUSDT = side === 'SELL'
-          ? (symbolConfig.longVolumeThresholdUSDT || 1000)
-          : (symbolConfig.shortVolumeThresholdUSDT || 1000);
-
-        // Generate quantity that's 1-3x the threshold
-        const volumeMultiplier = 1 + Math.random() * 2;
-        const volumeUSDT = thresholdUSDT * volumeMultiplier;
-        const qty = volumeUSDT / simulatedPrice;
-
-        const mockEvent = {
-          e: 'forceOrder',
-          o: {
-            s: symbol,
-            S: side,
-            o: 'LIMIT',
-            p: simulatedPrice.toString(),
-            q: qty.toString(),
-            ap: simulatedPrice.toString(),
-            X: 'FILLED',
-            l: qty.toString(),
-            z: qty.toString(),
-            T: Date.now()
-          },
-          E: Date.now()
-        };
-
-logWithTimestamp(
-          `Hunter: [PAPER MODE] Simulated liquidation - ${symbol} ${side} ` +
-          `${volumeUSDT.toFixed(0)} USDT @ $${simulatedPrice.toFixed(4)}`
-        );
-
-        // Handle the simulated liquidation event
-        await this.handleLiquidationEvent(mockEvent);
-      } catch (error) {
-logErrorWithTimestamp('Hunter: Error generating simulated liquidation:', error);
-      }
-
-      // Schedule next event (random interval 10-30 seconds for more realistic behavior)
-      const delay = 10000 + Math.random() * 20000;
-      setTimeout(generateEvent, delay);
-    };
-
-    // Start generating events after 3 seconds
-    setTimeout(generateEvent, 3000);
-logWithTimestamp('Hunter: Simulation started - will generate liquidations every 10-30 seconds using real market prices');
-  }
 }

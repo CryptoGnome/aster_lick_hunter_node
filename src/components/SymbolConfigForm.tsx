@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Config, SymbolConfig } from '@/lib/types';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -20,13 +21,52 @@ import {
   Eye,
   EyeOff,
   Shield,
+  ShieldAlert,
   TrendingUp,
   AlertCircle,
   Settings2,
   BarChart3,
+  Database,
+  Clock,
+  Crosshair,
+  ArrowUpDown,
+  Heart,
+  Gauge,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { TrancheSettingsSection } from './TrancheSettingsSection';
+
+// Number input that allows clearing the field
+interface NumberInputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'onChange' | 'value'> {
+  value: number | '';
+  onChange: (value: number | '') => void;
+  defaultValue?: number;
+}
+
+const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
+  ({ value, onChange, defaultValue = 0, onBlur, ...props }, ref) => {
+    return (
+      <Input
+        ref={ref}
+        type="number"
+        value={value}
+        onChange={(e) => {
+          const val = e.target.value;
+          onChange(val === '' ? '' : parseFloat(val));
+        }}
+        onBlur={(e) => {
+          const val = e.target.value;
+          if (val === '' || isNaN(parseFloat(val))) {
+            onChange(defaultValue);
+          }
+          onBlur?.(e);
+        }}
+        {...props}
+      />
+    );
+  }
+);
+NumberInput.displayName = 'NumberInput';
 
 interface SymbolConfigFormProps {
   onSave: (config: Config) => void;
@@ -46,14 +86,14 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       if (!currentConfig.global) {
         currentConfig.global = {
           riskPercent: 2,
-          paperMode: true,
+          paperMode: false,
           positionMode: 'HEDGE',
           maxOpenPositions: 10,
           useThresholdSystem: false,
           server: {
             dashboardPassword: '',
-            dashboardPort: 3000,
-            websocketPort: 8080,
+            dashboardPort: 0,
+            websocketPort: 0,
             useRemoteWebSocket: false,
             websocketHost: null
           },
@@ -67,8 +107,33 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
             deduplicationWindowMs: 1000,
             parallelProcessing: true,
             maxConcurrentRequests: 3
+          },
+          liquidationDatabase: {
+            retentionDays: 90,
+            cleanupIntervalHours: 24
           }
         };
+      } else {
+        // Ensure liquidationDatabase exists even if global exists
+        if (!currentConfig.global.liquidationDatabase) {
+          currentConfig.global.liquidationDatabase = {
+            retentionDays: 90,
+            cleanupIntervalHours: 24
+          };
+        }
+        // Ensure cascadeProtection exists
+        if (!currentConfig.global.cascadeProtection) {
+          currentConfig.global.cascadeProtection = {
+            enabled: true,
+            rollingWindowMinutes: 5,
+            baselineWindowMinutes: 30,
+            volumeMultiplierThreshold: 3.0,
+            minSymbolsForCascade: 3,
+            directionalSkewThreshold: 0.8,
+            cooldownMinutes: 10,
+            minVolumeForDetection: 50000
+          };
+        }
       }
       
       // Ensure symbols object exists
@@ -86,15 +151,17 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         secretKey: ''
       },
       global: {
-        riskPercent: 2,
-        paperMode: true,
+        riskPercent: 5,
+        paperMode: false,
         positionMode: 'HEDGE',
         maxOpenPositions: 10,
         useThresholdSystem: false,
+        useTradeQualityScoring: false,
+        useFTAExitAnalysis: false,
         server: {
           dashboardPassword: 'admin',
-          dashboardPort: 3000,
-          websocketPort: 8080,
+          dashboardPort: 0,
+          websocketPort: 0,
           useRemoteWebSocket: false,
           websocketHost: null
         },
@@ -106,6 +173,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
           queueTimeout: 30000,
           parallelProcessing: true,
           maxConcurrentRequests: 3
+        },
+        liquidationDatabase: {
+          retentionDays: 90,
+          cleanupIntervalHours: 24
         }
       },
       symbols: {},
@@ -127,15 +198,53 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
   const [useSeparateTradeSizes, setUseSeparateTradeSizes] = useState<Record<string, boolean>>({});
   const [longTradeSizeInput, setLongTradeSizeInput] = useState<string>('');
   const [shortTradeSizeInput, setShortTradeSizeInput] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<string>('api');
 
-  // Function to generate default config
+  // Handle URL parameter for adding symbols from Discovery page
+  const searchParams = useSearchParams();
+  const symbolFromUrl = searchParams.get('symbol');
+  const addFromUrl = searchParams.get('add');
+
+  useEffect(() => {
+    if (symbolFromUrl && addFromUrl === 'true') {
+      // Switch to symbols tab and add the symbol
+      setActiveTab('symbols');
+      
+      // Small delay to ensure config is loaded
+      setTimeout(() => {
+        if (!config.symbols[symbolFromUrl]) {
+          // Symbol not configured yet - add it
+          const defaultConfig = getDefaultSymbolConfig();
+          setConfig(prev => ({
+            ...prev,
+            symbols: {
+              ...prev.symbols,
+              [symbolFromUrl]: defaultConfig,
+            },
+          }));
+          setSelectedSymbol(symbolFromUrl);
+          toast.success(`Added ${symbolFromUrl} - configure settings and save`);
+        } else {
+          // Symbol already exists - just select it
+          setSelectedSymbol(symbolFromUrl);
+          toast.info(`${symbolFromUrl} is already configured`);
+        }
+        
+        // Clear the URL params without reload
+        window.history.replaceState({}, '', '/config');
+      }, 100);
+    }
+  }, [symbolFromUrl, addFromUrl]);
+
+  // Function to generate default config - conservative defaults
+  // Trade size defaults to $1 - users MUST adjust based on the minimum shown for each symbol
   const getDefaultSymbolConfig = (): SymbolConfig => {
     return {
       longVolumeThresholdUSDT: 10000,  // For long positions (buy on sell liquidations)
       shortVolumeThresholdUSDT: 10000, // For short positions (sell on buy liquidations)
       leverage: 10,
-      tradeSize: 100,
-      maxPositionMarginUSDT: 10000,
+      tradeSize: 1, // Very conservative - user must set based on symbol minimum
+      maxPositionMarginUSDT: 100,
       slPercent: 2,
       tpPercent: 3,
       priceOffsetBps: 5,      // 5 basis points offset for limit orders
@@ -144,6 +253,14 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       vwapProtection: false,  // VWAP protection disabled by default
       vwapTimeframe: '1m',    // Default to 1 minute timeframe
       vwapLookback: 100,      // Default to 100 candles
+      // Multi-Tranche defaults (disabled by default)
+      enableTrancheManagement: false,
+      trancheIsolationThreshold: 5,
+      maxTranches: 3,
+      maxIsolatedTranches: 2,
+      allowTrancheWhileIsolated: true,
+      trancheAutoCloseIsolated: false,
+      trancheRecoveryThreshold: 0.5,
     };
   };
 
@@ -245,7 +362,19 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
       return;
     }
 
-    onSave(config);
+    // Clean up longTradeSize/shortTradeSize from symbols where separate sizes are disabled
+    const cleanedConfig = { ...config };
+    cleanedConfig.symbols = { ...config.symbols };
+    
+    Object.keys(cleanedConfig.symbols).forEach(symbol => {
+      if (!useSeparateTradeSizes[symbol]) {
+        // Remove separate trade size fields when toggle is off
+        const { longTradeSize, shortTradeSize, ...restSymbolConfig } = cleanedConfig.symbols[symbol];
+        cleanedConfig.symbols[symbol] = restSymbolConfig;
+      }
+    });
+
+    onSave(cleanedConfig);
   };
 
   // Fetch symbol details when selecting a symbol
@@ -254,7 +383,9 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
     try {
       const response = await fetch(`/api/symbol-details/${symbol}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch symbol details');
+        const errorText = await response.text().catch(() => '');
+        console.error(`Symbol details API error: ${response.status} - ${errorText}`);
+        throw new Error(`Failed to fetch symbol details (${response.status})`);
       }
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
@@ -285,8 +416,8 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
         [selectedSymbol]: hasLongSize || hasShortSize
       }));
 
-      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize).toString());
-      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize).toString());
+      setLongTradeSizeInput((hasLongSize && symbolConfig.longTradeSize !== undefined ? symbolConfig.longTradeSize : symbolConfig.tradeSize ?? 100).toString());
+      setShortTradeSizeInput((hasShortSize && symbolConfig.shortTradeSize !== undefined ? symbolConfig.shortTradeSize : symbolConfig.tradeSize ?? 100).toString());
     } else {
       setSymbolDetails(null);
     }
@@ -342,7 +473,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
 
   return (
     <div className="space-y-6">
-      <Tabs defaultValue="api" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="api" className="flex items-center gap-2">
             <Key className="h-4 w-4" />
@@ -436,15 +567,11 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
               <div className="space-y-2">
                 <Label htmlFor="riskPercent">Risk Percentage</Label>
                 <div className="flex items-center space-x-4">
-                  <Input
+                  <NumberInput
                     id="riskPercent"
-                    type="number"
                     value={config.global.riskPercent ?? ''}
-                    onChange={(e) => {
-                      const value = parseFloat(e.target.value);
-                      handleGlobalChange('riskPercent', isNaN(value) ? 0 : value);
-                    }}
-                    placeholder="90"
+                    onChange={(value) => handleGlobalChange('riskPercent', value)}
+                    defaultValue={0}
                     className="w-24"
                     min="0.1"
                     max="100"
@@ -455,7 +582,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Maximum percentage of your account to risk across all positions (default: 90%)
+                  Maximum percentage of your account to risk across all positions
+                </p>
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  ⚠️ Not yet implemented - this setting is reserved for future use
                 </p>
               </div>
 
@@ -466,6 +596,9 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   <Label htmlFor="paperMode">Paper Mode</Label>
                   <p className="text-xs text-muted-foreground">
                     Enable simulation mode for risk-free testing
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    ⚠️ Experimental - not thoroughly tested
                   </p>
                 </div>
                 <Switch
@@ -484,13 +617,252 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 </div>
               )}
 
+              {/* Paper Trading Configuration - appears directly below Paper Mode toggle */}
+              {config.global.paperMode && (
+                <div className="space-y-4 p-4 border border-blue-200 dark:border-blue-900 rounded-lg bg-blue-50/30 dark:bg-blue-950/10">
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="startingBalance">Starting Balance (USDT)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="startingBalance"
+                          type="number"
+                          value={config.global.paperTrading?.startingBalance || 1000}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              startingBalance: isNaN(value) ? 1000 : Math.max(100, value)
+                            });
+                          }}
+                          className="w-32"
+                          min="100"
+                          max="1000000"
+                          step="100"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          Initial virtual balance for paper trading
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Set this to match your real account balance for realistic testing (requires bot restart)
+                      </p>
+                    </div>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    <div className="space-y-2">
+                      <Label htmlFor="slippageBps">Simulated Slippage (Basis Points)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="slippageBps"
+                          type="number"
+                          value={config.global.paperTrading?.slippageBps || 0}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              slippageBps: isNaN(value) ? 0 : Math.max(0, Math.min(500, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="500"
+                          step="1"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          {config.global.paperTrading?.slippageBps 
+                            ? `~${(config.global.paperTrading.slippageBps / 100).toFixed(2)}% slippage` 
+                            : 'No slippage simulation'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Simulates price slippage on order fills (10 bps = 0.1%, 50 bps = 0.5%). Recommended: 5-20 bps for realistic testing.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="latencyMs">Simulated Network Latency (ms)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="latencyMs"
+                          type="number"
+                          value={config.global.paperTrading?.latencyMs || 0}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              latencyMs: isNaN(value) ? 0 : Math.max(0, Math.min(5000, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="5000"
+                          step="10"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          Delay before order execution
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Simulates network delay between order placement and fill. Recommended: 50-200ms for realistic testing.
+                      </p>
+                    </div>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    <div className="space-y-2">
+                      <Label htmlFor="partialFillPercent">Partial Fill Chance (%)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="partialFillPercent"
+                          type="number"
+                          value={config.global.paperTrading?.partialFillPercent || 0}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              partialFillPercent: isNaN(value) ? 0 : Math.max(0, Math.min(100, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="100"
+                          step="1"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          % chance of partial order fills
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Probability that limit orders only partially fill. 0 = always full fills, 100 = always partial.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="rejectionRate">Order Rejection Rate (%)</Label>
+                      <div className="flex items-center space-x-4">
+                        <Input
+                          id="rejectionRate"
+                          type="number"
+                          value={config.global.paperTrading?.rejectionRate || 0}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value);
+                            handleGlobalChange('paperTrading', {
+                              ...config.global.paperTrading,
+                              rejectionRate: isNaN(value) ? 0 : Math.max(0, Math.min(100, value))
+                            });
+                          }}
+                          className="w-32"
+                          min="0"
+                          max="100"
+                          step="0.1"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          % chance of order rejection
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Simulates occasional order rejections (insufficient margin, rate limits, etc.). Keep low (0.1-2%).
+                      </p>
+                    </div>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="enableRealisticFills">Realistic Fill Simulation</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Use orderbook depth for more accurate fill simulation
+                        </p>
+                      </div>
+                      <Switch
+                        id="enableRealisticFills"
+                        checked={config.global.paperTrading?.enableRealisticFills || false}
+                        onCheckedChange={(checked) => {
+                          handleGlobalChange('paperTrading', {
+                            ...config.global.paperTrading,
+                            enableRealisticFills: checked
+                          });
+                        }}
+                      />
+                    </div>
+
+                    <Alert>
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>
+                        <strong>Paper Trading Active:</strong> These settings help simulate real trading conditions. 
+                        Start with conservative settings (low slippage, minimal latency) and gradually increase for stress testing.
+                      </AlertDescription>
+                    </Alert>
+
+                    <Separator className="bg-blue-200 dark:bg-blue-900" />
+
+                    {/* Reset Paper Trading Button */}
+                    <div className="space-y-2">
+                      <Label>Reset Paper Trading</Label>
+                      <div className="flex items-center gap-4">
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          onClick={async () => {
+                            if (!confirm('This will delete all paper trading positions and reset your balance. Continue?')) {
+                              return;
+                            }
+                            try {
+                              const response = await fetch('/api/paper-trading/reset', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                  newBalance: config.global.paperTrading?.startingBalance || 1000 
+                                }),
+                              });
+                              if (response.ok) {
+                                toast.success('Paper trading reset successfully');
+                                window.location.reload();
+                              } else {
+                                toast.error('Failed to reset paper trading');
+                              }
+                            } catch (error) {
+                              toast.error('Error resetting paper trading');
+                            }
+                          }}
+                        >
+                          Reset Paper Trading
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                          Clear all positions and reset balance to {config.global.paperTrading?.startingBalance || 1000} USDT
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <Separator />
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="debugMode">Debug Mode</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Enable verbose console logging for troubleshooting
+                  </p>
+                </div>
+                <Switch
+                  id="debugMode"
+                  checked={config.global.debugMode || false}
+                  onCheckedChange={(checked) => handleGlobalChange('debugMode', checked)}
+                />
+              </div>
+
               <Separator />
 
               <div className="space-y-2">
                 <Label htmlFor="positionMode">Position Mode</Label>
                 <select
                   id="positionMode"
-                  value={config.global.positionMode ?? 'HEDGE'}
+                  value={config.global.positionMode || 'ONE_WAY'}
                   onChange={(e) => handleGlobalChange('positionMode', e.target.value)}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -498,31 +870,225 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   <option value="HEDGE">Hedge Mode (LONG/SHORT)</option>
                 </select>
                 <p className="text-xs text-muted-foreground">
-                  One-way: All positions use BOTH | Hedge: Separate LONG and SHORT positions (default: HEDGE)
+                  One-way: All positions use BOTH | Hedge: Separate LONG and SHORT positions
                 </p>
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="maxOpenPositions">Max Open Positions</Label>
                 <div className="flex items-center space-x-4">
-                  <Input
+                  <NumberInput
                     id="maxOpenPositions"
-                    type="number"
                     value={config.global.maxOpenPositions ?? ''}
-                    onChange={(e) => {
-                      const value = parseInt(e.target.value);
-                      handleGlobalChange('maxOpenPositions', isNaN(value) ? 10 : value);
-                    }}
-                    placeholder="5"
+                    onChange={(value) => handleGlobalChange('maxOpenPositions', value)}
+                    defaultValue={10}
                     className="w-24"
                     min="1"
                     max="50"
                     step="1"
                   />
                   <span className="text-sm text-muted-foreground">
-                    Maximum concurrent positions (default: 5, hedged pairs count as one)
+                    Maximum concurrent positions (hedged pairs count as one)
                   </span>
                 </div>
+              </div>
+
+              {/* Directional Position Limits */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="maxLongPositions">Max Long Positions</Label>
+                  <div className="flex items-center space-x-4">
+                    <NumberInput
+                      id="maxLongPositions"
+                      value={config.global.maxLongPositions ?? ''}
+                      onChange={(value) => handleGlobalChange('maxLongPositions', value)}
+                      defaultValue={3}
+                      className="w-24"
+                      min="1"
+                      max="20"
+                      step="1"
+                    />
+                    <span className="text-sm text-muted-foreground">Max longs</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="maxShortPositions">Max Short Positions</Label>
+                  <div className="flex items-center space-x-4">
+                    <NumberInput
+                      id="maxShortPositions"
+                      value={config.global.maxShortPositions ?? ''}
+                      onChange={(value) => handleGlobalChange('maxShortPositions', value)}
+                      defaultValue={3}
+                      className="w-24"
+                      min="1"
+                      max="20"
+                      step="1"
+                    />
+                    <span className="text-sm text-muted-foreground">Max shorts</span>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Trailing Take Profit */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="flex items-center gap-2">
+                      <Crosshair className="h-4 w-4" />
+                      Trailing Take Profit
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      Trail profit from peak instead of using fixed TP targets
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.global.enableTrailingTP === true}
+                    onCheckedChange={(checked) =>
+                      handleGlobalChange('enableTrailingTP', checked)
+                    }
+                  />
+                </div>
+                {config.global.enableTrailingTP && (
+                  <div className="grid grid-cols-2 gap-4 pl-4 border-l-2 border-muted">
+                    <div className="space-y-2">
+                      <Label htmlFor="trailingTPActivation">Activation %</Label>
+                      <div className="flex items-center space-x-2">
+                        <NumberInput
+                          id="trailingTPActivation"
+                          value={config.global.trailingTPActivation ?? ''}
+                          onChange={(value) => handleGlobalChange('trailingTPActivation', value)}
+                          defaultValue={0.5}
+                          className="w-24"
+                          min="0.1"
+                          max="10"
+                          step="0.1"
+                        />
+                        <span className="text-xs text-muted-foreground">Profit % to start trailing</span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="trailingTPCallback">Callback %</Label>
+                      <div className="flex items-center space-x-2">
+                        <NumberInput
+                          id="trailingTPCallback"
+                          value={config.global.trailingTPCallback ?? ''}
+                          onChange={(value) => handleGlobalChange('trailingTPCallback', value)}
+                          defaultValue={0.3}
+                          className="w-24"
+                          min="0.05"
+                          max="5"
+                          step="0.05"
+                        />
+                        <span className="text-xs text-muted-foreground">Drop from peak to close</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* DCA Entry Spacing */}
+              <div className="space-y-2">
+                <Label htmlFor="minEntrySpacingPercent" className="flex items-center gap-2">
+                  <ArrowUpDown className="h-4 w-4" />
+                  Min DCA Entry Spacing %
+                </Label>
+                <div className="flex items-center space-x-4">
+                  <NumberInput
+                    id="minEntrySpacingPercent"
+                    value={config.global.minEntrySpacingPercent ?? ''}
+                    onChange={(value) => handleGlobalChange('minEntrySpacingPercent', value)}
+                    defaultValue={0.5}
+                    className="w-24"
+                    min="0"
+                    max="10"
+                    step="0.1"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    Minimum price distance between DCA entries on same symbol (0 = disabled)
+                  </span>
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* Trade Size Multiplier (Risk Mode) */}
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-2">
+                    <Gauge className="h-4 w-4" />
+                    Trade Size Multiplier
+                    {(() => {
+                      const m = config.global.tradeSizeMultiplier ?? 1.0;
+                      if (m > 2.0) return <Badge variant="destructive" className="ml-2 text-[10px]">HIGH RISK</Badge>;
+                      if (m > 1.0) return <Badge className="ml-2 text-[10px] bg-yellow-500 hover:bg-yellow-600">RISK-ON</Badge>;
+                      if (m < 1.0) return <Badge variant="secondary" className="ml-2 text-[10px]">RISK-OFF</Badge>;
+                      return <Badge variant="outline" className="ml-2 text-[10px]">NORMAL</Badge>;
+                    })()}
+                  </Label>
+                  <p className="text-sm text-muted-foreground">
+                    Scale all trade sizes globally. Quick risk-on/risk-off switch without editing each symbol.
+                  </p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex gap-2">
+                    {[
+                      { label: '0.5×', value: 0.5, desc: 'Half size' },
+                      { label: '1×', value: 1.0, desc: 'Normal' },
+                      { label: '1.5×', value: 1.5, desc: '' },
+                      { label: '2×', value: 2.0, desc: '' },
+                      { label: '3×', value: 3.0, desc: '' },
+                    ].map((preset) => (
+                      <Button
+                        key={preset.value}
+                        type="button"
+                        size="sm"
+                        variant={(config.global.tradeSizeMultiplier ?? 1.0) === preset.value ? 'default' : 'outline'}
+                        className={`px-3 ${
+                          preset.value > 2.0 && (config.global.tradeSizeMultiplier ?? 1.0) === preset.value
+                            ? 'bg-red-600 hover:bg-red-700'
+                            : preset.value > 1.0 && (config.global.tradeSizeMultiplier ?? 1.0) === preset.value
+                            ? 'bg-yellow-600 hover:bg-yellow-700'
+                            : ''
+                        }`}
+                        onClick={() => handleGlobalChange('tradeSizeMultiplier', preset.value)}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <span className="text-sm text-muted-foreground">or</span>
+                  <NumberInput
+                    id="tradeSizeMultiplier"
+                    value={config.global.tradeSizeMultiplier ?? ''}
+                    onChange={(value) => handleGlobalChange('tradeSizeMultiplier', value)}
+                    defaultValue={1.0}
+                    className="w-24"
+                    min="0.1"
+                    max="5"
+                    step="0.1"
+                  />
+                </div>
+                {(config.global.tradeSizeMultiplier ?? 1.0) > 1.0 && (
+                  <Alert className={(config.global.tradeSizeMultiplier ?? 1.0) > 2.0 ? 'border-red-500 bg-red-50 dark:bg-red-950/20' : 'border-yellow-500 bg-yellow-50 dark:bg-yellow-950/20'}>
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      {(config.global.tradeSizeMultiplier ?? 1.0) > 2.0 ? (
+                        <><strong>⚠️ HIGH RISK:</strong> Trade sizes are {config.global.tradeSizeMultiplier}× normal. Losses will also be {config.global.tradeSizeMultiplier}× larger. Make sure you understand the risk.</>
+                      ) : (
+                        <>Trade sizes are {config.global.tradeSizeMultiplier ?? 1.0}× normal. Each position will use proportionally more margin. Capped by maxPositionSize per symbol.</>
+                      )}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {(config.global.tradeSizeMultiplier ?? 1.0) < 1.0 && (
+                  <p className="text-xs text-blue-600 dark:text-blue-400">
+                    🔵 Risk-off mode: Trade sizes reduced to {((config.global.tradeSizeMultiplier ?? 1.0) * 100).toFixed(0)}% of normal
+                  </p>
+                )}
               </div>
 
               <Separator />
@@ -554,6 +1120,78 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                     </AlertDescription>
                   </Alert>
                 )}
+              </div>
+
+              {/* Trade Quality Scoring Toggle */}
+              <Separator />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="flex items-center gap-2">
+                      <BarChart3 className="h-4 w-4" />
+                      Trade Quality Scoring
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      Filter trades based on VWAP regime, spike velocity, and volume trends
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.global.useTradeQualityScoring !== false}
+                    onCheckedChange={(checked) =>
+                      handleGlobalChange('useTradeQualityScoring', checked)
+                    }
+                  />
+                </div>
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    {config.global.useTradeQualityScoring !== false ? (
+                      <>
+                        <strong>ACTIVE:</strong> Trades are scored 0-3 based on market conditions. Low quality trades (score 0) are skipped, and position sizes are adjusted based on quality (0.5x-1.5x).
+                      </>
+                    ) : (
+                      <>
+                        <strong>PASSIVE:</strong> Trade quality is still calculated and recorded for monitoring, but no trades will be blocked or filtered. Use this to observe scoring before enabling full filtering.
+                      </>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="flex items-center gap-2">
+                      <Clock className="h-4 w-4" />
+                      FTA Exit Analysis
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      Analyze positions for early exit signals based on duration and price action
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.global.useFTAExitAnalysis === true}
+                    onCheckedChange={(checked) =>
+                      handleGlobalChange('useFTAExitAnalysis', checked)
+                    }
+                  />
+                </div>
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>
+                    {config.global.useFTAExitAnalysis === true ? (
+                      <>
+                        <strong>ENABLED:</strong> Monitors positions and logs signals when trades exceed 3x average winning duration or hit First Trouble Area (FTA) price levels. Signals are logged every 5 minutes per position. Does NOT auto-close positions.
+                      </>
+                    ) : (
+                      <>
+                        <strong>DISABLED:</strong> No FTA exit analysis is performed. Enable this if you want to be alerted about positions that may be underperforming.
+                      </>
+                    )}
+                  </AlertDescription>
+                </Alert>
               </div>
             </CardContent>
           </Card>
@@ -595,18 +1233,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
               <div className="space-y-2">
                 <Label htmlFor="dashboardPort">Dashboard Port</Label>
                 <div className="flex items-center space-x-4">
-                  <Input
+                  <NumberInput
                     id="dashboardPort"
-                    type="number"
                     value={config.global.server?.dashboardPort ?? ''}
-                    onChange={(e) => {
-                      const value = parseInt(e.target.value);
+                    onChange={(value) => {
                       handleGlobalChange('server', {
                         ...config.global.server,
-                        dashboardPort: isNaN(value) ? 3000 : value
+                        dashboardPort: value
                       });
                     }}
-                    placeholder="3000"
+                    defaultValue={3000}
                     className="w-24"
                     min="1024"
                     max="65535"
@@ -620,18 +1256,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
               <div className="space-y-2">
                 <Label htmlFor="websocketPort">WebSocket Port</Label>
                 <div className="flex items-center space-x-4">
-                  <Input
+                  <NumberInput
                     id="websocketPort"
-                    type="number"
                     value={config.global.server?.websocketPort ?? ''}
-                    onChange={(e) => {
-                      const value = parseInt(e.target.value);
+                    onChange={(value) => {
                       handleGlobalChange('server', {
                         ...config.global.server,
-                        websocketPort: isNaN(value) ? 8080 : value
+                        websocketPort: value
                       });
                     }}
-                    placeholder="8080"
+                    defaultValue={8080}
                     className="w-24"
                     min="1024"
                     max="65535"
@@ -691,6 +1325,530 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                 <AlertDescription>
                   <strong>Note:</strong> After changing ports, you&apos;ll need to restart the application and access it at the new port.
                   {config.global.server?.dashboardPassword && " Password protection is active - you'll need to login to access the dashboard."}
+                </AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
+
+          {/* Cascade Protection Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldAlert className="h-5 w-5" />
+                Cascade Protection
+              </CardTitle>
+              <CardDescription>
+                Circuit breaker that pauses new entries during liquidation cascades to prevent correlated blowups
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Enable Cascade Protection</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Detect market-wide liquidation cascades and pause trading
+                  </p>
+                </div>
+                <Switch
+                  checked={config.global.cascadeProtection?.enabled !== false}
+                  onCheckedChange={(checked) =>
+                    handleGlobalChange('cascadeProtection', {
+                      ...config.global.cascadeProtection,
+                      enabled: checked
+                    })
+                  }
+                />
+              </div>
+
+              {config.global.cascadeProtection?.enabled !== false && (
+                <>
+                  <Separator />
+
+                  {/* Cascade Mode */}
+                  <div className="space-y-2">
+                    <Label htmlFor="cascadeMode">Cascade Mode</Label>
+                    <Select
+                      value={config.global.cascadeProtection?.mode || 'LOG_ONLY'}
+                      onValueChange={(value) =>
+                        handleGlobalChange('cascadeProtection', {
+                          ...config.global.cascadeProtection,
+                          mode: value as 'LOG_ONLY' | 'REDUCE' | 'BLOCK'
+                        })
+                      }
+                    >
+                      <SelectTrigger id="cascadeMode" className="w-full">
+                        <SelectValue placeholder="Select mode" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="LOG_ONLY">Log Only — Detect &amp; report, never block trades</SelectItem>
+                        <SelectItem value="REDUCE">Reduce — Shrink position sizes during cascades</SelectItem>
+                        <SelectItem value="BLOCK">Block — Pause all new entries during cascades</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {config.global.cascadeProtection?.mode === 'BLOCK'
+                        ? '⚠️ BLOCK mode will prevent ALL new entries during a cascade, including high-edge contrarian signals'
+                        : config.global.cascadeProtection?.mode === 'REDUCE'
+                        ? 'Position sizes will be multiplied by the reduction factor below during cascades'
+                        : '✅ Cascades are detected and logged/shown on dashboard but never block trades (recommended)'}
+                    </p>
+                  </div>
+
+                  {/* Reduced Position Multiplier - only for REDUCE mode */}
+                  {config.global.cascadeProtection?.mode === 'REDUCE' && (
+                    <div className="space-y-2">
+                      <Label htmlFor="reducedPositionMultiplier">Position Size Multiplier</Label>
+                      <div className="flex items-center space-x-4">
+                        <NumberInput
+                          id="reducedPositionMultiplier"
+                          value={config.global.cascadeProtection?.reducedPositionMultiplier ?? ''}
+                          onChange={(value) =>
+                            handleGlobalChange('cascadeProtection', {
+                              ...config.global.cascadeProtection,
+                              reducedPositionMultiplier: typeof value === 'number' ? Math.min(1, Math.max(0.1, value)) : 0.5
+                            })
+                          }
+                          defaultValue={0.5}
+                          className="w-24"
+                          min="0.1"
+                          max="1"
+                          step="0.1"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          Position sizes × {config.global.cascadeProtection?.reducedPositionMultiplier || 0.5} during cascade
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <Separator />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="rollingWindowMinutes">Detection Window (min)</Label>
+                      <NumberInput
+                        id="rollingWindowMinutes"
+                        value={config.global.cascadeProtection?.rollingWindowMinutes ?? ''}
+                        onChange={(value) =>
+                          handleGlobalChange('cascadeProtection', {
+                            ...config.global.cascadeProtection,
+                            rollingWindowMinutes: typeof value === 'number' ? Math.max(1, value) : 5
+                          })
+                        }
+                        defaultValue={5}
+                        className="w-full"
+                        min="1"
+                        max="30"
+                        step="1"
+                      />
+                      <p className="text-xs text-muted-foreground">Window to detect abnormal liquidation activity</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="baselineWindowMinutes">Baseline Window (min)</Label>
+                      <NumberInput
+                        id="baselineWindowMinutes"
+                        value={config.global.cascadeProtection?.baselineWindowMinutes ?? ''}
+                        onChange={(value) =>
+                          handleGlobalChange('cascadeProtection', {
+                            ...config.global.cascadeProtection,
+                            baselineWindowMinutes: typeof value === 'number' ? Math.max(5, value) : 30
+                          })
+                        }
+                        defaultValue={30}
+                        className="w-full"
+                        min="5"
+                        max="120"
+                        step="5"
+                      />
+                      <p className="text-xs text-muted-foreground">Longer window for &quot;normal&quot; volume baseline</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="volumeMultiplierThreshold">Volume Spike Multiplier</Label>
+                      <NumberInput
+                        id="volumeMultiplierThreshold"
+                        value={config.global.cascadeProtection?.volumeMultiplierThreshold ?? ''}
+                        onChange={(value) =>
+                          handleGlobalChange('cascadeProtection', {
+                            ...config.global.cascadeProtection,
+                            volumeMultiplierThreshold: typeof value === 'number' ? Math.max(1.5, value) : 3.0
+                          })
+                        }
+                        defaultValue={3.0}
+                        className="w-full"
+                        min="1.5"
+                        max="10"
+                        step="0.5"
+                      />
+                      <p className="text-xs text-muted-foreground">Trigger when volume is Nx above baseline</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="minSymbolsForCascade">Min Symbols for Cascade</Label>
+                      <NumberInput
+                        id="minSymbolsForCascade"
+                        value={config.global.cascadeProtection?.minSymbolsForCascade ?? ''}
+                        onChange={(value) =>
+                          handleGlobalChange('cascadeProtection', {
+                            ...config.global.cascadeProtection,
+                            minSymbolsForCascade: typeof value === 'number' ? Math.max(2, value) : 3
+                          })
+                        }
+                        defaultValue={3}
+                        className="w-full"
+                        min="2"
+                        max="10"
+                        step="1"
+                      />
+                      <p className="text-xs text-muted-foreground">Symbols liquidating simultaneously to confirm cascade</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="directionalSkewThreshold">Directional Skew Threshold</Label>
+                      <NumberInput
+                        id="directionalSkewThreshold"
+                        value={config.global.cascadeProtection?.directionalSkewThreshold ?? ''}
+                        onChange={(value) =>
+                          handleGlobalChange('cascadeProtection', {
+                            ...config.global.cascadeProtection,
+                            directionalSkewThreshold: typeof value === 'number' ? Math.min(1, Math.max(0.5, value)) : 0.8
+                          })
+                        }
+                        defaultValue={0.8}
+                        className="w-full"
+                        min="0.5"
+                        max="1"
+                        step="0.05"
+                      />
+                      <p className="text-xs text-muted-foreground">80%+ same direction = trend (not mean reversion)</p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="cooldownMinutes">Cooldown (min)</Label>
+                      <NumberInput
+                        id="cooldownMinutes"
+                        value={config.global.cascadeProtection?.cooldownMinutes ?? ''}
+                        onChange={(value) =>
+                          handleGlobalChange('cascadeProtection', {
+                            ...config.global.cascadeProtection,
+                            cooldownMinutes: typeof value === 'number' ? Math.max(1, value) : 10
+                          })
+                        }
+                        defaultValue={10}
+                        className="w-full"
+                        min="1"
+                        max="60"
+                        step="1"
+                      />
+                      <p className="text-xs text-muted-foreground">Minutes to pause trading after cascade detected</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="minVolumeForDetection">Min Volume for Detection ($)</Label>
+                    <div className="flex items-center space-x-4">
+                      <NumberInput
+                        id="minVolumeForDetection"
+                        value={config.global.cascadeProtection?.minVolumeForDetection ?? ''}
+                        onChange={(value) =>
+                          handleGlobalChange('cascadeProtection', {
+                            ...config.global.cascadeProtection,
+                            minVolumeForDetection: typeof value === 'number' ? Math.max(0, value) : 50000
+                          })
+                        }
+                        defaultValue={50000}
+                        className="w-32"
+                        min="0"
+                        max="500000"
+                        step="5000"
+                      />
+                      <span className="text-sm text-muted-foreground">
+                        Minimum $ volume in window before cascade detection activates
+                      </span>
+                    </div>
+                  </div>
+
+                  <Alert>
+                    <ShieldAlert className="h-4 w-4" />
+                    <AlertDescription>
+                      <strong>How it works:</strong> Monitors ALL liquidations across the exchange (not just your symbols). 
+                      When volume spikes {config.global.cascadeProtection?.volumeMultiplierThreshold || 3}x above baseline AND 
+                      {config.global.cascadeProtection?.minSymbolsForCascade || 3}+ symbols are liquidating simultaneously or 
+                      {((config.global.cascadeProtection?.directionalSkewThreshold || 0.8) * 100).toFixed(0)}%+ of liquidations are 
+                      in the same direction, a cascade is detected.
+                      {config.global.cascadeProtection?.mode === 'BLOCK' 
+                        ? ` New entries are paused for ${config.global.cascadeProtection?.cooldownMinutes || 10} minutes.`
+                        : config.global.cascadeProtection?.mode === 'REDUCE'
+                        ? ` Position sizes are reduced by ${config.global.cascadeProtection?.reducedPositionMultiplier || 0.5}x for ${config.global.cascadeProtection?.cooldownMinutes || 10} minutes.`
+                        : ' The event is logged and shown on the dashboard but trading continues normally.'}
+                      {' '}Existing positions keep their SL/TP.
+                    </AlertDescription>
+                  </Alert>
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Liquidation Database Settings Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Liquidation Database
+              </CardTitle>
+              <CardDescription>
+                Configure how long to keep liquidation data for chart analysis
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="retentionDays">Data Retention (Days)</Label>
+                <div className="flex items-center space-x-4">
+                  <NumberInput
+                    id="retentionDays"
+                    value={config.global.liquidationDatabase?.retentionDays ?? ''}
+                    onChange={(value) => {
+                      handleGlobalChange('liquidationDatabase', {
+                        ...config.global.liquidationDatabase,
+                        retentionDays: typeof value === 'number' ? Math.max(0, value) : 90
+                      });
+                    }}
+                    defaultValue={90}
+                    className="w-24"
+                    min="0"
+                    max="3650"
+                    step="1"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    Days to keep liquidation data (0 = never delete)
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  More data means better chart analysis but uses more disk space. 
+                  Set to 0 to keep all liquidation data permanently.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cleanupInterval">Cleanup Interval (Hours)</Label>
+                <div className="flex items-center space-x-4">
+                  <NumberInput
+                    id="cleanupInterval"
+                    value={config.global.liquidationDatabase?.cleanupIntervalHours ?? ''}
+                    onChange={(value) => {
+                      handleGlobalChange('liquidationDatabase', {
+                        ...config.global.liquidationDatabase,
+                        cleanupIntervalHours: typeof value === 'number' ? Math.max(1, value) : 24
+                      });
+                    }}
+                    defaultValue={24}
+                    className="w-24"
+                    min="1"
+                    max="168"
+                    step="1"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    How often to run database cleanup (default: 24)
+                  </span>
+                </div>
+              </div>
+
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Current settings:</strong> {
+                    (config.global.liquidationDatabase?.retentionDays ?? 90) === 0 
+                      ? "All liquidation data will be kept permanently" 
+                      : `Liquidation data older than ${config.global.liquidationDatabase?.retentionDays ?? 90} days will be automatically deleted every ${config.global.liquidationDatabase?.cleanupIntervalHours ?? 24} hours`
+                  }
+                </AlertDescription>
+              </Alert>
+            </CardContent>
+          </Card>
+
+          {/* Account Health Monitor Settings Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Heart className="h-5 w-5" />
+                Account Health Monitor
+              </CardTitle>
+              <CardDescription>
+                Tracks account drawdown from session peak balance and pauses new entries during significant losses. DCA to existing positions is never blocked.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="maxDrawdownPercent">Max Drawdown (%)</Label>
+                  <NumberInput
+                    id="maxDrawdownPercent"
+                    value={config.global.accountHealth?.maxDrawdownPercent ?? ''}
+                    onChange={(value) =>
+                      handleGlobalChange('accountHealth', {
+                        ...config.global.accountHealth,
+                        maxDrawdownPercent: typeof value === 'number' ? Math.max(1, Math.min(50, value)) : 25
+                      })
+                    }
+                    defaultValue={25}
+                    className="w-full"
+                    min="1"
+                    max="50"
+                    step="1"
+                  />
+                  <p className="text-xs text-muted-foreground">Pause new entries when balance drops this % from session peak</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="resumeAtDrawdownPercent">Resume At Drawdown (%)</Label>
+                  <NumberInput
+                    id="resumeAtDrawdownPercent"
+                    value={config.global.accountHealth?.resumeAtDrawdownPercent ?? ''}
+                    onChange={(value) =>
+                      handleGlobalChange('accountHealth', {
+                        ...config.global.accountHealth,
+                        resumeAtDrawdownPercent: typeof value === 'number' ? Math.max(0, Math.min(49, value)) : 15
+                      })
+                    }
+                    defaultValue={15}
+                    className="w-full"
+                    min="0"
+                    max="49"
+                    step="1"
+                  />
+                  <p className="text-xs text-muted-foreground">Resume trading when drawdown recovers below this % (hysteresis)</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="maxUnrealizedLossPercent">Max Unrealized Loss (%)</Label>
+                  <NumberInput
+                    id="maxUnrealizedLossPercent"
+                    value={config.global.accountHealth?.maxUnrealizedLossPercent ?? ''}
+                    onChange={(value) =>
+                      handleGlobalChange('accountHealth', {
+                        ...config.global.accountHealth,
+                        maxUnrealizedLossPercent: typeof value === 'number' ? Math.max(1, Math.min(50, value)) : 20
+                      })
+                    }
+                    defaultValue={20}
+                    className="w-full"
+                    min="1"
+                    max="50"
+                    step="1"
+                  />
+                  <p className="text-xs text-muted-foreground">Pause if total unrealized losses exceed this % of balance</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="checkIntervalSeconds">Check Interval (sec)</Label>
+                  <NumberInput
+                    id="checkIntervalSeconds"
+                    value={config.global.accountHealth?.checkIntervalSeconds ?? ''}
+                    onChange={(value) =>
+                      handleGlobalChange('accountHealth', {
+                        ...config.global.accountHealth,
+                        checkIntervalSeconds: typeof value === 'number' ? Math.max(10, Math.min(300, value)) : 60
+                      })
+                    }
+                    defaultValue={60}
+                    className="w-full"
+                    min="10"
+                    max="300"
+                    step="10"
+                  />
+                  <p className="text-xs text-muted-foreground">How often to check account health</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="closeAllAtDrawdownPercent">Emergency Close-All (%)</Label>
+                <div className="flex items-center space-x-4">
+                  <NumberInput
+                    id="closeAllAtDrawdownPercent"
+                    value={config.global.accountHealth?.closeAllAtDrawdownPercent ?? ''}
+                    onChange={(value) =>
+                      handleGlobalChange('accountHealth', {
+                        ...config.global.accountHealth,
+                        closeAllAtDrawdownPercent: typeof value === 'number' ? Math.max(0, Math.min(80, value)) : 0
+                      })
+                    }
+                    defaultValue={0}
+                    className="w-24"
+                    min="0"
+                    max="80"
+                    step="5"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    Close ALL positions at this drawdown (0 = disabled)
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground text-red-500">
+                  ⚠️ Nuclear option — closes everything at market. Set to 0 to disable.
+                </p>
+              </div>
+
+              {/* DCA Guardrails */}
+              <div className="border-t pt-4">
+                <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+                  🛡️ DCA Guardrails
+                  <span className="text-xs text-muted-foreground font-normal">— Hard limits on position growth</span>
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="maxPositionNotional">Max Position Notional ($)</Label>
+                    <NumberInput
+                      id="maxPositionNotional"
+                      value={config.global.accountHealth?.maxPositionNotional ?? ''}
+                      onChange={(value) =>
+                        handleGlobalChange('accountHealth', {
+                          ...config.global.accountHealth,
+                          maxPositionNotional: typeof value === 'number' ? Math.max(0, value) : 0
+                        })
+                      }
+                      defaultValue={0}
+                      className="w-full"
+                      min="0"
+                      max="10000"
+                      step="5"
+                    />
+                    <p className="text-xs text-muted-foreground">Stop DCA when position notional value reaches this cap (0 = unlimited)</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="maxDCAEntries">Max DCA Entries</Label>
+                    <NumberInput
+                      id="maxDCAEntries"
+                      value={config.global.accountHealth?.maxDCAEntries ?? ''}
+                      onChange={(value) =>
+                        handleGlobalChange('accountHealth', {
+                          ...config.global.accountHealth,
+                          maxDCAEntries: typeof value === 'number' ? Math.max(0, Math.round(value)) : 0
+                        })
+                      }
+                      defaultValue={0}
+                      className="w-full"
+                      min="0"
+                      max="100"
+                      step="1"
+                    />
+                    <p className="text-xs text-muted-foreground">Max number of DCA entries per position (0 = unlimited)</p>
+                  </div>
+                </div>
+              </div>
+
+              <Alert>
+                <Heart className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>How it works:</strong> Tracks your session peak balance (high water mark). 
+                  When total balance drops {config.global.accountHealth?.maxDrawdownPercent || 25}% from peak OR unrealized losses 
+                  exceed {config.global.accountHealth?.maxUnrealizedLossPercent || 20}% of balance, new entries are paused (DCA still allowed). 
+                  Trading resumes when drawdown recovers below {config.global.accountHealth?.resumeAtDrawdownPercent || 15}%.
+                  {(config.global.accountHealth?.closeAllAtDrawdownPercent || 0) > 0 
+                    ? ` Emergency close-all triggers at ${config.global.accountHealth?.closeAllAtDrawdownPercent}% drawdown.` 
+                    : ''}
+                  {(config.global.accountHealth?.maxPositionNotional || 0) > 0 || (config.global.accountHealth?.maxDCAEntries || 0) > 0
+                    ? ' DCA guardrails limit individual position growth even when DCA is allowed.'
+                    : ''}
                 </AlertDescription>
               </Alert>
             </CardContent>
@@ -809,8 +1967,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                   </div>
 
                   {selectedSymbol && config.symbols[selectedSymbol] && (
-                    <>
-                      <Card>
+                    <Card>
                       <CardHeader>
                         <div className="flex items-center justify-between">
                           <CardTitle className="text-lg">{selectedSymbol} Settings</CardTitle>
@@ -828,63 +1985,156 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                       <CardContent className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <Label>Long Volume Threshold (USDT)</Label>
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={config.symbols[selectedSymbol].longVolumeThresholdUSDT ?? config.symbols[selectedSymbol].volumeThresholdUSDT ?? ''}
-                            onChange={(e) => {
-                              const value = parseFloat(e.target.value);
-                              handleSymbolChange(selectedSymbol, 'longVolumeThresholdUSDT', isNaN(value) ? 0 : value);
-                            }}
-                            placeholder="10000"
+                            onChange={(value) => handleSymbolChange(selectedSymbol, 'longVolumeThresholdUSDT', value)}
+                            defaultValue={0}
                             min="0"
                           />
                           <p className="text-xs text-muted-foreground">
-                            Min liquidation volume for longs (default: 10000 USDT)
+                            Min liquidation volume for longs (buy on sell liquidations)
                           </p>
                         </div>
 
                         <div className="space-y-2">
                           <Label>Short Volume Threshold (USDT)</Label>
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={config.symbols[selectedSymbol].shortVolumeThresholdUSDT ?? config.symbols[selectedSymbol].volumeThresholdUSDT ?? ''}
-                            onChange={(e) => {
-                              const value = parseFloat(e.target.value);
-                              handleSymbolChange(selectedSymbol, 'shortVolumeThresholdUSDT', isNaN(value) ? 0 : value);
-                            }}
-                            placeholder="10000"
+                            onChange={(value) => handleSymbolChange(selectedSymbol, 'shortVolumeThresholdUSDT', value)}
+                            defaultValue={0}
                             min="0"
                           />
                           <p className="text-xs text-muted-foreground">
-                            Min liquidation volume for shorts (default: 10000 USDT)
+                            Min liquidation volume for shorts (sell on buy liquidations)
                           </p>
                         </div>
 
                         <div className="space-y-2">
                           <Label>Leverage</Label>
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={config.symbols[selectedSymbol].leverage ?? ''}
-                            onChange={(e) => {
-                              const value = parseInt(e.target.value);
-                              handleSymbolChange(selectedSymbol, 'leverage', isNaN(value) ? 1 : value);
-                            }}
-                            placeholder="10"
+                            onChange={(value) => handleSymbolChange(selectedSymbol, 'leverage', value)}
+                            defaultValue={1}
                             min="1"
                             max="125"
                           />
                           <p className="text-xs text-muted-foreground">
-                            Trading leverage (default: 10x)
+                            Trading leverage (1-125x)
                           </p>
                         </div>
 
                         {/* Trade Size Configuration */}
                         <div className="col-span-2 space-y-4">
+                          <div className="space-y-0.5">
+                            <Label className="text-base">Trade Size Configuration</Label>
+                            <p className="text-sm text-muted-foreground">
+                              Configure how trade sizes are calculated
+                            </p>
+                          </div>
+
+                          {/* Position Sizing Mode */}
+                          <div className="space-y-2 p-4 border rounded-lg bg-muted/30">
+                            <Label htmlFor={`positionSizingMode-${selectedSymbol}`} className="font-semibold">
+                              Position Sizing Mode
+                            </Label>
+                            <Select
+                              value={config.symbols[selectedSymbol].positionSizingMode || 'FIXED'}
+                              onValueChange={(value: 'FIXED' | 'PERCENTAGE') => {
+                                handleSymbolChange(selectedSymbol, 'positionSizingMode', value);
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select sizing mode" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="FIXED">Fixed USDT (Static)</SelectItem>
+                                <SelectItem value="PERCENTAGE">Percentage of Balance (Dynamic)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <p className="text-xs text-muted-foreground">
+                              {config.symbols[selectedSymbol].positionSizingMode === 'PERCENTAGE' 
+                                ? '✨ Trade sizes auto-update every 5 minutes based on your balance'
+                                : 'Trade sizes remain constant until manually changed'}
+                            </p>
+
+                            {/* Percentage mode settings */}
+                            {config.symbols[selectedSymbol].positionSizingMode === 'PERCENTAGE' && (
+                              <div className="space-y-4 pt-2 mt-2 border-t">
+                                <div className="space-y-2">
+                                  <Label htmlFor={`percentageOfBalance-${selectedSymbol}`}>
+                                    Percentage of Balance
+                                  </Label>
+                                  <NumberInput
+                                    id={`percentageOfBalance-${selectedSymbol}`}
+                                    value={config.symbols[selectedSymbol].percentageOfBalance ?? ''}
+                                    onChange={(value) => handleSymbolChange(selectedSymbol, 'percentageOfBalance', value)}
+                                    defaultValue={1.0}
+                                    min="0.1"
+                                    max="100"
+                                    step="0.1"
+                                  />
+                                  <p className="text-xs text-muted-foreground">
+                                    Trade size = Balance × {config.symbols[selectedSymbol].percentageOfBalance || 1.0}%
+                                  </p>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`minPositionSize-${selectedSymbol}`}>
+                                      Min Size (USDT)
+                                    </Label>
+                                    <NumberInput
+                                      id={`minPositionSize-${selectedSymbol}`}
+                                      value={config.symbols[selectedSymbol].minPositionSize ?? ''}
+                                      onChange={(value) => handleSymbolChange(selectedSymbol, 'minPositionSize', value)}
+                                      defaultValue={5}
+                                      min="0.01"
+                                      step="0.01"
+                                    />
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`maxPositionSize-${selectedSymbol}`}>
+                                      Max Size (USDT)
+                                    </Label>
+                                    <NumberInput
+                                      id={`maxPositionSize-${selectedSymbol}`}
+                                      value={config.symbols[selectedSymbol].maxPositionSize ?? ''}
+                                      onChange={(value) => handleSymbolChange(selectedSymbol, 'maxPositionSize', value)}
+                                      defaultValue={1000}
+                                      min="0.01"
+                                      step="0.01"
+                                    />
+                                  </div>
+                                </div>
+
+                                {/* Risk Warning */}
+                                {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 0.5 && (
+                                  <Alert variant="destructive">
+                                    <AlertCircle className="h-4 w-4" />
+                                    <AlertDescription>
+                                      <strong>⚠️ HIGH RISK WARNING</strong>
+                                      <p className="mt-1 text-xs">
+                                        Above 0.5% is risky! Remember: positions pyramid (scale in), so total exposure grows much larger than a single trade.
+                                      </p>
+                                      {(config.symbols[selectedSymbol].percentageOfBalance || 0) > 2 && (
+                                        <p className="mt-2 text-xs font-semibold">
+                                          ⚠️ EXTREME RISK: Above 2% can rapidly deplete your account!
+                                        </p>
+                                      )}
+                                    </AlertDescription>
+                                  </Alert>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Use different sizes toggle */}
                           <div className="flex items-center justify-between">
                             <div className="space-y-0.5">
-                              <Label className="text-base">Trade Size Configuration</Label>
+                              <Label>Use Different Sizes for Long and Short</Label>
                               <p className="text-sm text-muted-foreground">
-                                Use different sizes for long and short positions
+                                Set separate trade sizes for long vs short positions
                               </p>
                             </div>
                             <Switch
@@ -930,20 +2180,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                           {!useSeparateTradeSizes[selectedSymbol] ? (
                             <div className="space-y-2">
                               <Label>Trade Size (USDT)</Label>
-                              <Input
-                                type="number"
+                              <NumberInput
                                 value={config.symbols[selectedSymbol].tradeSize ?? ''}
-                                onChange={(e) => {
-                                  const value = parseFloat(e.target.value);
-                                  handleSymbolChange(selectedSymbol, 'tradeSize', isNaN(value) ? 0 : value);
-                                }}
-                                placeholder="100"
+                                onChange={(value) => handleSymbolChange(selectedSymbol, 'tradeSize', value)}
+                                defaultValue={0}
                                 min="0"
                                 step="0.01"
                               />
                               <div className="space-y-1">
                                 <p className="text-xs text-muted-foreground">
-                                  Position size in USDT (default: 100, used for both long and short)
+                                  Position size in USDT (used for both long and short)
                                 </p>
                                 {symbolDetails && !loadingDetails && getMinimumMargin() && (
                                   <div className="flex flex-col gap-1">
@@ -979,18 +2225,15 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   Long Trade Size (USDT)
                                   <Badge variant="outline" className="text-xs">BUY</Badge>
                                 </Label>
-                                <Input
-                                  type="number"
-                                  value={longTradeSizeInput}
-                                  onChange={(e) => {
-                                    setLongTradeSizeInput(e.target.value);
-                                    if (e.target.value !== '') {
-                                      const value = parseFloat(e.target.value);
-                                      if (!isNaN(value)) {
-                                        handleSymbolChange(selectedSymbol, 'longTradeSize', value);
-                                      }
+                                <NumberInput
+                                  value={longTradeSizeInput === '' ? '' : parseFloat(longTradeSizeInput)}
+                                  onChange={(value) => {
+                                    setLongTradeSizeInput(value === '' ? '' : value.toString());
+                                    if (value !== '') {
+                                      handleSymbolChange(selectedSymbol, 'longTradeSize', value);
                                     }
                                   }}
+                                  defaultValue={0}
                                   onBlur={(e) => {
                                     // On blur, if empty, reset to tradeSize
                                     if (e.target.value === '') {
@@ -1033,18 +2276,15 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                   Short Trade Size (USDT)
                                   <Badge variant="outline" className="text-xs">SELL</Badge>
                                 </Label>
-                                <Input
-                                  type="number"
-                                  value={shortTradeSizeInput}
-                                  onChange={(e) => {
-                                    setShortTradeSizeInput(e.target.value);
-                                    if (e.target.value !== '') {
-                                      const value = parseFloat(e.target.value);
-                                      if (!isNaN(value)) {
-                                        handleSymbolChange(selectedSymbol, 'shortTradeSize', value);
-                                      }
+                                <NumberInput
+                                  value={shortTradeSizeInput === '' ? '' : parseFloat(shortTradeSizeInput)}
+                                  onChange={(value) => {
+                                    setShortTradeSizeInput(value === '' ? '' : value.toString());
+                                    if (value !== '') {
+                                      handleSymbolChange(selectedSymbol, 'shortTradeSize', value);
                                     }
                                   }}
+                                  defaultValue={0}
                                   onBlur={(e) => {
                                     // On blur, if empty, reset to tradeSize
                                     if (e.target.value === '') {
@@ -1088,54 +2328,42 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
 
                         <div className="space-y-2">
                           <Label>Max Position Margin (USDT)</Label>
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={config.symbols[selectedSymbol].maxPositionMarginUSDT ?? ''}
-                            onChange={(e) => {
-                              const value = parseFloat(e.target.value);
-                              handleSymbolChange(selectedSymbol, 'maxPositionMarginUSDT', isNaN(value) ? 0 : value);
-                            }}
-                            placeholder="10000"
+                            onChange={(value) => handleSymbolChange(selectedSymbol, 'maxPositionMarginUSDT', value)}
+                            defaultValue={0}
                             min="0"
                           />
                           <p className="text-xs text-muted-foreground">
-                            Max total margin exposure for this symbol (default: 10000 USDT)
+                            Max total margin exposure for this symbol
                           </p>
                         </div>
 
                         <div className="space-y-2">
                           <Label>Stop Loss (%)</Label>
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={config.symbols[selectedSymbol].slPercent ?? ''}
-                            onChange={(e) => {
-                              const value = parseFloat(e.target.value);
-                              handleSymbolChange(selectedSymbol, 'slPercent', isNaN(value) ? 0 : value);
-                            }}
-                            placeholder="2"
+                            onChange={(value) => handleSymbolChange(selectedSymbol, 'slPercent', value)}
+                            defaultValue={0}
                             min="0.1"
                             step="0.1"
                           />
                           <p className="text-xs text-muted-foreground">
-                            Stop loss percentage (default: 2%)
+                            Stop loss percentage
                           </p>
                         </div>
 
                         <div className="space-y-2">
                           <Label>Take Profit (%)</Label>
-                          <Input
-                            type="number"
+                          <NumberInput
                             value={config.symbols[selectedSymbol].tpPercent ?? ''}
-                            onChange={(e) => {
-                              const value = parseFloat(e.target.value);
-                              handleSymbolChange(selectedSymbol, 'tpPercent', isNaN(value) ? 0 : value);
-                            }}
-                            placeholder="3"
+                            onChange={(value) => handleSymbolChange(selectedSymbol, 'tpPercent', value)}
+                            defaultValue={0}
                             min="0.1"
                             step="0.1"
                           />
                           <p className="text-xs text-muted-foreground">
-                            Take profit percentage (default: 3%)
+                            Take profit percentage
                           </p>
                         </div>
 
@@ -1146,13 +2374,13 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                             <div className="space-y-2">
                               <Label>Order Type</Label>
                               <Select
-                                value={config.symbols[selectedSymbol].orderType ?? 'LIMIT'}
+                                value={config.symbols[selectedSymbol].orderType || 'LIMIT'}
                                 onValueChange={(value) =>
                                   handleSymbolChange(selectedSymbol, 'orderType', value)
                                 }
                               >
                                 <SelectTrigger>
-                                  <SelectValue placeholder="LIMIT (default)" />
+                                  <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="LIMIT">LIMIT Orders (Better fills)</SelectItem>
@@ -1160,7 +2388,7 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                 </SelectContent>
                               </Select>
                               <p className="text-xs text-muted-foreground">
-                                Default order type for opening positions (default: LIMIT)
+                                Default order type for opening positions
                               </p>
                             </div>
 
@@ -1218,13 +2446,13 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                 <div className="space-y-2">
                                   <Label>VWAP Timeframe</Label>
                                   <Select
-                                    value={config.symbols[selectedSymbol].vwapTimeframe ?? '1m'}
+                                    value={config.symbols[selectedSymbol].vwapTimeframe || '1m'}
                                     onValueChange={(value) =>
                                       handleSymbolChange(selectedSymbol, 'vwapTimeframe', value)
                                     }
                                   >
                                     <SelectTrigger>
-                                      <SelectValue placeholder="1m (default)" />
+                                      <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
                                       <SelectItem value="1m">1 minute</SelectItem>
@@ -1235,18 +2463,16 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                     </SelectContent>
                                   </Select>
                                   <p className="text-xs text-muted-foreground">
-                                    Candle timeframe for VWAP calculation (default: 1m)
+                                    Candle timeframe for VWAP calculation
                                   </p>
                                 </div>
 
                                 <div className="space-y-2">
                                   <Label>Lookback Period</Label>
-                                  <Input
-                                    type="number"
-                                    value={config.symbols[selectedSymbol].vwapLookback !== undefined ? config.symbols[selectedSymbol].vwapLookback : ''}
-                                    onChange={(e) => {
-                                      const value = parseInt(e.target.value);
-                                      if (e.target.value === '' || isNaN(value)) {
+                                  <NumberInput
+                                    value={config.symbols[selectedSymbol].vwapLookback ?? ''}
+                                    onChange={(value) => {
+                                      if (value === '') {
                                         // Remove the field if empty - will use default from config.default.json
                                         const { vwapLookback: _vwapLookback, ...rest } = config.symbols[selectedSymbol];
                                         setConfig({
@@ -1260,12 +2486,11 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                         handleSymbolChange(selectedSymbol, 'vwapLookback', value);
                                       }
                                     }}
-                                    placeholder="100"
                                     min="10"
                                     max="500"
                                   />
                                   <p className="text-xs text-muted-foreground">
-                                    Number of candles for VWAP (default: 100)
+                                    Number of candles for VWAP (10-500)
                                   </p>
                                 </div>
                               </div>
@@ -1283,41 +2508,46 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                           </div>
                         </div>
 
-                        {/* Threshold System Settings - Only show if global threshold is enabled */}
-                        {config.global.useThresholdSystem && (
-                          <div className="col-span-2">
-                            <Separator className="my-4" />
-                            <div className="space-y-4">
-                              <div className="flex items-center justify-between">
-                                <div className="space-y-0.5">
-                                  <Label className="flex items-center gap-2">
-                                    <TrendingUp className="h-4 w-4" />
-                                    Enable Threshold System for {selectedSymbol}
-                                  </Label>
-                                  <p className="text-sm text-muted-foreground">
-                                    Use 60-second cumulative volume thresholds
+                        {/* Threshold System Settings - Always show toggle, details only when enabled */}
+                        <div className="col-span-2">
+                          <Separator className="my-4" />
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                              <div className="space-y-0.5">
+                                <Label className="flex items-center gap-2">
+                                  <TrendingUp className="h-4 w-4" />
+                                  Enable Threshold System for {selectedSymbol}
+                                </Label>
+                                <p className="text-sm text-muted-foreground">
+                                  Use 60-second cumulative volume thresholds
+                                </p>
+                                {!config.global.useThresholdSystem && (
+                                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                                    ⚠️ Enable &quot;60-Second Volume Threshold System&quot; in Global Settings first
                                   </p>
-                                </div>
-                                <Switch
-                                  checked={config.symbols[selectedSymbol].useThreshold || false}
-                                  onCheckedChange={(checked) =>
-                                    handleSymbolChange(selectedSymbol, 'useThreshold', checked)
-                                  }
-                                />
+                                )}
                               </div>
+                              <Switch
+                                checked={config.symbols[selectedSymbol].useThreshold || false}
+                                onCheckedChange={(checked) =>
+                                  handleSymbolChange(selectedSymbol, 'useThreshold', checked)
+                                }
+                                disabled={!config.global.useThresholdSystem}
+                              />
+                            </div>
 
-                              {config.symbols[selectedSymbol].useThreshold && (
+                            {config.symbols[selectedSymbol].useThreshold && config.global.useThresholdSystem && (
                                 <div className="space-y-4 pt-2">
                                   <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2">
                                       <Label>Time Window (seconds)</Label>
-                                      <Input
-                                        type="number"
-                                        value={config.symbols[selectedSymbol].thresholdTimeWindow !== undefined ? config.symbols[selectedSymbol].thresholdTimeWindow / 1000 : ''}
-                                        onChange={(e) => {
-                                          const seconds = parseFloat(e.target.value);
-                                          if (e.target.value === '' || isNaN(seconds)) {
-                                            // Remove the field if empty - will use default from config.default.json
+                                      <NumberInput
+                                        value={config.symbols[selectedSymbol].thresholdTimeWindow !== undefined 
+                                          ? config.symbols[selectedSymbol].thresholdTimeWindow / 1000 
+                                          : 60}
+                                        onChange={(value) => {
+                                          if (value === '' || value === 60) {
+                                            // Remove the field if empty or set to default - will use default from config.default.json
                                             const { thresholdTimeWindow: _thresholdTimeWindow, ...rest } = config.symbols[selectedSymbol];
                                             setConfig({
                                               ...config,
@@ -1327,10 +2557,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                               },
                                             });
                                           } else {
-                                            handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', seconds * 1000);
+                                            handleSymbolChange(selectedSymbol, 'thresholdTimeWindow', value * 1000);
                                           }
                                         }}
-                                        placeholder="60"
+                                        defaultValue={60}
                                         min="10"
                                         max="300"
                                         step="10"
@@ -1342,13 +2572,13 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
 
                                     <div className="space-y-2">
                                       <Label>Cooldown Period (seconds)</Label>
-                                      <Input
-                                        type="number"
-                                        value={config.symbols[selectedSymbol].thresholdCooldown !== undefined ? config.symbols[selectedSymbol].thresholdCooldown / 1000 : ''}
-                                        onChange={(e) => {
-                                          const seconds = parseFloat(e.target.value);
-                                          if (e.target.value === '' || isNaN(seconds)) {
-                                            // Remove the field if empty - will use default from config.default.json
+                                      <NumberInput
+                                        value={config.symbols[selectedSymbol].thresholdCooldown !== undefined 
+                                          ? config.symbols[selectedSymbol].thresholdCooldown / 1000 
+                                          : 30}
+                                        onChange={(value) => {
+                                          if (value === '' || value === 30) {
+                                            // Remove the field if empty or set to default - will use default from config.default.json
                                             const { thresholdCooldown: _thresholdCooldown, ...rest } = config.symbols[selectedSymbol];
                                             setConfig({
                                               ...config,
@@ -1358,10 +2588,10 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                                               },
                                             });
                                           } else {
-                                            handleSymbolChange(selectedSymbol, 'thresholdCooldown', seconds * 1000);
+                                            handleSymbolChange(selectedSymbol, 'thresholdCooldown', value * 1000);
                                           }
                                         }}
-                                        placeholder="30"
+                                        defaultValue={30}
                                         min="10"
                                         max="300"
                                         step="10"
@@ -1383,28 +2613,29 @@ export default function SymbolConfigForm({ onSave, currentConfig }: SymbolConfig
                               )}
                             </div>
                           </div>
-                        )}
+
+                        {/* Multi-Tranche Position Management */}
+                        <div className="col-span-2">
+                          <Separator className="my-4" />
+                          <TrancheSettingsSection
+                            symbol={selectedSymbol}
+                            config={config.symbols[selectedSymbol]}
+                            onChange={(field, value) => handleSymbolChange(selectedSymbol, field, value)}
+                          />
+                        </div>
                       </CardContent>
                     </Card>
+                  )}
+                </>
+              )}
 
-                    {/* Multi-Tranche Position Management */}
-                    <TrancheSettingsSection
-                      symbol={selectedSymbol}
-                      config={config.symbols[selectedSymbol]}
-                      onChange={(field, value) => handleSymbolChange(selectedSymbol, field, value)}
-                    />
-                  </>
-                )}
-              </>
-            )}
-
-            {Object.keys(config.symbols).length === 0 && (
-              <div className="text-center py-8 text-muted-foreground">
-                <Settings2 className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>No symbols configured yet</p>
-                <p className="text-sm">Add a symbol above to get started</p>
-              </div>
-            )}
+              {Object.keys(config.symbols).length === 0 && (
+                <div className="text-center py-8 text-muted-foreground">
+                  <Settings2 className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>No symbols configured yet</p>
+                  <p className="text-sm">Add a symbol above to get started</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

@@ -1,5 +1,9 @@
 import { NextRequest } from 'next/server';
-import { getToken } from 'next-auth/jwt';
+import { jwtVerify } from 'jose';
+
+const SECRET = new TextEncoder().encode(
+  process.env.NEXTAUTH_SECRET || 'your-secret-key-change-in-production'
+);
 
 export interface AuthenticatedRequest extends NextRequest {
   user?: {
@@ -19,24 +23,24 @@ export async function authenticateRequest(request: NextRequest): Promise<{
   error?: string;
 }> {
   try {
-    const token = await getToken({
-      req: request,
-      secret: process.env.NEXTAUTH_SECRET
-    });
-
-    if (!token) {
+    // Check for custom JWT auth token (cookie-based)
+    const authToken = request.cookies.get('auth-token')?.value;
+    
+    if (!authToken) {
       return {
         isAuthenticated: false,
         error: 'No authentication token found'
       };
     }
 
+    const { payload } = await jwtVerify(authToken, SECRET);
+
     return {
       isAuthenticated: true,
       user: {
-        id: token.id as string,
-        email: token.email as string,
-        name: token.name as string,
+        id: payload.userId as string || 'user',
+        email: payload.email as string || 'user@local',
+        name: payload.name as string || 'User',
       }
     };
   } catch (error) {

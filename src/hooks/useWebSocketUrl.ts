@@ -8,31 +8,29 @@ export function useWebSocketUrl() {
     fetch('/api/config')
       .then(res => res.json())
       .then(data => {
-        // Fix: API returns config directly, not nested under config property
-        const port = data.global?.server?.websocketPort || 8080;
+        const port = data.global?.server?.websocketPort;
+        if (!port) {
+          console.warn('WebSocket port not configured, skipping connection');
+          return;
+        }
         const useRemoteWebSocket = data.global?.server?.useRemoteWebSocket || false;
         const configHost = data.global?.server?.websocketHost;
+        const websocketPath = data.global?.server?.websocketPath;
 
         // Determine the host based on configuration
-        let host = 'localhost'; // default
-
-        // Check for environment variable override (handled by server config)
+        // Priority: window.location.hostname > configHost > envHost > localhost
+        let host = 'localhost';
         const envHost = data.global?.server?.envWebSocketHost;
         
-        if (envHost) {
-          host = envHost;
-        } else if (useRemoteWebSocket) {
-          // If remote WebSocket is enabled
-          if (configHost) {
-            // Use the configured host if specified
-            host = configHost;
-          } else if (typeof window !== 'undefined') {
-            // Auto-detect from browser location
-            host = window.location.hostname;
-          }
-        } else if (typeof window !== 'undefined') {
-          // Default to current hostname when useRemoteWebSocket is false but we're in browser
+        if (typeof window !== 'undefined') {
+          // When running in browser, always use the hostname the user is accessing from
           host = window.location.hostname;
+        } else if (configHost) {
+          // Explicit config override for special cases
+          host = configHost;
+        } else if (envHost) {
+          // Environment variable fallback (for SSR/non-browser contexts)
+          host = envHost;
         }
 
         // Determine protocol based on current page
@@ -41,20 +39,16 @@ export function useWebSocketUrl() {
           protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         }
 
-        setWsUrl(`${protocol}://${host}:${port}`);
+        // Check if websocketPath is configured (for reverse proxy setups)
+        if (websocketPath && typeof window !== 'undefined') {
+          setWsUrl(`${protocol}://${window.location.host}${websocketPath}`);
+        } else {
+          setWsUrl(`${protocol}://${host}:${port}`);
+        }
       })
       .catch(err => {
         console.error('Failed to load WebSocket config:', err);
-        // Use smart defaults
-        let fallbackHost = 'localhost';
-        let fallbackProtocol = 'ws';
-        
-        if (typeof window !== 'undefined') {
-          fallbackHost = window.location.hostname;
-          fallbackProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        }
-        
-        setWsUrl(`${fallbackProtocol}://${fallbackHost}:8080`);
+        setWsUrl(null);
       });
   }, []);
 

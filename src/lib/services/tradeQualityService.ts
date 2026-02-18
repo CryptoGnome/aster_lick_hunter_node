@@ -1,0 +1,681 @@
+/**
+ * Trade Quality Scoring Service
+ * 
+ * Implements concepts from Spicy's Mean Reversion Strategy:
+ * 1. VWAP Cross Counter - detect choppy vs trending markets
+ * 2. Trade Quality Score - rate each opportunity 0-3
+ * 3. Regime Detection - identify optimal trading conditions
+ * 4. Position Sizing based on quality
+ * 
+ * Reference: spicy_mean_reversion_extracted.md
+ */
+
+import { EventEmitter } from 'events';
+import WebSocket from 'ws';
+import { vwapStreamer } from './vwapStreamer';
+import { LiquidationEvent, Config } from '../types';
+
+// Quality score breakdown
+export interface TradeQualityScore {
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  totalScore: number;  // 0-3
+  
+  // Individual criteria scores (0 or 1 each)
+  spikeScore: number;           // Fast spike approach (good) vs slow grind (bad)
+  volumeTrendScore: number;     // Decreasing/flat volume (good) vs increasing (bad)
+  regimeScore: number;          // Choppy range (good) vs trending (bad)
+  
+  // Detailed metrics
+  metrics: {
+    // Spike analysis
+    priceChangePercent: number;   // How much price moved in the spike
+    spikeTimeSeconds: number;     // How fast the spike occurred
+    spikeVelocity: number;        // Price change per second
+    
+    // Volume analysis
+    recentVolumeRatio: number;    // Recent volume vs average (< 1 = decreasing)
+    
+    // Regime analysis (VWAP-based)
+    vwapCrossCount: number;       // Crosses in lookback period
+    vwapCrossesPerHour: number;   // Normalized cross rate
+    isChoppyRegime: boolean;      // True if >3 crosses/hour
+    isTrendingRegime: boolean;    // True if <1 cross/hour
+    
+    // Current VWAP position
+    vwapDistance: number;         // % distance from VWAP
+    isAboveVwap: boolean;
+  };
+  
+  // Recommendations
+  recommendation: 'STRONG' | 'NORMAL' | 'WEAK' | 'SKIP';
+  positionSizeMultiplier: number;  // 0.5, 1.0, 1.5 based on quality
+  targetMultiplier: number;        // For wider targets on high quality
+  
+  // Reasoning
+  reasons: string[];
+}
+
+// VWAP cross tracking
+interface VWAPCrossEvent {
+  symbol: string;
+  timestamp: number;
+  direction: 'up' | 'down';
+  price: number;
+  vwap: number;
+}
+
+// Price spike tracking for detecting fast moves
+interface PriceSpike {
+  symbol: string;
+  startPrice: number;
+  endPrice: number;
+  startTime: number;
+  endTime: number;
+  changePercent: number;
+  direction: 'up' | 'down';
+}
+
+// Volume window for trend detection
+interface VolumeWindow {
+  symbol: string;
+  timestamp: number;
+  volume: number;
+}
+
+export class TradeQualityService extends EventEmitter {
+  // VWAP cross tracking per symbol
+  private vwapCrosses: Map<string, VWAPCrossEvent[]> = new Map();
+  private lastVwapPosition: Map<string, 'above' | 'below'> = new Map();
+  
+  // Price tracking for spike detection
+  private priceHistory: Map<string, Array<{price: number, time: number}>> = new Map();
+  private recentSpikes: Map<string, PriceSpike[]> = new Map();
+  
+  // Volume tracking for trend detection
+  private volumeHistory: Map<string, VolumeWindow[]> = new Map();
+  
+  // Rate limiting for price updates (don't need every tick, just frequent enough)
+  private lastPriceUpdate: Map<string, number> = new Map();
+  private lastSpikeLog: Map<string, { threshold: number; time: number }> = new Map();
+  private readonly PRICE_UPDATE_THROTTLE_MS = 100; // Only process price updates every 100ms per symbol
+  private readonly SPIKE_LOG_COOLDOWN_MS = 5000; // Don't log same threshold twice within 5s
+  
+  // Configuration
+  private readonly VWAP_CROSS_LOOKBACK_MS = 60 * 60 * 1000;  // 1 hour
+  private readonly PRICE_HISTORY_LOOKBACK_MS = 5 * 60 * 1000; // 5 minutes
+  private readonly SPIKE_THRESHOLD_PERCENT = 0.3;  // 0.3% move in short time = spike (lowered from 0.5%)
+  private readonly SPIKE_TIME_WINDOW_MS = 2 * 60 * 1000; // 2 minute window for spike detection (increased from 1 min)
+  private readonly CHOPPY_THRESHOLD_CROSSES_PER_HOUR = 3;
+  private readonly TRENDING_THRESHOLD_CROSSES_PER_HOUR = 1;
+  
+  private cleanupInterval: NodeJS.Timeout | null = null;
+  private priceStreamWs: WebSocket | null = null;
+  private priceStreamReconnectTimeout: NodeJS.Timeout | null = null;
+  private monitoredSymbols: Set<string> = new Set();
+  private isRunning = false;
+
+  constructor() {
+    super();
+  }
+
+  /**
+   * Start the trade quality service
+   */
+  start(config?: Config): void {
+    if (this.isRunning) return;
+    this.isRunning = true;
+
+    // Collect symbols to monitor for spike detection
+    if (config) {
+      for (const symbol of Object.keys(config.symbols)) {
+        this.monitoredSymbols.add(symbol);
+      }
+    }
+
+    // Listen to VWAP updates from the streamer (for regime detection)
+    vwapStreamer.on('vwap', (vwapData) => {
+      this.trackVWAPCross(vwapData);
+    });
+
+    // Start dedicated real-time price stream for spike detection
+    if (this.monitoredSymbols.size > 0) {
+      this.connectPriceStream();
+    }
+
+    // Cleanup old data every minute
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupOldData();
+    }, 60000);
+
+    console.log('📊 Trade Quality Service: Started');
+    if (this.monitoredSymbols.size > 0) {
+      console.log(`📊 Trade Quality Service: Real-time price monitoring for ${this.monitoredSymbols.size} symbols`);
+    }
+  }
+
+  /**
+   * Connect to aggTrade stream for real-time price data (much faster than kline)
+   */
+  private connectPriceStream(): void {
+    if (!this.isRunning || this.monitoredSymbols.size === 0) return;
+
+    // Build stream URL for all symbols
+    const streams = Array.from(this.monitoredSymbols)
+      .map(s => `${s.toLowerCase()}@aggTrade`)
+      .join('/');
+    
+    const streamUrl = `wss://fstream.asterdex.com/stream?streams=${streams}`;
+    console.log(`📊 Trade Quality: Connecting to real-time price stream for spike detection`);
+
+    this.priceStreamWs = new WebSocket(streamUrl);
+
+    this.priceStreamWs.on('open', () => {
+      console.log('📊 Trade Quality: Real-time price stream connected');
+    });
+
+    this.priceStreamWs.on('message', (data: Buffer) => {
+      try {
+        const message = JSON.parse(data.toString());
+        if (message.data) {
+          const trade = message.data;
+          // aggTrade format: { s: symbol, p: price, q: quantity, T: timestamp, m: isBuyerMaker }
+          const symbol = trade.s;
+          const price = parseFloat(trade.p);
+          const timestamp = trade.T;
+          
+          // Throttle price updates to reduce CPU/memory usage
+          const lastUpdate = this.lastPriceUpdate.get(symbol) || 0;
+          if (timestamp - lastUpdate < this.PRICE_UPDATE_THROTTLE_MS) {
+            return; // Skip this update, too soon
+          }
+          this.lastPriceUpdate.set(symbol, timestamp);
+          
+          // Track price and detect spikes
+          this.trackPrice(symbol, price, timestamp);
+          this.detectSpike(symbol, price, timestamp);
+        }
+      } catch (error) {
+        // Ignore parse errors
+      }
+    });
+
+    this.priceStreamWs.on('error', (error) => {
+      console.error('📊 Trade Quality: Price stream error:', error.message);
+    });
+
+    this.priceStreamWs.on('close', () => {
+      console.log('📊 Trade Quality: Price stream closed');
+      if (this.isRunning) {
+        this.priceStreamReconnectTimeout = setTimeout(() => {
+          this.connectPriceStream();
+        }, 5000);
+      }
+    });
+  }
+
+  /**
+   * Stop the service
+   */
+  stop(): void {
+    this.isRunning = false;
+    
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+
+    if (this.priceStreamReconnectTimeout) {
+      clearTimeout(this.priceStreamReconnectTimeout);
+      this.priceStreamReconnectTimeout = null;
+    }
+
+    if (this.priceStreamWs) {
+      this.priceStreamWs.close();
+      this.priceStreamWs = null;
+    }
+
+    this.vwapCrosses.clear();
+    this.lastVwapPosition.clear();
+    this.priceHistory.clear();
+    this.recentSpikes.clear();
+    this.volumeHistory.clear();
+    this.monitoredSymbols.clear();
+    this.lastPriceUpdate.clear();
+    this.lastSpikeLog.clear();
+
+    console.log('📊 Trade Quality Service: Stopped');
+  }
+
+  /**
+   * Track VWAP crosses to detect market regime
+   */
+  private trackVWAPCross(vwapData: { symbol: string; vwap: number; currentPrice: number; position: 'above' | 'below'; timestamp: number }): void {
+    const { symbol, vwap, currentPrice, position, timestamp } = vwapData;
+    
+    // Check if position changed (crossed VWAP)
+    const lastPosition = this.lastVwapPosition.get(symbol);
+    
+    if (lastPosition && lastPosition !== position) {
+      // VWAP cross detected!
+      const crossEvent: VWAPCrossEvent = {
+        symbol,
+        timestamp,
+        direction: position === 'above' ? 'up' : 'down',
+        price: currentPrice,
+        vwap,
+      };
+
+      // Store the cross
+      const crosses = this.vwapCrosses.get(symbol) || [];
+      crosses.push(crossEvent);
+      this.vwapCrosses.set(symbol, crosses);
+
+      // Emit event for monitoring
+      this.emit('vwapCross', crossEvent);
+    }
+
+    this.lastVwapPosition.set(symbol, position);
+    
+    // Track price for spike detection using real-time VWAP streamer data
+    this.trackPrice(symbol, currentPrice, timestamp);
+    
+    // Also detect spikes from the streaming price data (not just liquidations)
+    this.detectSpike(symbol, currentPrice, timestamp);
+  }
+
+  /**
+   * Track price history for spike detection
+   */
+  private trackPrice(symbol: string, price: number, timestamp: number): void {
+    const history = this.priceHistory.get(symbol) || [];
+    history.push({ price, time: timestamp });
+    
+    // Keep only recent history
+    const cutoff = timestamp - this.PRICE_HISTORY_LOOKBACK_MS;
+    const filtered = history.filter(h => h.time >= cutoff);
+    this.priceHistory.set(symbol, filtered);
+  }
+
+  /**
+   * Record a liquidation event for volume tracking
+   */
+  recordLiquidation(liquidation: LiquidationEvent, volumeUSDT: number): void {
+    const { symbol, eventTime } = liquidation;
+    
+    // Track volume
+    const volumes = this.volumeHistory.get(symbol) || [];
+    volumes.push({
+      symbol,
+      timestamp: eventTime,
+      volume: volumeUSDT,
+    });
+    
+    // Keep only recent volumes (last 5 minutes)
+    const cutoff = eventTime - this.PRICE_HISTORY_LOOKBACK_MS;
+    const filtered = volumes.filter(v => v.timestamp >= cutoff);
+    this.volumeHistory.set(symbol, filtered);
+    
+    // Track price from liquidation (bypasses throttle for important events)
+    this.trackPrice(symbol, liquidation.price, eventTime);
+    
+    // Detect spikes from liquidation price
+    this.detectSpike(symbol, liquidation.price, eventTime);
+  }
+
+  /**
+   * Detect if a fast spike just occurred
+   * 
+   * Instead of always measuring from the oldest price in the window (which always 
+   * gives ~119s), this scans backward to find where the rapid move actually started.
+   * This gives meaningful spike durations like "0.5% in 8s" instead of "0.5% in 119s".
+   */
+  private detectSpike(symbol: string, currentPrice: number, timestamp: number): void {
+    const history = this.priceHistory.get(symbol);
+    if (!history || history.length < 2) return;
+
+    // Look at price movement in the last SPIKE_TIME_WINDOW_MS
+    const windowStart = timestamp - this.SPIKE_TIME_WINDOW_MS;
+    const recentPrices = history.filter(h => h.time >= windowStart);
+    
+    if (recentPrices.length < 2) return;
+
+    // First check: is there a total move >= threshold from oldest to now?
+    const oldestPrice = recentPrices[0].price;
+    const totalChange = ((currentPrice - oldestPrice) / oldestPrice) * 100;
+    
+    if (Math.abs(totalChange) < this.SPIKE_THRESHOLD_PERCENT) return;
+
+    // Now find the actual start of the move by scanning backward.
+    // Walk from the most recent price backward until the cumulative move 
+    // from that point to currentPrice drops below threshold.
+    // The last point where it's still >= threshold is the true spike start.
+    let spikeStartIdx = 0;
+    for (let i = recentPrices.length - 1; i >= 0; i--) {
+      const changeFromHere = ((currentPrice - recentPrices[i].price) / recentPrices[i].price) * 100;
+      if (Math.abs(changeFromHere) >= this.SPIKE_THRESHOLD_PERCENT) {
+        spikeStartIdx = i;
+      } else {
+        // Once move drops below threshold going backward, the next point forward is the true start
+        break;
+      }
+    }
+
+    const startPrice = recentPrices[spikeStartIdx].price;
+    const startTime = recentPrices[spikeStartIdx].time;
+    const endPrice = currentPrice;
+    const changePercent = ((endPrice - startPrice) / startPrice) * 100;
+    const durationSeconds = (timestamp - startTime) / 1000;
+    
+    const spike: PriceSpike = {
+      symbol,
+      startPrice,
+      endPrice,
+      startTime,
+      endTime: timestamp,
+      changePercent,
+      direction: changePercent > 0 ? 'up' : 'down',
+    };
+
+    const spikes = this.recentSpikes.get(symbol) || [];
+    
+    // Rate-limited logging: only log significant thresholds with cooldown
+    const currentThreshold = Math.floor(Math.abs(changePercent) * 2) / 2; // Round to nearest 0.5%
+    const lastLog = this.lastSpikeLog.get(symbol);
+    const shouldLog = currentThreshold >= 0.5 && (
+      !lastLog || 
+      currentThreshold > lastLog.threshold || 
+      (timestamp - lastLog.time) > this.SPIKE_LOG_COOLDOWN_MS
+    );
+    
+    if (shouldLog) {
+      console.log(`📊 Quality: SPIKE ${symbol} ${spike.direction} ${Math.abs(changePercent).toFixed(2)}% in ${durationSeconds.toFixed(0)}s`);
+      this.lastSpikeLog.set(symbol, { threshold: currentThreshold, time: timestamp });
+    }
+    
+    spikes.push(spike);
+    this.recentSpikes.set(symbol, spikes);
+
+    this.emit('spikeDetected', spike);
+  }
+
+  /**
+   * Clean up old data to prevent memory leaks
+   */
+  private cleanupOldData(): void {
+    const now = Date.now();
+    
+    // Clean VWAP crosses older than lookback
+    for (const [symbol, crosses] of this.vwapCrosses.entries()) {
+      const cutoff = now - this.VWAP_CROSS_LOOKBACK_MS;
+      const filtered = crosses.filter(c => c.timestamp >= cutoff);
+      this.vwapCrosses.set(symbol, filtered);
+    }
+    
+    // Clean spikes older than 5 minutes
+    for (const [symbol, spikes] of this.recentSpikes.entries()) {
+      const cutoff = now - this.PRICE_HISTORY_LOOKBACK_MS;
+      const filtered = spikes.filter(s => s.endTime >= cutoff);
+      this.recentSpikes.set(symbol, filtered);
+    }
+    
+    // Clean price history
+    for (const [symbol, history] of this.priceHistory.entries()) {
+      const cutoff = now - this.PRICE_HISTORY_LOOKBACK_MS;
+      const filtered = history.filter(h => h.time >= cutoff);
+      this.priceHistory.set(symbol, filtered);
+    }
+    
+    // Clean volume history
+    for (const [symbol, volumes] of this.volumeHistory.entries()) {
+      const cutoff = now - this.PRICE_HISTORY_LOOKBACK_MS;
+      const filtered = volumes.filter(v => v.timestamp >= cutoff);
+      this.volumeHistory.set(symbol, filtered);
+    }
+  }
+
+  /**
+   * Calculate trade quality score for a potential entry
+   * 
+   * Based on Spicy's 3 variables:
+   * 1. How did price approach the level? (fast spike = good)
+   * 2. What did volume look like? (decreasing = good)
+   * 3. How does left-side price action look? (choppy range = good)
+   */
+  calculateQualityScore(
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    liquidationPrice: number,
+    liquidationVolume: number
+  ): TradeQualityScore {
+    const now = Date.now();
+    const reasons: string[] = [];
+    
+    // === 1. SPIKE SCORE - How did price approach? ===
+    let spikeScore = 0;
+    let priceChangePercent = 0;
+    let spikeTimeSeconds = 0;
+    let spikeVelocity = 0;
+
+    const recentSpikes = this.recentSpikes.get(symbol) || [];
+    const veryRecentSpikes = recentSpikes.filter(s => (now - s.endTime) < 60000); // Last 60 seconds (increased from 30s)
+    
+    if (veryRecentSpikes.length > 0) {
+      // Find the most recent spike in the expected direction
+      // For BUY entries, we want a down spike (price crashed into support)
+      // For SELL entries, we want an up spike (price pumped into resistance)
+      const expectedDirection = side === 'BUY' ? 'down' : 'up';
+      const relevantSpike = veryRecentSpikes
+        .filter(s => s.direction === expectedDirection)
+        .sort((a, b) => b.endTime - a.endTime)[0];
+      
+      if (relevantSpike) {
+        priceChangePercent = Math.abs(relevantSpike.changePercent);
+        spikeTimeSeconds = (relevantSpike.endTime - relevantSpike.startTime) / 1000;
+        spikeVelocity = priceChangePercent / Math.max(spikeTimeSeconds, 0.1);
+        
+        // Score: Significant spike in the right direction
+        // Either fast (>0.1% per second) OR large (>0.5% total)
+        // This captures both quick spikes and sustained moves
+        if (spikeVelocity > 0.1 || priceChangePercent >= 0.5) {
+          spikeScore = 1;
+          reasons.push(`✅ Spike detected: ${priceChangePercent.toFixed(2)}% in ${spikeTimeSeconds.toFixed(0)}s (velocity: ${(spikeVelocity * 100).toFixed(1)}%/s)`);
+        } else {
+          reasons.push(`⚠️ Minor move: ${priceChangePercent.toFixed(2)}% over ${spikeTimeSeconds.toFixed(0)}s`);
+        }
+      } else {
+        reasons.push(`❌ No recent spike in expected direction (need ${expectedDirection})`);
+      }
+    } else {
+      reasons.push(`❌ No recent price spike detected`);
+    }
+
+    // === 2. VOLUME TREND SCORE - Is volume decreasing? ===
+    let volumeTrendScore = 0;
+    let recentVolumeRatio = 1;
+
+    const volumeHistory = this.volumeHistory.get(symbol) || [];
+    if (volumeHistory.length >= 2) {
+      // Compare recent volume to older volume (lowered threshold from 3 to 2)
+      const midpoint = Math.floor(volumeHistory.length / 2);
+      const olderVolumes = volumeHistory.slice(0, midpoint);
+      const recentVolumes = volumeHistory.slice(midpoint);
+      
+      const avgOlder = olderVolumes.reduce((s, v) => s + v.volume, 0) / olderVolumes.length;
+      const avgRecent = recentVolumes.reduce((s, v) => s + v.volume, 0) / recentVolumes.length;
+      
+      if (avgOlder > 0) {
+        recentVolumeRatio = avgRecent / avgOlder;
+        
+        // Score: Decreasing or flat volume = good for reversals
+        if (recentVolumeRatio <= 1.1) { // Volume flat or decreasing
+          volumeTrendScore = 1;
+          reasons.push(`✅ Volume trend favorable: ${(recentVolumeRatio * 100 - 100).toFixed(0)}% change`);
+        } else {
+          reasons.push(`⚠️ Volume increasing: +${((recentVolumeRatio - 1) * 100).toFixed(0)}% (momentum building)`);
+        }
+      }
+    } else {
+      // Not enough volume data, give benefit of doubt
+      volumeTrendScore = 0;
+      reasons.push(`⚠️ Insufficient volume history for trend analysis`);
+    }
+
+    // === 3. REGIME SCORE - Is market choppy (good) or trending (bad)? ===
+    let regimeScore = 0;
+    let vwapCrossCount = 0;
+    let vwapCrossesPerHour = 0;
+    let isChoppyRegime = false;
+    let isTrendingRegime = false;
+
+    const crosses = this.vwapCrosses.get(symbol) || [];
+    const crossesInLastHour = crosses.filter(c => (now - c.timestamp) < this.VWAP_CROSS_LOOKBACK_MS);
+    vwapCrossCount = crossesInLastHour.length;
+    
+    // Calculate time span for normalization
+    const hourInMs = 60 * 60 * 1000;
+    vwapCrossesPerHour = vwapCrossCount; // Already looking at 1 hour window
+
+    if (vwapCrossesPerHour >= this.CHOPPY_THRESHOLD_CROSSES_PER_HOUR) {
+      isChoppyRegime = true;
+      regimeScore = 1;
+      reasons.push(`✅ Choppy regime: ${vwapCrossCount} VWAP crosses/hour (good for reversals)`);
+    } else if (vwapCrossesPerHour <= this.TRENDING_THRESHOLD_CROSSES_PER_HOUR) {
+      isTrendingRegime = true;
+      regimeScore = 0;
+      reasons.push(`❌ Trending regime: ${vwapCrossCount} VWAP crosses/hour (bad for reversals)`);
+    } else {
+      regimeScore = 0;
+      reasons.push(`⚠️ Neutral regime: ${vwapCrossCount} VWAP crosses/hour`);
+    }
+
+    // === VWAP Position Analysis ===
+    let vwapDistance = 0;
+    let isAboveVwap = false;
+    
+    const currentVwap = vwapStreamer.getCurrentVWAP(symbol);
+    if (currentVwap) {
+      isAboveVwap = currentVwap.position === 'above';
+      vwapDistance = ((currentVwap.currentPrice - currentVwap.vwap) / currentVwap.vwap) * 100;
+      
+      // Additional VWAP-based validation
+      // For BUY: price should be below VWAP (already handled by VWAP filter in hunter)
+      // For SELL: price should be above VWAP
+    }
+
+    // === CALCULATE TOTAL SCORE ===
+    const totalScore = spikeScore + volumeTrendScore + regimeScore;
+
+    // === DETERMINE RECOMMENDATION ===
+    let recommendation: TradeQualityScore['recommendation'];
+    let positionSizeMultiplier: number;
+    let targetMultiplier: number;
+
+    if (totalScore === 3) {
+      recommendation = 'STRONG';
+      positionSizeMultiplier = 1.5;  // 50% larger position
+      targetMultiplier = 1.5;        // Wider target
+      reasons.push(`🎯 HIGH QUALITY: All 3 criteria met - increase size and targets`);
+    } else if (totalScore === 2) {
+      recommendation = 'NORMAL';
+      positionSizeMultiplier = 1.0;  // Standard position
+      targetMultiplier = 1.0;        // Standard target
+      reasons.push(`✓ NORMAL QUALITY: 2/3 criteria met - standard execution`);
+    } else if (totalScore === 1) {
+      recommendation = 'WEAK';
+      positionSizeMultiplier = 0.5;  // Reduced position
+      targetMultiplier = 0.75;       // Tighter target
+      reasons.push(`⚠️ LOW QUALITY: Only 1/3 criteria met - reduce size, tighter target`);
+    } else {
+      recommendation = 'SKIP';
+      positionSizeMultiplier = 0;    // Don't trade
+      targetMultiplier = 0;
+      reasons.push(`❌ SKIP TRADE: 0/3 criteria met - consider opposite direction or wait`);
+    }
+
+    const qualityScore: TradeQualityScore = {
+      symbol,
+      side,
+      totalScore,
+      spikeScore,
+      volumeTrendScore,
+      regimeScore,
+      metrics: {
+        priceChangePercent,
+        spikeTimeSeconds,
+        spikeVelocity,
+        recentVolumeRatio,
+        vwapCrossCount,
+        vwapCrossesPerHour,
+        isChoppyRegime,
+        isTrendingRegime,
+        vwapDistance,
+        isAboveVwap,
+      },
+      recommendation,
+      positionSizeMultiplier,
+      targetMultiplier,
+      reasons,
+    };
+
+    // Emit for monitoring
+    this.emit('qualityScoreCalculated', qualityScore);
+
+    return qualityScore;
+  }
+
+  /**
+   * Get current market regime for a symbol
+   */
+  getMarketRegime(symbol: string): {
+    regime: 'choppy' | 'trending' | 'neutral';
+    vwapCrossesPerHour: number;
+    confidence: number;
+  } {
+    const now = Date.now();
+    const crosses = this.vwapCrosses.get(symbol) || [];
+    const crossesInLastHour = crosses.filter(c => (now - c.timestamp) < this.VWAP_CROSS_LOOKBACK_MS);
+    const vwapCrossesPerHour = crossesInLastHour.length;
+
+    let regime: 'choppy' | 'trending' | 'neutral';
+    let confidence: number;
+
+    if (vwapCrossesPerHour >= this.CHOPPY_THRESHOLD_CROSSES_PER_HOUR) {
+      regime = 'choppy';
+      confidence = Math.min(100, (vwapCrossesPerHour / 5) * 100); // >5 crosses = 100% confidence
+    } else if (vwapCrossesPerHour <= this.TRENDING_THRESHOLD_CROSSES_PER_HOUR) {
+      regime = 'trending';
+      confidence = Math.min(100, ((2 - vwapCrossesPerHour) / 2) * 100); // 0 crosses = 100% confidence
+    } else {
+      regime = 'neutral';
+      confidence = 50;
+    }
+
+    return { regime, vwapCrossesPerHour, confidence };
+  }
+
+  /**
+   * Get recent VWAP crosses for a symbol
+   */
+  getRecentVWAPCrosses(symbol: string, lookbackMs: number = 3600000): VWAPCrossEvent[] {
+    const now = Date.now();
+    const crosses = this.vwapCrosses.get(symbol) || [];
+    return crosses.filter(c => (now - c.timestamp) < lookbackMs);
+  }
+
+  /**
+   * Get all regime data for dashboard display
+   */
+  getAllRegimeData(): Map<string, ReturnType<typeof this.getMarketRegime>> {
+    const result = new Map();
+    
+    for (const symbol of this.vwapCrosses.keys()) {
+      result.set(symbol, this.getMarketRegime(symbol));
+    }
+    
+    return result;
+  }
+}
+
+// Export singleton instance
+export const tradeQualityService = new TradeQualityService();

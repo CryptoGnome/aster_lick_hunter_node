@@ -28,12 +28,14 @@ import {
   XCircle,
   AlertCircle,
   RefreshCw,
-  ChevronDown
+  ChevronDown,
+  Pencil
 } from 'lucide-react';
 import orderStore from '@/lib/services/orderStore';
 import { Order, OrderStatus, OrderSide, OrderType } from '@/lib/types/order';
 import { useConfig } from '@/components/ConfigProvider';
 import websocketService from '@/lib/services/websocketService';
+import { EditOrderModal } from '@/components/EditOrderModal';
 
 interface RecentOrdersTableProps {
   maxRows?: number;
@@ -43,15 +45,17 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
   const { config: _config } = useConfig();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('FILLED');
   const [symbolFilter, setSymbolFilter] = useState<string>('ALL');
-  const [showMore, setShowMore] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
   const [flashingOrders, setFlashingOrders] = useState<Set<number>>(new Set());
-  const [hasMore, setHasMore] = useState(true);
-  const [currentLimit, setCurrentLimit] = useState(50); // Start with 50 orders
-  const LOAD_MORE_INCREMENT = 50; // Load 50 more each time
+  const [totalCount, setTotalCount] = useState(0);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [editModalOrder, setEditModalOrder] = useState<Order | null>(null);
+  const INITIAL_ROWS = 15;
+  const PAGE_SIZE = 50;
 
   // Get available symbols from orders (not just configured symbols)
   const availableSymbols = useMemo(() => {
@@ -61,18 +65,14 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
     return Array.from(symbolSet).sort();
   }, [orders]);
 
-  // Load initial orders
-  const loadOrders = useCallback(async (force = false, isLoadMore = false) => {
+  // Load orders
+  const loadOrders = useCallback(async (force = false) => {
     try {
-      if (isLoadMore) {
-        setLoadingMore(true);
-      } else {
-        setLoading(true);
-        setCurrentLimit(50); // Reset to initial limit
-      }
+      setLoading(true);
       setError(null);
 
-      const limitToUse = isLoadMore ? currentLimit + LOAD_MORE_INCREMENT : 50;
+      // Fetch a generous amount so we can paginate client-side
+      const fetchLimit = 500;
 
       // Handle REDUCE filter separately - it's a custom filter, not a real order status
       // For REDUCE filter, we need to fetch FILLED orders and then filter client-side
@@ -82,7 +82,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
       orderStore.setFilters({
         status: actualStatusFilter === 'ALL' ? undefined : actualStatusFilter as OrderStatus,
         symbol: symbolFilter === 'ALL' ? undefined : symbolFilter,
-        limit: limitToUse,
+        limit: fetchLimit,
       });
 
       // Fetch orders
@@ -92,13 +92,11 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
       // If REDUCE filter is active, filter to only reduce-only orders
       if (statusFilter === 'REDUCE') {
         filteredOrders = filteredOrders.filter(order => {
-          // Check if this is a reduce-only order (closing/reducing position)
           const hasRealizedPnL = order.realizedProfit !== undefined &&
                                  order.realizedProfit !== null &&
                                  order.realizedProfit !== '' &&
                                  order.realizedProfit !== '0';
 
-          // Check if it's a reduce-only order or SL/TP type
           const isReduceOrder = order.reduceOnly ||
                                order.type === OrderType.STOP_MARKET ||
                                order.type === OrderType.TAKE_PROFIT_MARKET ||
@@ -110,27 +108,27 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
         });
       }
 
-      // Show orders from all symbols, not just configured ones
       setOrders(filteredOrders);
-
-      // Check if there are more orders to load
-      setHasMore(filteredOrders.length >= limitToUse);
-
-      if (isLoadMore) {
-        setCurrentLimit(limitToUse);
-      }
+      setTotalCount(filteredOrders.length);
     } catch (err) {
       console.error('Failed to load orders:', err);
       setError('Failed to load orders');
     } finally {
       setLoading(false);
-      setLoadingMore(false);
     }
-  }, [statusFilter, symbolFilter, currentLimit, LOAD_MORE_INCREMENT]);
+  }, [statusFilter, symbolFilter]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+    setExpanded(false);
+  }, [statusFilter, symbolFilter]);
 
   // Initial load
   useEffect(() => {
-    loadOrders();
+    // Clear cache and force initial load
+    orderStore.clearCache();
+    loadOrders(true);
   }, [loadOrders]);
 
   // Subscribe to order updates
@@ -393,88 +391,103 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
     };
   }, [orders]);
 
-  const displayedOrders = showMore ? orders : orders.slice(0, 10);
+  // Pagination logic
+  const totalPages = expanded ? Math.max(1, Math.ceil(totalCount / PAGE_SIZE)) : 1;
+  const displayedOrders = useMemo(() => {
+    if (!expanded) {
+      return orders.slice(0, INITIAL_ROWS);
+    }
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return orders.slice(start, start + PAGE_SIZE);
+  }, [orders, expanded, currentPage, INITIAL_ROWS, PAGE_SIZE]);
+  const hasMoreToExpand = !expanded && orders.length > INITIAL_ROWS;
 
   return (
     <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2">
-            Recent Orders
-            <Badge variant="outline" className="ml-2">
-              {orders.length} {hasMore ? `of ${currentLimit}+` : ''} orders
-            </Badge>
-          </CardTitle>
-          <div className="flex items-center gap-2">
-            {/* Status Filter */}
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All Status</SelectItem>
-                <SelectItem value="FILLED">Filled</SelectItem>
-                <SelectItem value="REDUCE">Reduce</SelectItem>
-                <SelectItem value="NEW">Open</SelectItem>
-                <SelectItem value="PARTIALLY_FILLED">Partial</SelectItem>
-                <SelectItem value="CANCELED">Canceled</SelectItem>
-              </SelectContent>
-            </Select>
+      <CardHeader className="pb-3">
+        <button
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="flex items-center gap-2 hover:opacity-80 transition-opacity w-full mb-3"
+        >
+          <CardTitle className="text-base font-medium">Recent Orders</CardTitle>
+          <Badge variant="outline" className="h-5 text-[10px] hidden sm:inline-flex">
+            {totalCount} orders
+          </Badge>
+          <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+        </button>
+        {!isCollapsed && (
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-3 border-t">
+            {/* Left side: Statistics */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Win Rate:</span>
+                <span className="font-medium">
+                  {statistics.closedTrades > 0
+                    ? `${statistics.winRate.toFixed(1)}% (${statistics.wins}W/${statistics.losses}L)`
+                    : 'N/A'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Net PnL:</span>
+                <span className={`font-medium ${statistics.netPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {statistics.netPnL >= 0 ? '+' : '-'}${Math.abs(statistics.netPnL).toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Closed:</span>
+                <span className="font-medium">{statistics.closedTrades}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Open:</span>
+                <span className="font-medium">{statistics.open}</span>
+              </div>
+            </div>
 
-            {/* Symbol Filter */}
-            <Select value={symbolFilter} onValueChange={setSymbolFilter}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All Symbols</SelectItem>
-                {availableSymbols.map(symbol => (
-                  <SelectItem key={symbol} value={symbol}>
-                    {symbol}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* Right side: Filters */}
+            <div className="flex items-center gap-2 flex-wrap sm:ml-auto">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[110px] h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Status</SelectItem>
+                  <SelectItem value="FILLED">Filled</SelectItem>
+                  <SelectItem value="REDUCE">Reduce</SelectItem>
+                  <SelectItem value="NEW">Open</SelectItem>
+                  <SelectItem value="PARTIALLY_FILLED">Partial</SelectItem>
+                  <SelectItem value="CANCELED">Canceled</SelectItem>
+                </SelectContent>
+              </Select>
 
-            {/* Refresh Button */}
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => loadOrders(true)}
-              disabled={loading}
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            </Button>
-          </div>
-        </div>
+              <Select value={symbolFilter} onValueChange={setSymbolFilter}>
+                <SelectTrigger className="w-[110px] h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Symbols</SelectItem>
+                  {availableSymbols.map(symbol => (
+                    <SelectItem key={symbol} value={symbol}>
+                      {symbol}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-        {/* Statistics Bar */}
-        <div className="flex items-center gap-4 mt-4 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Win Rate:</span>
-            <span className="font-medium">
-              {statistics.closedTrades > 0
-                ? `${statistics.winRate.toFixed(1)}% (${statistics.wins}W/${statistics.losses}L)`
-                : 'N/A'}
-            </span>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => loadOrders(true)}
+                disabled={loading}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Net PnL:</span>
-            <span className={`font-medium ${statistics.netPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {statistics.netPnL >= 0 ? '+' : '-'}${Math.abs(statistics.netPnL).toFixed(2)}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Closed:</span>
-            <span className="font-medium">{statistics.closedTrades}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Open:</span>
-            <span className="font-medium">{statistics.open}</span>
-          </div>
-        </div>
+        )}
       </CardHeader>
 
+      {!isCollapsed && (
       <CardContent>
         {loading && orders.length === 0 ? (
           <div className="space-y-2">
@@ -494,7 +507,73 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
           </div>
         ) : (
           <>
-            <div className="rounded-md border">
+            {/* Mobile Card View */}
+            <div className="sm:hidden space-y-2">
+              {displayedOrders.map((order) => {
+                const pnl = formatPnL(order.realizedProfit);
+                const isFlashing = flashingOrders.has(order.orderId);
+                const isOpenOrder = order.status === OrderStatus.NEW || order.status === OrderStatus.PARTIALLY_FILLED;
+                
+                return (
+                  <div key={order.orderId} className={`border rounded-lg p-2.5 space-y-1.5 ${isFlashing ? 'animate-pulse bg-blue-500/5' : ''}`}>
+                    {/* Header: Symbol, Side, Time */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold text-sm">{order.symbol.replace('USDT', '')}</span>
+                        <Badge variant="outline" className={`h-4 text-[10px] px-1 ${order.side === OrderSide.BUY ? 'text-green-600 border-green-600' : 'text-red-600 border-red-600'}`}>
+                          {order.side === OrderSide.BUY ? <TrendingUp className="w-2.5 h-2.5 mr-0.5" /> : <TrendingDown className="w-2.5 h-2.5 mr-0.5" />}
+                          {order.side}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {isOpenOrder && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() => setEditModalOrder(order)}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                        )}
+                        <span className="text-[10px] text-muted-foreground">{formatTime(order.updateTime)}</span>
+                      </div>
+                    </div>
+                    
+                    {/* Action & Type */}
+                    <div className="flex items-center gap-1.5">
+                      {getPositionActionBadge(order)}
+                      {getTypeBadge(order.type)}
+                      {getStatusBadge(order.status)}
+                    </div>
+                    
+                    {/* Price & Quantity */}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <div className="text-muted-foreground text-[10px]">Price</div>
+                        <div className="font-mono font-medium">${formatPrice(order.avgPrice || order.price || order.stopPrice)}</div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground text-[10px]">Filled</div>
+                        <div className="font-mono font-medium">{formatQuantity(order.executedQty)}/{formatQuantity(order.origQty)}</div>
+                      </div>
+                    </div>
+                    
+                    {/* PnL if exists */}
+                    {pnl && (
+                      <div className="pt-1 border-t">
+                        <span className={`text-sm font-semibold ${pnl.value >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {pnl.formatted}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            
+            {/* Desktop Table View */}
+            <div className="hidden sm:block overflow-x-auto rounded-md border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -508,12 +587,14 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                     <TableHead className="text-right">Filled</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">PnL</TableHead>
+                    <TableHead className="w-[60px]"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {displayedOrders.map((order) => {
                     const pnl = formatPnL(order.realizedProfit);
                     const isFlashing = flashingOrders.has(order.orderId);
+                    const isOpenOrder = order.status === OrderStatus.NEW || order.status === OrderStatus.PARTIALLY_FILLED;
 
                     return (
                       <TableRow
@@ -549,7 +630,7 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatPrice(order.avgPrice || order.price)}
+                          {formatPrice(order.avgPrice || order.price || order.stopPrice)}
                         </TableCell>
                         <TableCell className="text-right font-mono">
                           {formatQuantity(order.origQty)}
@@ -567,6 +648,18 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
                             </span>
                           )}
                         </TableCell>
+                        <TableCell>
+                          {isOpenOrder && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => setEditModalOrder(order)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
@@ -574,43 +667,71 @@ export default function RecentOrdersTable({ maxRows: _maxRows = 50 }: RecentOrde
               </Table>
             </div>
 
-            <div className="mt-4 flex items-center justify-center gap-4">
-              {orders.length > 10 && (
+            <div className="mt-4 flex items-center justify-center gap-3">
+              {!expanded && hasMoreToExpand && (
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setShowMore(!showMore)}
+                  onClick={() => { setExpanded(true); setCurrentPage(1); }}
                   className="gap-2"
                 >
-                  {showMore ? 'Show Less' : `Show More (${orders.length - 10} more)`}
-                  <ChevronDown className={`h-4 w-4 transition-transform ${showMore ? 'rotate-180' : ''}`} />
+                  Show More ({totalCount - INITIAL_ROWS} more)
+                  <ChevronDown className="h-4 w-4" />
                 </Button>
               )}
 
-              {showMore && hasMore && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => loadOrders(true, true)}
-                  disabled={loadingMore}
-                  className="gap-2"
-                >
-                  {loadingMore ? (
+              {expanded && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setExpanded(false); setCurrentPage(1); }}
+                    className="gap-1.5 text-xs"
+                  >
+                    Collapse
+                    <ChevronDown className="h-3.5 w-3.5 rotate-180" />
+                  </Button>
+
+                  {totalPages > 1 && (
                     <>
-                      <RefreshCw className="h-4 w-4 animate-spin" />
-                      Loading...
-                    </>
-                  ) : (
-                    <>
-                      Load {LOAD_MORE_INCREMENT} More Orders
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        disabled={currentPage <= 1}
+                        className="h-8 w-8 p-0 text-xs"
+                      >
+                        ‹
+                      </Button>
+                      <span className="text-xs text-muted-foreground min-w-[80px] text-center">
+                        Page {currentPage} of {totalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        disabled={currentPage >= totalPages}
+                        className="h-8 w-8 p-0 text-xs"
+                      >
+                        ›
+                      </Button>
                     </>
                   )}
-                </Button>
+                </div>
               )}
             </div>
           </>
         )}
       </CardContent>
+      )}
+
+      {/* Edit Order Modal */}
+      <EditOrderModal
+        isOpen={!!editModalOrder}
+        onClose={() => setEditModalOrder(null)}
+        order={editModalOrder}
+        onOrderUpdated={() => loadOrders(true)}
+      />
     </Card>
   );
 }

@@ -48,6 +48,8 @@ export default function PerSymbolPerformanceTable({ timeRange }: PerSymbolPerfor
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
   const hasApiKeys = config?.api?.apiKey && config?.api?.secretKey;
+  const isPaperMode = config?.global?.paperMode === true;
+  const canShowData = hasApiKeys || isPaperMode;
 
   const fetchData = useCallback(async (isRefresh = false) => {
     if (isRefresh) {
@@ -74,12 +76,12 @@ export default function PerSymbolPerformanceTable({ timeRange }: PerSymbolPerfor
   }, [timeRange]);
 
   useEffect(() => {
-    if (hasApiKeys) {
+    if (canShowData) {
       fetchData();
     } else {
       setIsLoading(false);
     }
-  }, [timeRange, hasApiKeys, fetchData]);
+  }, [timeRange, canShowData, fetchData]);
 
   // Refresh on trade updates
   useEffect(() => {
@@ -176,7 +178,7 @@ export default function PerSymbolPerformanceTable({ timeRange }: PerSymbolPerfor
     );
   }
 
-  if (!hasApiKeys) {
+  if (!canShowData) {
     return (
       <div className="flex items-center justify-center h-[200px] text-muted-foreground">
         <div className="text-center">
@@ -208,7 +210,7 @@ export default function PerSymbolPerformanceTable({ timeRange }: PerSymbolPerfor
           <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       )}
-      <div className="rounded-md border">
+      <div className="overflow-x-auto rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>

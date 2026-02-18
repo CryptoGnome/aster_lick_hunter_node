@@ -44,6 +44,7 @@ next-env.d.ts
 data/*.db
 data/*.db-journal
 data/*.db-wal
+data/*.db-shm
 
 # user configuration
 config.user*
@@ -54,3 +55,11 @@ data/optimizer-jobs.json
 # claude code local settings and agents
 .claude/settings.local.json
 .claude/agents/
+
+# local development files (not for commit)
+[WEB]
+ecosystem.config.js
+scripts/aster-notifier.cjs
+*.swp
+.*.swp
+core

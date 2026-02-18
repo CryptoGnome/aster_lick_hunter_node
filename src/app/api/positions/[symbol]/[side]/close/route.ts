@@ -6,7 +6,6 @@ import { loadConfig } from '@/lib/bot/config';
 import { symbolPrecision } from '@/lib/utils/symbolPrecision';
 import { getExchangeInfo } from '@/lib/api/market';
 import { invalidateIncomeCache } from '@/lib/api/income';
-import { paperModeSimulator } from '@/lib/services/paperModeSimulator';
 
 export async function POST(
   request: NextRequest,
@@ -88,27 +87,13 @@ export async function POST(
 
     // Check if we're in paper mode (simulation)
     if (config.global.paperMode) {
-      console.log(`PAPER MODE: Closing simulated position for ${symbol} ${side}`);
-
-      // Close the simulated position via paper mode simulator
-      const closed = await paperModeSimulator.closePosition(symbol, side, 'Manual close via UI');
-
-      if (!closed) {
-        return NextResponse.json(
-          {
-            error: `No simulated position found for ${symbol} ${side}`,
-            success: false,
-            simulated: true
-          },
-          { status: 404 }
-        );
-      }
-
+      console.log(`PAPER MODE: Would close position for ${symbol} ${side} with quantity ${quantity}`);
       return NextResponse.json({
         success: true,
-        message: `Paper mode: Successfully closed simulated ${symbol} ${side} position`,
+        message: `Paper mode: Simulated closing ${symbol} ${side} position of ${quantity} units`,
         simulated: true,
-        order_side: orderSide
+        order_side: orderSide,
+        quantity: quantity
       });
     }
 

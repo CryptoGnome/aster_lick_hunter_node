@@ -3,10 +3,10 @@ import { EventEmitter } from 'events';
 import { LiquidationEvent } from '../lib/types';
 import { errorLogger } from '../lib/services/errorLogger';
 import { getRateLimitManager } from '../lib/api/rateLimitManager';
+import { getMAEService } from '../lib/services/maeService';
 
 export interface BotStatus {
   isRunning: boolean;
-  botState?: 'running' | 'paused' | 'stopped';
   paperMode: boolean;
   uptime: number;
   startTime: Date | null;
@@ -29,7 +29,6 @@ export class StatusBroadcaster extends EventEmitter {
   private clients: Set<WebSocket> = new Set();
   private status: BotStatus = {
     isRunning: false,
-    botState: 'stopped',
     paperMode: true,
     uptime: 0,
     startTime: null,
@@ -87,20 +86,29 @@ export class StatusBroadcaster extends EventEmitter {
                 }
                 break;
 
-              case 'bot_control':
-                // Handle bot control commands (pause, resume, stop)
-                const { action } = message;
-                console.log(`🎮 Bot control requested: ${action}`);
-
-                // Emit event for AsterBot to handle
-                this.emit('bot_control', action);
-
-                // Send acknowledgment
-                ws.send(JSON.stringify({
-                  type: 'bot_control_ack',
-                  action,
-                  timestamp: Date.now()
+              case 'scale_out_position':
+                console.log('🛡️  Scale out requested from web UI:', message.data);
+                this.emit('scale_out_position', message.data);
+                ws.send(JSON.stringify({ 
+                  type: 'scale_out_position_response', 
+                  success: true,
+                  timestamp: Date.now() 
                 }));
+                break;
+
+              case 'deactivate_scale_out':
+                console.log('🛡️  Scale out deactivation requested from web UI:', message.data);
+                this.emit('deactivate_scale_out', message.data);
+                ws.send(JSON.stringify({ 
+                  type: 'deactivate_scale_out_response', 
+                  success: true,
+                  timestamp: Date.now() 
+                }));
+                break;
+
+              case 'check_scale_out_status':
+                console.log('🛡️  Scale out status check requested from web UI:', message.data);
+                this.emit('check_scale_out_status', message.data);
                 break;
 
               case 'ping':
@@ -132,7 +140,8 @@ export class StatusBroadcaster extends EventEmitter {
         ws.on('ping', () => ws.pong());
       });
 
-      // Update uptime every second and rate limits every 2 seconds
+      // Update uptime and broadcast status less frequently to reduce load
+      // Status updates every 5 seconds, rate limits every 10 seconds
       let counter = 0;
       this.uptimeInterval = setInterval(() => {
         if (this.status.isRunning && this.status.startTime) {
@@ -140,12 +149,12 @@ export class StatusBroadcaster extends EventEmitter {
           this._broadcast('status', this.status);
         }
 
-        // Update rate limits every 2 seconds
+        // Update rate limits every 10 seconds (every 2 iterations)
         counter++;
         if (counter % 2 === 0) {
           this.updateRateLimit();
         }
-      }, 1000);
+      }, 5000); // Reduced from 1000ms to 5000ms (5 seconds)
 
       console.log(`📡 WebSocket server running on port ${this.port}`);
     } catch (error) {
@@ -183,7 +192,6 @@ export class StatusBroadcaster extends EventEmitter {
 
   setRunning(isRunning: boolean): void {
     this.status.isRunning = isRunning;
-    this.status.botState = isRunning ? 'running' : 'stopped';
     if (isRunning) {
       this.status.startTime = new Date();
       this.status.uptime = 0;
@@ -191,11 +199,6 @@ export class StatusBroadcaster extends EventEmitter {
       this.status.startTime = null;
       this.status.uptime = 0;
     }
-    this._broadcast('status', this.status);
-  }
-
-  setBotState(state: 'running' | 'paused' | 'stopped'): void {
-    this.status.botState = state;
     this._broadcast('status', this.status);
   }
 
@@ -235,12 +238,18 @@ export class StatusBroadcaster extends EventEmitter {
 
   private _broadcast(type: string, data: any): void {
     const message = JSON.stringify({ type, data });
+    let sentCount = 0;
 
     this.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
+        sentCount++;
       }
     });
+    
+    if (type === 'liquidation') {
+      console.log(`[WebSocketServer] Sent ${type} to ${sentCount} open clients (${this.clients.size} total)`);
+    }
   }
 
   logActivity(activity: string): void {
@@ -253,6 +262,7 @@ export class StatusBroadcaster extends EventEmitter {
 
   // Broadcast liquidation events to connected clients
   broadcastLiquidation(liquidationEvent: LiquidationEvent): void {
+    console.log(`[WebSocketServer] Broadcasting liquidation ${liquidationEvent.symbol} to ${this.clients.size} clients`);
     this._broadcast('liquidation', {
       symbol: liquidationEvent.symbol,
       side: liquidationEvent.side,
@@ -287,6 +297,8 @@ export class StatusBroadcaster extends EventEmitter {
     liquidationVolume: number;
     priceImpact: number;
     confidence: number;
+    qualityScore?: any;
+    qualityRecommendation?: string;
   }): void {
     this._broadcast('trade_opportunity', {
       ...data,
@@ -294,7 +306,7 @@ export class StatusBroadcaster extends EventEmitter {
     });
   }
 
-  // Broadcast when a trade is blocked (e.g., by VWAP protection)
+  // Broadcast when a trade is blocked (e.g., by VWAP protection or quality filter)
   broadcastTradeBlocked(data: {
     symbol: string;
     side: string;
@@ -302,6 +314,7 @@ export class StatusBroadcaster extends EventEmitter {
     vwap?: number;
     currentPrice?: number;
     blockType?: string;
+    qualityScore?: any;
   }): void {
     this._broadcast('trade_blocked', {
       ...data,
@@ -317,7 +330,6 @@ export class StatusBroadcaster extends EventEmitter {
     price: number;
     type: 'opened' | 'closed' | 'updated';
     pnl?: number;
-    paperMode?: boolean;
   }): void {
     this._broadcast('position_update', {
       ...data,
@@ -414,12 +426,42 @@ export class StatusBroadcaster extends EventEmitter {
     quantity: number;
     pnl?: number;
     reason?: string;
-    paperMode?: boolean;
+    exitPrice?: number;
   }): void {
     this._broadcast('position_closed', {
       ...data,
       timestamp: new Date(),
     });
+    
+    // Record MAE/MFE for this closed position
+    try {
+      const maeService = getMAEService();
+      // Side in the data is the position side (LONG/SHORT), not the closing order side
+      const positionSide = data.side as 'LONG' | 'SHORT';
+      
+      // Try to close the MAE tracking for this position
+      // exitPrice might come from the closing order, or we estimate from PnL if not available
+      if (data.exitPrice) {
+        maeService.closePosition(
+          data.symbol,
+          positionSide,
+          data.exitPrice,
+          data.pnl || 0
+        );
+      } else if (data.pnl !== undefined) {
+        // If we have PnL but no exit price, still record it
+        // The MAE service will use the last tracked price as exit
+        maeService.closePosition(
+          data.symbol,
+          positionSide,
+          0, // Will be overwritten by last tracked price in service
+          data.pnl
+        );
+      }
+    } catch (error) {
+      // Non-blocking - MAE tracking failure shouldn't affect trading
+      console.error('MAE/MFE tracking error on position close:', error);
+    }
   }
 
   // Broadcast when an order is cancelled
@@ -552,117 +594,6 @@ export class StatusBroadcaster extends EventEmitter {
     this._broadcast('session_info', {
       sessionId: errorLogger.getSessionId(),
       systemInfo: errorLogger.getSystemInfo(),
-      timestamp: new Date(),
-    });
-  }
-
-  // Tranche Management Broadcasting Methods
-
-  // Broadcast when a new tranche is created
-  broadcastTrancheCreated(data: {
-    trancheId: string;
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    entryPrice: number;
-    quantity: number;
-    marginUsed: number;
-    leverage: number;
-    tpPrice: number;
-    slPrice: number;
-  }): void {
-    this._broadcast('tranche_created', {
-      ...data,
-      timestamp: new Date(),
-    });
-  }
-
-  // Broadcast when a tranche is isolated (underwater >threshold%)
-  broadcastTrancheIsolated(data: {
-    trancheId: string;
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    entryPrice: number;
-    currentPrice: number;
-    unrealizedPnl: number;
-    pnlPercent: number;
-    isolationThreshold: number;
-  }): void {
-    this._broadcast('tranche_isolated', {
-      ...data,
-      timestamp: new Date(),
-    });
-  }
-
-  // Broadcast when a tranche is closed (fully or partially)
-  broadcastTrancheClosed(data: {
-    trancheId: string;
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    entryPrice: number;
-    exitPrice: number;
-    quantity: number;
-    realizedPnl: number;
-    closedFully: boolean;
-    orderId?: string;
-  }): void {
-    this._broadcast('tranche_closed', {
-      ...data,
-      timestamp: new Date(),
-    });
-  }
-
-  // Broadcast when tranches are synced with exchange position
-  broadcastTrancheSyncUpdate(data: {
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    totalTranches: number;
-    activeTranches: number;
-    isolatedTranches: number;
-    totalQuantity: number;
-    exchangeQuantity: number;
-    syncStatus: 'synced' | 'drift' | 'conflict';
-    quantityDrift?: number;
-  }): void {
-    this._broadcast('tranche_sync', {
-      ...data,
-      timestamp: new Date(),
-    });
-  }
-
-  // Broadcast real-time P&L updates for all tranches
-  broadcastTranchePnLUpdate(data: {
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    activeTranches: Array<{
-      trancheId: string;
-      entryPrice: number;
-      currentPrice: number;
-      quantity: number;
-      unrealizedPnl: number;
-      pnlPercent: number;
-      isolated: boolean;
-    }>;
-    totalUnrealizedPnl: number;
-    weightedAvgEntry: number;
-  }): void {
-    this._broadcast('tranche_pnl_update', {
-      ...data,
-      timestamp: new Date(),
-    });
-  }
-
-  // Broadcast when tranche limit is reached
-  broadcastTrancheLimitReached(data: {
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    activeTranches: number;
-    maxTranches: number;
-    isolatedTranches: number;
-    maxIsolatedTranches: number;
-    reason: string;
-  }): void {
-    this._broadcast('tranche_limit_reached', {
-      ...data,
       timestamp: new Date(),
     });
   }

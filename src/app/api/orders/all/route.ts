@@ -7,6 +7,28 @@ import { Order, OrderStatus } from '@/lib/types/order';
 let ordersCache: { data: Order[]; timestamp: number } | null = null;
 const CACHE_TTL = 10000; // 10 seconds
 
+/**
+ * Try to get orders from local trade history DB.
+ * Returns null if DB is not available or empty.
+ */
+function getLocalDbOrders(options: {
+  symbol?: string;
+  startTime?: number;
+  limit?: number;
+}): Order[] | null {
+  try {
+    const { tradeHistoryDb } = require('@/lib/db/tradeHistoryDb');
+    const orders = tradeHistoryDb.getRecentFilledOrders({
+      symbol: options.symbol,
+      startTime: options.startTime,
+      limit: options.limit || 500,
+    });
+    return orders.length > 0 ? orders : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const config = await loadConfig();
@@ -74,12 +96,11 @@ export async function GET(request: NextRequest) {
         );
         allOrders = orders;
       } else if (configuredSymbols.length > 0) {
-        // Fetch for all configured/active symbols
-        console.log(`[Orders API] Fetching orders from ${configuredSymbols.length} configured symbols...`);
-
+        // Fetch for all configured/active symbols (when symbol is undefined or 'ALL')
         // Fetch generous amount per symbol to ensure we get enough orders
         // The limit will be applied AFTER filtering and sorting all orders from all symbols
-        const perSymbolLimit = Math.max(200, limit * 2);
+        // If filtering by FILLED status, we need to fetch more because many orders might not be filled
+        const perSymbolLimit = status === 'FILLED' ? Math.max(500, limit * 10) : Math.max(200, limit * 2);
 
         for (const sym of configuredSymbols) {
           try {
@@ -88,9 +109,8 @@ export async function GET(request: NextRequest) {
               config.api,
               startTime ? parseInt(startTime) : undefined,
               endTime ? parseInt(endTime) : undefined,
-              Math.min(perSymbolLimit, 500)
+              Math.min(perSymbolLimit, 1000)
             );
-            console.log(`[Orders API] Fetched ${orders.length} orders from ${sym}`);
             allOrders = allOrders.concat(orders);
           } catch (err) {
             console.error(`Failed to fetch orders for ${sym}:`, err);
@@ -187,13 +207,39 @@ export async function GET(request: NextRequest) {
       ordersCache = { data: transformedOrders, timestamp: Date.now() };
 
       // Filter orders based on status and other criteria
-      const filtered = filterOrders(transformedOrders, { status, symbol, startTime, endTime, limit });
+      let filtered = filterOrders(transformedOrders, { status, symbol, startTime, endTime, limit });
+
+      // Merge with local DB for deeper history (adds older orders not in API response)
+      const localOrders = getLocalDbOrders({
+        symbol: symbol && symbol !== 'ALL' ? symbol : undefined,
+        startTime: startTime ? parseInt(startTime) : undefined,
+        limit: limit * 2,
+      });
+      if (localOrders && localOrders.length > 0) {
+        const apiOrderIds = new Set(filtered.map(o => o.orderId));
+        const extraOrders = localOrders.filter(o => !apiOrderIds.has(o.orderId));
+        if (extraOrders.length > 0) {
+          filtered = [...filtered, ...extraOrders]
+            .sort((a, b) => b.updateTime - a.updateTime)
+            .slice(0, limit);
+        }
+      }
 
       return NextResponse.json(filtered);
     } catch (apiError: any) {
       console.error('API Orders error:', apiError);
 
-      // If API fails, return cached data if available
+      // If API fails, try local DB first
+      const localOrders = getLocalDbOrders({
+        symbol: symbol && symbol !== 'ALL' ? symbol : undefined,
+        startTime: startTime ? parseInt(startTime) : undefined,
+        limit,
+      });
+      if (localOrders && localOrders.length > 0) {
+        return NextResponse.json(localOrders);
+      }
+
+      // Then try cached data
       if (ordersCache) {
         const filtered = filterOrders(ordersCache.data, { status, symbol, startTime, endTime, limit });
         return NextResponse.json(filtered);

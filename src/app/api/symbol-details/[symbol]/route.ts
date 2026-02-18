@@ -73,8 +73,24 @@ export async function GET(
     };
 
     return NextResponse.json(details);
-  } catch (error) {
-    console.error('Failed to fetch symbol details:', error);
+  } catch (error: any) {
+    console.error('Failed to fetch symbol details:', error?.message || error);
+    
+    // Check for specific error types
+    if (error?.response?.status === 429) {
+      return NextResponse.json(
+        { error: 'Rate limited by exchange. Please try again in a moment.' },
+        { status: 429 }
+      );
+    }
+    
+    if (error?.code === 'ECONNREFUSED' || error?.code === 'ETIMEDOUT') {
+      return NextResponse.json(
+        { error: 'Unable to connect to exchange API' },
+        { status: 503 }
+      );
+    }
+    
     return NextResponse.json(
       { error: 'Failed to fetch symbol details' },
       { status: 500 }

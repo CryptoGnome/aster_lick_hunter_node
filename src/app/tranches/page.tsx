@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { DashboardLayout } from '@/components/dashboard-layout';
 import { TrancheBreakdownCard } from '@/components/TrancheBreakdownCard';
 import { TrancheTimeline } from '@/components/TrancheTimeline';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,28 +9,42 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Layers, TrendingUp, AlertTriangle, Info } from 'lucide-react';
+import { TrendingUp, AlertTriangle, Info } from 'lucide-react';
 
 export default function TranchesPage() {
   const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
   const [selectedSide, setSelectedSide] = useState<'LONG' | 'SHORT'>('LONG');
+  const [symbols, setSymbols] = useState<string[]>(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']);
 
-  // Common trading symbols
-  const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+  // Fetch configured symbols from the config
+  useEffect(() => {
+    async function fetchConfiguredSymbols() {
+      try {
+        const response = await fetch('/api/config');
+        if (response.ok) {
+          const config = await response.json();
+          const configuredSymbols = Object.keys(config.symbols || {});
+          if (configuredSymbols.length > 0) {
+            setSymbols(configuredSymbols);
+            // Set first configured symbol as default if current selection isn't in list
+            if (!configuredSymbols.includes(selectedSymbol)) {
+              setSelectedSymbol(configuredSymbols[0]);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch configured symbols:', error);
+        // Keep default symbols if fetch fails
+      }
+    }
+    fetchConfiguredSymbols();
+  }, []);
 
   return (
-    <div className="container mx-auto p-4 md:p-6 space-y-6">
-      {/* Page Header */}
-      <div className="flex flex-col gap-4">
-        <div className="flex items-center gap-3">
-          <Layers className="h-8 w-8 text-primary" />
-          <div>
-            <h1 className="text-3xl font-bold">Multi-Tranche Management</h1>
-            <p className="text-muted-foreground">
-              Track multiple position entries for better margin utilization
-            </p>
-          </div>
-        </div>
+    <DashboardLayout>
+      <div className="space-y-6">
+        {/* Info Card */}
+        <div className="flex flex-col gap-4">
 
         {/* Info Card */}
         <Card className="bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900">
@@ -173,6 +188,7 @@ export default function TranchesPage() {
           </div>
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </DashboardLayout>
   );
 }

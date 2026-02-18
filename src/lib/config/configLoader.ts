@@ -75,13 +75,12 @@ export class ConfigLoader {
       // Validate the final config
       const validated = configSchema.parse(userConfig);
 
-      // Validate API keys only if not in paper mode
+      // Warn about API keys if not in paper mode (but don't throw - bot will handle this)
       if (!validated.global.paperMode) {
         if (!validated.api.apiKey || !validated.api.secretKey) {
-          throw new Error('API keys are required when not in paper mode');
-        }
-        if (validated.api.apiKey.length !== 64 || validated.api.secretKey.length !== 64) {
-          throw new Error('API keys must be 64 characters when not in paper mode');
+          console.log('⚠️  No API keys configured - bot will wait for configuration');
+        } else if (validated.api.apiKey.length !== 64 || validated.api.secretKey.length !== 64) {
+          console.log('⚠️  API keys appear invalid (should be 64 characters)');
         }
       }
 

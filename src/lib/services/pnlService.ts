@@ -77,6 +77,59 @@ class PnLService extends EventEmitter {
     this.lastUpdateTime = Date.now();
   }
 
+  public updateFromPaperTrading(balanceData: any): void {
+    const now = Date.now();
+
+    // Initialize start balance if this is the first update
+    if (this.sessionPnL.startBalance === 0) {
+      this.sessionPnL.startBalance = balanceData.sessionStartBalance || balanceData.totalBalance;
+      this.sessionPnL.peak = this.sessionPnL.startBalance;
+    }
+
+    // Update current balance and PnL
+    this.sessionPnL.currentBalance = balanceData.totalBalance;
+    this.sessionPnL.unrealizedPnl = balanceData.unrealizedPnL || 0;
+    this.sessionPnL.realizedPnl = balanceData.realizedPnL || 0;
+    this.sessionPnL.totalPnl = balanceData.totalPnL || 0;
+    
+    // Update trade statistics
+    if (balanceData.trades !== undefined) {
+      this.sessionPnL.tradeCount = balanceData.trades;
+    }
+    if (balanceData.wins !== undefined) {
+      this.sessionPnL.winCount = balanceData.wins;
+    }
+    if (balanceData.losses !== undefined) {
+      this.sessionPnL.lossCount = balanceData.losses;
+    }
+
+    // Update peak and drawdown
+    if (this.sessionPnL.currentBalance > this.sessionPnL.peak) {
+      this.sessionPnL.peak = this.sessionPnL.currentBalance;
+    }
+
+    const drawdown = this.sessionPnL.peak - this.sessionPnL.currentBalance;
+    if (drawdown > this.sessionPnL.maxDrawdown) {
+      this.sessionPnL.maxDrawdown = drawdown;
+    }
+
+    // Throttle snapshot creation (once per 10 seconds)
+    if (now - this.lastUpdateTime >= 10000) {
+      this.lastUpdateTime = now;
+      this.addSnapshot({
+        timestamp: now,
+        balance: this.sessionPnL.currentBalance,
+        realizedPnl: this.sessionPnL.realizedPnl,
+        unrealizedPnl: this.sessionPnL.unrealizedPnl,
+        totalPnl: this.sessionPnL.totalPnl,
+      });
+
+      this.emit('snapshot', this.getLatestSnapshot());
+    }
+
+    this.emit('update', this.sessionPnL);
+  }
+
   public updateFromAccountEvent(event: any): void {
     const now = Date.now();
 
@@ -121,21 +174,22 @@ class PnLService extends EventEmitter {
         });
       }
 
-      // Initialize starting accumulated PnL on first update (even if zero)
-      if (this.lastUpdateTime === 0) {
+      // Initialize starting accumulated PnL on first update
+      if (this.sessionPnL.startingAccumulatedPnl === 0 && totalAccumulatedPnl !== 0) {
         this.sessionPnL.startingAccumulatedPnl = totalAccumulatedPnl;
       }
 
-      // Update session PnL tracking
+      // Update session PnL
       const _previousAccumulated = this.sessionPnL.currentAccumulatedPnl;
       this.sessionPnL.currentAccumulatedPnl = totalAccumulatedPnl;
       this.sessionPnL.unrealizedPnl = totalUnrealizedPnl;
 
-      // Note: Session realized PnL is now accumulated from individual trades in updateFromOrderEvent
-      // using the 'rp' field which gives accurate per-trade realized profit
-      // We keep the accumulated PnL fields for reference but don't use them for session tracking
-
+      // Session realized PnL is the difference from starting point
+      this.sessionPnL.realizedPnl = totalAccumulatedPnl - this.sessionPnL.startingAccumulatedPnl;
       this.sessionPnL.totalPnl = this.sessionPnL.realizedPnl + totalUnrealizedPnl;
+
+      // Trade counting is now handled in updateFromOrderEvent via the rp field
+      // We only track accumulated PnL changes here for verification
 
       // Update drawdown
       const currentValue = this.sessionPnL.currentBalance + this.sessionPnL.unrealizedPnl;
@@ -192,9 +246,6 @@ class PnLService extends EventEmitter {
           // Count closing trades (reduce-only or trades with realized PnL)
           const isReduceOnly = order.R === true || order.R === 'true';
           if (isReduceOnly || realizedProfit !== 0) {
-            // Accumulate realized PnL for the session
-            this.sessionPnL.realizedPnl += realizedProfit;
-
             this.sessionPnL.tradeCount++;
 
             // Track win/loss based on realized profit

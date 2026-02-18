@@ -9,7 +9,6 @@ import { initializePriceService, stopPriceService, getPriceService } from '../li
 import { vwapStreamer } from '../lib/services/vwapStreamer';
 import { getPositionMode, setPositionMode } from '../lib/api/positionMode';
 import { execSync } from 'child_process';
-import { cleanupScheduler } from '../lib/services/cleanupScheduler';
 import { db } from '../lib/db/database';
 import { configManager } from '../lib/services/configManager';
 import pnlService from '../lib/services/pnlService';
@@ -17,7 +16,14 @@ import { getRateLimitManager } from '../lib/api/rateLimitManager';
 import { startRateLimitLogging } from '../lib/api/rateLimitMonitor';
 import { initializeRateLimitToasts } from '../lib/api/rateLimitToasts';
 import { thresholdMonitor } from '../lib/services/thresholdMonitor';
+import { cascadeDetector } from '../lib/services/cascadeDetector';
+import { accountHealthMonitor } from '../lib/services/accountHealthMonitor';
+import { ftaExitService } from '../lib/services/ftaExitService';
+import { tradeQualityDb } from '../lib/db/tradeQualityDb';
+import { getMAEService } from '../lib/services/maeService';
 import { logWithTimestamp, logErrorWithTimestamp, logWarnWithTimestamp } from '../lib/utils/timestamp';
+import { updateDynamicPositionSizes } from '../lib/utils/positionSizing';
+import { getPaperTradingManager } from '../lib/paperTrading';
 
 // Helper function to kill all child processes (synchronous for exit handler)
 function killAllProcesses() {
@@ -39,10 +45,11 @@ class AsterBot {
   private positionManager: PositionManager | null = null;
   private config: Config | null = null;
   private isRunning = false;
-  private isPaused = false;
   private statusBroadcaster: StatusBroadcaster;
   private isHedgeMode: boolean = false;
   private tradeSizeWarnings: any[] = [];
+  private cleanupScheduler: any = null;
+  private positionSizingInterval: NodeJS.Timeout | null = null;
 
   constructor() {
     // Will be initialized with config port
@@ -65,6 +72,18 @@ logWithTimestamp('Bot is already running');
       // Initialize config manager and load configuration
       this.config = await configManager.initialize();
       logWithTimestamp('✅ Configuration loaded');
+
+      // Warn if global trade size multiplier is active
+      const tradeSizeMultiplier = this.config.global.tradeSizeMultiplier;
+      if (tradeSizeMultiplier && tradeSizeMultiplier !== 1.0) {
+        const emoji = tradeSizeMultiplier > 2.0 ? '🔴' : tradeSizeMultiplier > 1.0 ? '🟡' : '🔵';
+        const label = tradeSizeMultiplier > 2.0 ? 'HIGH RISK' : tradeSizeMultiplier > 1.0 ? 'RISK-ON' : 'RISK-OFF';
+        logWarnWithTimestamp(`${emoji} GLOBAL TRADE SIZE MULTIPLIER: ${tradeSizeMultiplier}x (${label})`);
+        logWarnWithTimestamp(`   All trade sizes will be multiplied by ${tradeSizeMultiplier}x`);
+        if (tradeSizeMultiplier > 1.0) {
+          logWarnWithTimestamp(`   Set tradeSizeMultiplier to 1.0 in config to return to normal sizing`);
+        }
+      }
 
       // Validate trade sizes against exchange minimums
       const { validateAllTradeSizes } = await import('../lib/validation/tradeSizeValidator');
@@ -162,38 +181,132 @@ logErrorWithTimestamp('❌ Config error:', error.message);
         this.statusBroadcaster.addError(`Config: ${error.message}`);
       });
 
-      // Listen for bot control commands from web UI
-      this.statusBroadcaster.on('bot_control', async (action: string) => {
-        switch (action) {
-          case 'pause':
-            await this.pause();
-            break;
-          case 'resume':
-            await this.resume();
-            break;
-          default:
-            logWarnWithTimestamp(`Unknown bot control action: ${action}`);
-        }
-      });
-
       // Check API keys
       const hasValidApiKeys = this.config.api.apiKey && this.config.api.secretKey &&
                               this.config.api.apiKey.length > 0 && this.config.api.secretKey.length > 0;
 
-      if (!hasValidApiKeys) {
-logWithTimestamp('⚠️  WARNING: No API keys configured. Running in PAPER MODE only.');
-logWithTimestamp('   Please configure your API keys via the web interface at http://localhost:3000/config');
-        if (!this.config.global.paperMode) {
-logErrorWithTimestamp('❌ Cannot run in LIVE mode without API keys!');
-          this.statusBroadcaster.broadcastConfigError(
-            'Invalid Configuration',
-            'Cannot run in LIVE mode without API keys. Please configure your API keys or enable paper mode.',
-            {
-              component: 'AsterBot',
+      if (!hasValidApiKeys && !this.config.global.paperMode) {
+logWithTimestamp('⚠️  No API keys configured - waiting for setup via web UI at http://localhost:3000/config');
+        // Broadcast a simple status update (not an error) to the UI
+        this.statusBroadcaster._broadcast('waiting_for_config', {
+          message: 'Please configure your API keys via the dashboard, or enable paper mode to test.',
+          timestamp: new Date().toISOString(),
+        });
+        // Don't throw - just wait. The web UI is still running.
+        // The bot will be restarted when config is saved via the UI.
+        this.isRunning = false;
+        return;
+      }
+
+      if (!hasValidApiKeys && this.config.global.paperMode) {
+logWithTimestamp('📄 Running in Paper Mode (no API keys required)');
+      }
+
+      // Initialize Paper Trading if in paper mode (before API-dependent services)
+      if (this.config.global.paperMode) {
+        try {
+          // Get starting balance from config, default to 1000 USDT
+          const startingBalance = this.config.global.paperTrading?.startingBalance || 1000;
+          const paperTrading = getPaperTradingManager(startingBalance);
+          
+          // Check if balance has changed and paper trading needs to be reset
+          if (paperTrading.isActive() && paperTrading.getStartingBalance() !== startingBalance) {
+            logWithTimestamp(`📄 Paper Trading: Starting balance changed from ${paperTrading.getStartingBalance()} to ${startingBalance} USDT`);
+            logWithTimestamp(`📄 Paper Trading: ⚠️  Resetting paper trading system - all positions and history will be cleared`);
+            await paperTrading.resetWithNewBalance(startingBalance);
+          } else if (!paperTrading.isActive()) {
+            await paperTrading.initialize();
+          }
+
+          // Pass paper trading configuration to order simulator
+          if (this.config.global.paperTrading) {
+            paperTrading.setSimulationConfig(this.config.global.paperTrading);
+          }
+
+          // Connect paper trading events to status broadcaster
+          paperTrading.on('balanceUpdate', (balance) => {
+            this.statusBroadcaster.broadcast('paper_balance_update', balance);
+            // Update pnlService with paper trading data
+            pnlService.updateFromPaperTrading(balance);
+          });
+
+          paperTrading.on('positionOpened', (position) => {
+            this.statusBroadcaster.broadcast('paper_position_opened', position);
+          });
+
+          paperTrading.on('positionClosed', (data) => {
+            this.statusBroadcaster.broadcast('paper_position_closed', data);
+          });
+
+          paperTrading.on('protectiveOrderTriggered', (data) => {
+            this.statusBroadcaster.broadcast('paper_protective_triggered', data);
+            logWithTimestamp(`📄 Paper Trading: ${data.position.symbol} ${data.position.side} TP/SL triggered - PnL: ${data.pnl.toFixed(2)} USDT`);
+          });
+
+logWithTimestamp(`✅ Paper Trading system initialized with ${startingBalance} USDT starting balance`);
+          
+          // Log paper trading configuration
+          if (this.config.global.paperTrading) {
+            const pt = this.config.global.paperTrading;
+            if (pt.slippageBps && pt.slippageBps > 0) {
+              logWithTimestamp(`📄 Paper Trading: Slippage simulation enabled (${pt.slippageBps} bps = ${(pt.slippageBps / 100).toFixed(2)}%)`);
             }
-          );
-          throw new Error('API keys required for live trading');
+            if (pt.latencyMs && pt.latencyMs > 0) {
+              logWithTimestamp(`📄 Paper Trading: Network latency simulation enabled (${pt.latencyMs}ms)`);
+            }
+            if (pt.partialFillPercent && pt.partialFillPercent > 0) {
+              logWithTimestamp(`📄 Paper Trading: Partial fill simulation enabled (${pt.partialFillPercent}% chance)`);
+            }
+            if (pt.rejectionRate && pt.rejectionRate > 0) {
+              logWithTimestamp(`📄 Paper Trading: Order rejection simulation enabled (${pt.rejectionRate}% chance)`);
+            }
+            if (pt.enableRealisticFills) {
+              logWithTimestamp(`📄 Paper Trading: Realistic fill simulation enabled`);
+            }
+          }
+        } catch (error: any) {
+logErrorWithTimestamp('⚠️  Paper Trading failed to initialize:', error.message);
         }
+      }
+
+      // Initialize Price Service for real-time mark prices (needed for both live and paper trading)
+      try {
+        await initializePriceService();
+logWithTimestamp('✅ Real-time price service started');
+
+        // Listen for mark price updates and broadcast to web UI
+        const priceService = getPriceService();
+        if (priceService) {
+          priceService.on('markPriceUpdate', (priceUpdates) => {
+            // Broadcast price updates to web UI for live PnL calculation
+            this.statusBroadcaster.broadcast('mark_price_update', priceUpdates);
+
+            // If in paper mode, update paper trading with real prices
+            if (this.config.global.paperMode) {
+              const paperTrading = getPaperTradingManager();
+              if (paperTrading.isActive()) {
+                for (const [symbol, price] of Object.entries(priceUpdates)) {
+                  paperTrading.updateMarketPrice(symbol, price as number);
+                }
+              }
+            }
+          });
+
+          // Subscribe to price updates for paper trading positions
+          if (this.config.global.paperMode) {
+            const paperTrading = getPaperTradingManager();
+            if (paperTrading.isActive()) {
+              const paperSymbols = paperTrading.getOpenPositionSymbols();
+              if (paperSymbols.length > 0) {
+                priceService.subscribeToSymbols(paperSymbols);
+                logWithTimestamp(`📊 Price streaming enabled for paper trading positions: ${paperSymbols.join(', ')}`);
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+logErrorWithTimestamp('⚠️  Price service failed to start:', error.message);
+        this.statusBroadcaster.addError(`Price Service: ${error.message}`);
       }
 
       if (hasValidApiKeys) {
@@ -222,6 +335,53 @@ logErrorWithTimestamp('Failed to initialize balance service:', error);
             }
           );
           // Continue anyway - bot can work without balance service
+        }
+
+        // Initialize Account Health Monitor (drawdown protection)
+        try {
+          const healthConfig = this.config.global.accountHealth;
+          if (healthConfig) {
+            accountHealthMonitor.updateConfig(healthConfig);
+          }
+          if (healthConfig?.enabled !== false) {
+            await accountHealthMonitor.initialize(this.config.api);
+
+            // Wire emergency close-all to position manager (will be connected after PM starts)
+            accountHealthMonitor.on('emergencyCloseAll', async (data: any) => {
+              logErrorWithTimestamp(`🔴 EMERGENCY CLOSE-ALL triggered: ${data.reason}`);
+              this.statusBroadcaster.broadcast('emergency_close_all', data);
+              this.statusBroadcaster.logActivity(`🔴 EMERGENCY: ${data.reason}`);
+              // Close all positions via position manager
+              if (this.positionManager) {
+                try {
+                  await this.positionManager.closeAllPositions();
+                  logWithTimestamp('✅ All positions closed by emergency close-all');
+                } catch (err) {
+                  logErrorWithTimestamp('❌ Failed to close all positions during emergency:', err);
+                }
+              }
+            });
+
+            // Wire health events to UI
+            accountHealthMonitor.on('tradingPaused', (data: any) => {
+              this.statusBroadcaster.broadcast('account_health_paused', data);
+              this.statusBroadcaster.logActivity(`⚠️ Account health: New positions paused (DCA still allowed)`);
+            });
+            accountHealthMonitor.on('tradingResumed', (data: any) => {
+              this.statusBroadcaster.broadcast('account_health_resumed', data);
+              this.statusBroadcaster.logActivity(`✅ Account health: Trading resumed`);
+            });
+            accountHealthMonitor.on('healthUpdate', (state: any) => {
+              this.statusBroadcaster.broadcast('account_health_update', state);
+            });
+
+            logWithTimestamp(`✅ Account Health Monitor initialized (pause at ${healthConfig?.maxDrawdownPercent ?? 25}% drawdown, resume at ${healthConfig?.resumeAtDrawdownPercent ?? 15}%)`);
+          } else {
+            logWithTimestamp('ℹ️  Account Health Monitor disabled in config');
+          }
+        } catch (error: any) {
+          logErrorWithTimestamp('⚠️  Account Health Monitor failed to initialize:', error.message);
+          // Continue without health monitoring
         }
 
         // Check and set position mode
@@ -312,26 +472,6 @@ logErrorWithTimestamp('[Bot] Balance service error stack:', error instanceof Err
 logWithTimestamp('[Bot] Bot will continue without real-time balance updates');
         }
 
-        // Initialize Price Service for real-time mark prices
-        try {
-          await initializePriceService();
-logWithTimestamp('✅ Real-time price service started');
-
-          // Listen for mark price updates and broadcast to web UI
-          const priceService = getPriceService();
-          if (priceService) {
-            priceService.on('markPriceUpdate', (priceUpdates) => {
-              // Broadcast price updates to web UI for live PnL calculation
-              this.statusBroadcaster.broadcast('mark_price_update', priceUpdates);
-            });
-
-            // Note: We'll subscribe to position symbols after position manager starts
-          }
-        } catch (error: any) {
-logErrorWithTimestamp('⚠️  Price service failed to start:', error.message);
-          this.statusBroadcaster.addError(`Price Service: ${error.message}`);
-        }
-
         // Initialize VWAP Streamer for real-time VWAP calculations
         try {
           await vwapStreamer.start(this.config);
@@ -378,6 +518,18 @@ logWithTimestamp('✅ Position Manager started');
 logWithTimestamp(`📊 Price streaming enabled for open positions: ${positionSymbols.join(', ')}`);
           }
         }
+
+        // In paper mode, subscribe to paper trading position symbols
+        if (this.config.global.paperMode && priceService) {
+          const paperTrading = getPaperTradingManager();
+          if (paperTrading.isActive()) {
+            const paperSymbols = paperTrading.getOpenPositionSymbols();
+            if (paperSymbols.length > 0) {
+              priceService.subscribeToSymbols(paperSymbols);
+logWithTimestamp(`📊 Price streaming enabled for paper trading positions: ${paperSymbols.join(', ')}`);
+            }
+          }
+        }
       } catch (error: any) {
 logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message);
         this.statusBroadcaster.addError(`Position Manager: ${error.message}`);
@@ -395,12 +547,13 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
       if (trancheEnabledSymbols.length > 0) {
         try {
           const { initializeTrancheManager } = await import('../lib/services/trancheManager');
+          const { placeOrder } = await import('../lib/api/orders');
           const trancheManager = initializeTrancheManager(this.config);
           await trancheManager.initialize();
 
           // Connect tranche events to status broadcaster
           trancheManager.on('trancheCreated', (tranche) => {
-            this.statusBroadcaster.broadcastTrancheCreated({
+            this.statusBroadcaster.broadcast('tranche_created', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
@@ -415,13 +568,12 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
           });
 
           trancheManager.on('trancheIsolated', (tranche) => {
-            const symbolConfig = this.config?.symbols[tranche.symbol];
             const currentPrice = tranche.isolationPrice || 0;
             const pnlPercent = tranche.side === 'LONG'
               ? ((currentPrice - tranche.entryPrice) / tranche.entryPrice) * 100
               : ((tranche.entryPrice - currentPrice) / tranche.entryPrice) * 100;
 
-            this.statusBroadcaster.broadcastTrancheIsolated({
+            this.statusBroadcaster.broadcast('tranche_isolated', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
@@ -429,13 +581,13 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
               currentPrice,
               unrealizedPnl: tranche.unrealizedPnl,
               pnlPercent,
-              isolationThreshold: symbolConfig?.trancheIsolationThreshold || 5,
+              isolationThreshold: this.config?.symbols[tranche.symbol]?.trancheIsolationThreshold || 5,
             });
             logWithTimestamp(`⚠️  Tranche isolated: ${tranche.id.substring(0, 8)} for ${tranche.symbol} (${pnlPercent.toFixed(2)}% loss)`);
           });
 
           trancheManager.on('trancheClosed', (tranche) => {
-            this.statusBroadcaster.broadcastTrancheClosed({
+            this.statusBroadcaster.broadcast('tranche_closed', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
@@ -450,12 +602,12 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
           });
 
           trancheManager.on('tranchePartialClose', (tranche) => {
-            this.statusBroadcaster.broadcastTrancheClosed({
+            this.statusBroadcaster.broadcast('tranche_closed', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
               entryPrice: tranche.entryPrice,
-              exitPrice: 0, // Partial close - exit price varies
+              exitPrice: 0,
               quantity: tranche.quantity,
               realizedPnl: tranche.realizedPnl,
               closedFully: false,
@@ -463,7 +615,76 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
             logWithTimestamp(`📉 Tranche partially closed: ${tranche.id.substring(0, 8)} for ${tranche.symbol}`);
           });
 
-          // Start periodic isolation monitoring
+          // ========================
+          // Tranche Exit Order Placement
+          // ========================
+          // When TrancheManager detects a tranche should exit (TP hit, max loss, time expired),
+          // it emits an event. We place a reduce-only MARKET order here.
+          // The exchange fill will come back via ORDER_TRADE_UPDATE → PositionManager → processOrderFill()
+
+          // Track in-flight tranche close orders to prevent duplicates
+          const trancheCloseInFlight = new Set<string>();
+
+          const placeTrancheCloseOrder = async (
+            event: { tranche: any; symbol: string; side: string; positionSide: string; quantity: number; currentPrice: number },
+            reason: string
+          ) => {
+            const trancheId = event.tranche.id;
+            if (trancheCloseInFlight.has(trancheId)) {
+              logWithTimestamp(`TrancheClose: Already in-flight for ${trancheId.substring(0, 8)}, skipping`);
+              return;
+            }
+
+            trancheCloseInFlight.add(trancheId);
+
+            try {
+              // Reduce-only: close side is opposite of position side
+              const closeSide = event.side === 'LONG' ? 'SELL' : 'BUY';
+              const positionSide = event.positionSide as 'LONG' | 'SHORT' | 'BOTH';
+
+              logWithTimestamp(
+                `🔻 Placing tranche close order (${reason}): ${event.symbol} ${closeSide} qty=${event.quantity} ` +
+                `tranche=${trancheId.substring(0, 8)}`
+              );
+
+              await placeOrder({
+                symbol: event.symbol,
+                side: closeSide,
+                type: 'MARKET',
+                quantity: event.quantity,
+                reduceOnly: true,
+                positionSide,
+              }, this.config.api);
+
+              logWithTimestamp(
+                `✅ Tranche close order placed (${reason}): ${event.symbol} ${closeSide} qty=${event.quantity}`
+              );
+            } catch (error: any) {
+              logErrorWithTimestamp(
+                `❌ Failed to place tranche close order (${reason}) for ${event.symbol}:`, error?.message
+              );
+            } finally {
+              // Clear after a delay to allow ORDER_TRADE_UPDATE to process
+              setTimeout(() => trancheCloseInFlight.delete(trancheId), 30000);
+            }
+          };
+
+          // Per-tranche TP hit → place reduce-only close order
+          trancheManager.on('trancheTPTriggered', (event) => {
+            placeTrancheCloseOrder(event, 'per_tranche_tp');
+          });
+
+          // Position-level max loss → close worst tranches
+          trancheManager.on('trancheMaxLossClose', (event) => {
+            placeTrancheCloseOrder(event, 'position_max_loss');
+          });
+
+          // Time-based aging → close expired underwater tranches
+          trancheManager.on('trancheTimeExpired', (event) => {
+            placeTrancheCloseOrder(event, 'time_expired');
+          });
+
+          // Start periodic monitoring (TP checks, max loss, aging, isolation, recovery)
           trancheManager.startIsolationMonitoring(10000); // Check every 10 seconds
 
           logWithTimestamp(`✅ Tranche Manager initialized for ${trancheEnabledSymbols.length} symbol(s): ${trancheEnabledSymbols.map(([s]) => s).join(', ')}`);
@@ -476,8 +697,117 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp('ℹ️  Tranche Management disabled for all symbols');
       }
 
-      // Initialize Hunter
-      this.hunter = new Hunter(this.config, this.isHedgeMode);
+      // Initialize Protective Order Service (always available for on-demand protection via UI)
+      try {
+        const { initializeProtectiveOrderService } = await import('../lib/services/protectiveOrderService');
+        const protectiveOrderService = initializeProtectiveOrderService(this.config);
+        protectiveOrderService.start();
+        logWithTimestamp('✅ Protective Order Service ready (activated per-position via UI)');
+        
+        // Listen for scale_out_position commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('scale_out_position');
+        this.statusBroadcaster.on('scale_out_position', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Activating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.activateProtection(
+              data.symbol,
+              data.side,
+              data.entryPrice,
+              data.quantity,
+              data.settings
+            );
+            this.statusBroadcaster.broadcast('scale_out_position_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to activate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('scale_out_position_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for deactivate_scale_out commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('deactivate_scale_out');
+        this.statusBroadcaster.on('deactivate_scale_out', async (data: any) => {
+          try {
+            logWithTimestamp(`🛡️  Deactivating scale out for ${data.symbol} ${data.side}`);
+            await protectiveOrderService.deactivateProtection(data.symbol, data.side);
+            
+            // Broadcast success and status update
+            this.statusBroadcaster.broadcast('deactivate_scale_out_success', {
+              symbol: data.symbol,
+              side: data.side,
+              timestamp: new Date()
+            });
+            
+            // Immediately broadcast status update to UI
+            this.statusBroadcaster.broadcast('scale_out_status_update', {
+              symbol: data.symbol,
+              side: data.side,
+              isActive: false,
+              reason: 'manual_deactivation'
+            });
+          } catch (error: any) {
+            logErrorWithTimestamp(`❌ Failed to deactivate scale out for ${data.symbol}:`, error.message);
+            this.statusBroadcaster.broadcast('deactivate_scale_out_error', {
+              symbol: data.symbol,
+              side: data.side,
+              error: error.message,
+              timestamp: new Date()
+            });
+          }
+        });
+
+        // Listen for check_scale_out_status commands from WebSocket
+        this.statusBroadcaster.removeAllListeners('check_scale_out_status');
+        this.statusBroadcaster.on('check_scale_out_status', (data: any) => {
+          const isActive = protectiveOrderService.isProtectionActive(data.symbol, data.side);
+          this.statusBroadcaster.broadcast('scale_out_status_response', {
+            symbol: data.symbol,
+            side: data.side,
+            isActive,
+            timestamp: new Date()
+          });
+        });
+      } catch (error: any) {
+        logErrorWithTimestamp('⚠️  Protective Order Service failed to start:', error.message);
+        this.statusBroadcaster.addError(`Protective Order Service: ${error.message}`);
+        // Continue without protective orders
+      }
+
+      // Initialize MAE/MFE Tracking Service
+      try {
+        const maeService = getMAEService();
+        await maeService.start();
+        logWithTimestamp('✅ MAE/MFE tracking service started');
+        
+        // Log current stats on startup
+        const stats = maeService.getStats();
+        if (stats && stats.totalTrades > 0) {
+          logWithTimestamp(`📊 MAE/MFE Stats: ${stats.totalTrades} trades tracked`);
+          logWithTimestamp(`   Win rate: ${((stats.winners / stats.totalTrades) * 100).toFixed(1)}%`);
+          logWithTimestamp(`   Avg MAE (winners): ${stats.avgMaeWinners.toFixed(2)}%`);
+          logWithTimestamp(`   Avg MFE (winners): ${stats.avgMfeWinners.toFixed(2)}%`);
+        }
+      } catch (error: any) {
+        logErrorWithTimestamp('⚠️  MAE/MFE Service failed to start:', error.message);
+        // Continue without MAE tracking
+      }
+
+      // Initialize Hunter (or reuse existing instance to prevent duplicate listeners)
+      if (!this.hunter) {
+        this.hunter = new Hunter(this.config, this.isHedgeMode);
+      } else {
+        // Remove all old listeners before re-attaching to prevent duplicates
+        this.hunter.removeAllListeners();
+        console.log('[Bot] Removed all old hunter event listeners to prevent duplicates');
+      }
 
       // Inject status broadcaster for order events
       this.hunter.setStatusBroadcaster(this.statusBroadcaster);
@@ -489,7 +819,8 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
 
       // Connect hunter events to position manager and status broadcaster
       this.hunter.on('liquidationDetected', (liquidationEvent: any) => {
-        logWithTimestamp(`💥 Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
+        console.log(`[Bot] liquidationDetected event received for ${liquidationEvent.symbol}`);
+        // Broadcast to UI and log activity (don't log to console - already logged in hunter.ts)
         this.statusBroadcaster.broadcastLiquidation(liquidationEvent);
         this.statusBroadcaster.logActivity(`Liquidation: ${liquidationEvent.symbol} ${liquidationEvent.side} ${liquidationEvent.quantity}`);
       });
@@ -498,17 +829,104 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         logWithTimestamp(`🎯 Trade opportunity: ${data.symbol} ${data.side} (${data.reason})`);
         this.statusBroadcaster.broadcastTradeOpportunity(data);
         this.statusBroadcaster.logActivity(`Opportunity: ${data.symbol} ${data.side} - ${data.reason}`);
+        
+        // Save to database for persistence
+        try {
+          tradeQualityDb.saveTradeSignal({
+            symbol: data.symbol,
+            side: data.side,
+            recommendation: data.qualityRecommendation || data.qualityScore?.recommendation || 'NORMAL',
+            totalScore: data.qualityScore?.totalScore ?? 2,
+            spikeScore: data.qualityScore?.spikeScore ?? 1,
+            volumeTrendScore: data.qualityScore?.volumeTrendScore ?? 1,
+            regimeScore: data.qualityScore?.regimeScore ?? 0,
+            positionSizeMultiplier: data.qualityScore?.positionSizeMultiplier ?? 1.0,
+            liquidationVolume: data.liquidationVolume || 0,
+            priceImpact: data.priceImpact || 0,
+            confidence: data.confidence || 0,
+            reason: data.reason,
+            metrics: data.qualityScore?.metrics,
+            wasExecuted: true,
+            wasBlocked: false,
+            reasons: data.qualityScore?.reasons,
+            signalPrice: data.signalPrice || 0
+          });
+        } catch (dbError) {
+          logErrorWithTimestamp('Failed to save trade signal to database:', dbError);
+        }
       });
 
       this.hunter.on('tradeBlocked', (data: any) => {
         logWithTimestamp(`🚫 Trade blocked: ${data.symbol} ${data.side} - ${data.reason}`);
         this.statusBroadcaster.broadcastTradeBlocked(data);
         this.statusBroadcaster.logActivity(`Blocked: ${data.symbol} ${data.side} - ${data.blockType}`);
+        
+        // Save blocked trade to database for analysis
+        try {
+          tradeQualityDb.saveTradeSignal({
+            symbol: data.symbol,
+            side: data.side,
+            recommendation: data.qualityScore?.recommendation || 'SKIP',
+            totalScore: data.qualityScore?.totalScore ?? 0,
+            spikeScore: data.qualityScore?.spikeScore ?? 0,
+            volumeTrendScore: data.qualityScore?.volumeTrendScore ?? 0,
+            regimeScore: data.qualityScore?.regimeScore ?? 0,
+            positionSizeMultiplier: data.qualityScore?.positionSizeMultiplier ?? 0,
+            liquidationVolume: 0,
+            priceImpact: 0,
+            confidence: 0,
+            reason: data.reason,
+            metrics: data.qualityScore?.metrics,
+            wasExecuted: false,
+            wasBlocked: true,
+            blockReason: data.blockType || data.reason,
+            reasons: data.qualityScore?.reasons,
+            signalPrice: data.signalPrice || 0
+          });
+        } catch (dbError) {
+          logErrorWithTimestamp('Failed to save blocked trade to database:', dbError);
+        }
       });
 
+      // Remove old threshold monitor listeners to prevent duplicates
+      thresholdMonitor.removeAllListeners('thresholdUpdate');
+      
       // Listen for threshold updates and broadcast to UI
       thresholdMonitor.on('thresholdUpdate', (thresholdUpdate: any) => {
         this.statusBroadcaster.broadcastThresholdUpdate(thresholdUpdate);
+      });
+
+      // Listen for cascade detector events and broadcast to UI
+      cascadeDetector.removeAllListeners();
+      cascadeDetector.on('cascadeDetected', (data: any) => {
+        logWarnWithTimestamp(`🚨 Cascade protection activated - new entries paused`);
+        this.statusBroadcaster.broadcast('cascade_detected', data);
+        this.statusBroadcaster.logActivity(`🚨 CASCADE: Trading paused - ${data.reasons.join(', ')}`);
+      });
+      cascadeDetector.on('cascadeCleared', (data: any) => {
+        logWithTimestamp(`✅ Cascade protection cleared - trading resumed`);
+        this.statusBroadcaster.broadcast('cascade_cleared', data);
+        this.statusBroadcaster.logActivity(`✅ CASCADE CLEARED: Trading resumed`);
+      });
+
+      // Listen for FTA exit signals and broadcast to UI
+      ftaExitService.on('exitSignal', (signal: any) => {
+        logWithTimestamp(`⚠️ FTA Exit Signal: ${signal.symbol} ${signal.side} - ${signal.reason}`);
+        this.statusBroadcaster.broadcast('fta_exit_signal', signal);
+        this.statusBroadcaster.logActivity(`FTA Alert: ${signal.symbol} - ${signal.exitType}`);
+        
+        // Save FTA signal to database
+        try {
+          tradeQualityDb.saveFTASignal({
+            symbol: signal.symbol,
+            side: signal.side,
+            exitType: signal.exitType,
+            reason: signal.reason,
+            confidence: signal.confidence || 0
+          });
+        } catch (dbError) {
+          logErrorWithTimestamp('Failed to save FTA signal to database:', dbError);
+        }
       });
 
       this.hunter.on('positionOpened', (data: any) => {
@@ -525,6 +943,43 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
         this.statusBroadcaster.updateStatus({
           positionsOpen: (this.statusBroadcaster as any).status.positionsOpen + 1,
         });
+
+        // Start MAE/MFE tracking for this position
+        try {
+          const maeService = getMAEService();
+          const positionSide = data.side === 'BUY' ? 'LONG' : 'SHORT';
+          const symbolConfig = this.config?.symbols[data.symbol];
+          maeService.findOrCreatePosition(
+            data.symbol,
+            positionSide,
+            data.price,
+            data.quantity,
+            symbolConfig?.leverage || 1,
+            data.qualityScore?.totalScore
+          );
+        } catch (maeError) {
+          // Non-blocking - MAE tracking failure shouldn't affect trading
+        }
+
+        // Register position with FTA Exit Service for early exit monitoring (if enabled)
+        if (this.config?.global.useFTAExitAnalysis === true) {
+          const symbolConfig = this.config?.symbols[data.symbol];
+          if (symbolConfig && data.qualityScore) {
+            ftaExitService.addPosition({
+              symbol: data.symbol,
+              side: data.side,
+              entryPrice: data.price,
+              stopLossPrice: data.side === 'BUY' 
+                ? data.price * (1 - symbolConfig.slPercent / 100)
+                : data.price * (1 + symbolConfig.slPercent / 100),
+              takeProfitPrice: data.side === 'BUY'
+                ? data.price * (1 + symbolConfig.tpPercent / 100)
+                : data.price * (1 - symbolConfig.tpPercent / 100),
+              qualityScore: data.qualityScore?.totalScore ?? 2,
+            });
+            logWithTimestamp(`📊 FTA monitoring registered for ${data.symbol} (quality: ${data.qualityScore?.totalScore ?? 2}/3)`);
+          }
+        }
 
         // Subscribe to price updates for the new position's symbol
         const priceService = getPriceService();
@@ -557,13 +1012,52 @@ logErrorWithTimestamp('❌ Hunter error:', error);
       await this.hunter.start();
 logWithTimestamp('✅ Liquidation Hunter started');
 
+      // Start the FTA Exit Service for early exit monitoring (if enabled)
+      if (this.config.global.useFTAExitAnalysis === true) {
+        ftaExitService.start();
+        logWithTimestamp('✅ FTA Exit Service started');
+      } else {
+        logWithTimestamp('ℹ️ FTA Exit Service disabled (enable with useFTAExitAnalysis in config)');
+      }
+
       // Start the cleanup scheduler for liquidation database
-      cleanupScheduler.start();
-logWithTimestamp('✅ Database cleanup scheduler started (7-day retention)');
+      const dbConfig = this.config.global.liquidationDatabase;
+      const retentionDays = dbConfig?.retentionDays ?? 90;
+      const cleanupHours = dbConfig?.cleanupIntervalHours ?? 24;
+      
+      // Create a new scheduler instance with config values
+      const { CleanupScheduler } = await import('../lib/services/cleanupScheduler');
+      this.cleanupScheduler = new CleanupScheduler(cleanupHours, retentionDays);
+      this.cleanupScheduler.start();
+      
+      if (retentionDays > 0) {
+        logWithTimestamp(`✅ Database cleanup scheduler started (${retentionDays}-day retention, runs every ${cleanupHours}h)`);
+      } else {
+        logWithTimestamp('✅ Database cleanup scheduler started (retention disabled)');
+      }
+
+      // Start dynamic position sizing updater (every 5 minutes)
+      this.positionSizingInterval = setInterval(async () => {
+        try {
+          await updateDynamicPositionSizes();
+        } catch (error) {
+          logErrorWithTimestamp('[PositionSizing] Error updating dynamic position sizes:', error);
+        }
+      }, 5 * 60 * 1000); // 5 minutes
+      
+      // Run once immediately on startup
+      updateDynamicPositionSizes().catch(error => {
+        logErrorWithTimestamp('[PositionSizing] Error on initial position size update:', error);
+      });
+      
+      logWithTimestamp('✅ Dynamic position sizing updater started (updates every 5 minutes)');
 
       this.isRunning = true;
       this.statusBroadcaster.setRunning(true);
 logWithTimestamp('🟢 Bot is now running. Press Ctrl+C to stop.');
+
+      // Run trade history backfill in the background (non-blocking)
+      this.startTradeHistoryBackfill();
 
       // Handle graceful shutdown with enhanced signal handling
       const shutdownHandler = async (signal: string) => {
@@ -603,98 +1097,6 @@ logErrorWithTimestamp('❌ Unhandled rejection at:', promise, 'reason:', reason)
     } catch (error) {
 logErrorWithTimestamp('❌ Failed to start bot:', error);
       process.exit(1);
-    }
-  }
-
-  async pause(): Promise<void> {
-    if (!this.isRunning || this.isPaused) {
-logWithTimestamp('⚠️  Cannot pause: Bot is not running or already paused');
-      return;
-    }
-
-    try {
-logWithTimestamp('⏸️  Pausing bot...');
-      this.isPaused = true;
-      this.statusBroadcaster.setBotState('paused');
-
-      // Stop the hunter from placing new trades
-      if (this.hunter) {
-        this.hunter.pause();
-logWithTimestamp('✅ Hunter paused (no new trades will be placed)');
-      }
-
-logWithTimestamp('✅ Bot paused - existing positions will continue to be monitored');
-      this.statusBroadcaster.logActivity('Bot paused');
-    } catch (error) {
-logErrorWithTimestamp('❌ Error while pausing bot:', error);
-      this.statusBroadcaster.addError(`Failed to pause: ${error}`);
-    }
-  }
-
-  async resume(): Promise<void> {
-    if (!this.isRunning || !this.isPaused) {
-logWithTimestamp('⚠️  Cannot resume: Bot is not running or not paused');
-      return;
-    }
-
-    try {
-logWithTimestamp('▶️  Resuming bot...');
-      this.isPaused = false;
-      this.statusBroadcaster.setBotState('running');
-
-      // Resume the hunter
-      if (this.hunter) {
-        this.hunter.resume();
-logWithTimestamp('✅ Hunter resumed');
-      }
-
-logWithTimestamp('✅ Bot resumed - trading active');
-      this.statusBroadcaster.logActivity('Bot resumed');
-    } catch (error) {
-logErrorWithTimestamp('❌ Error while resuming bot:', error);
-      this.statusBroadcaster.addError(`Failed to resume: ${error}`);
-    }
-  }
-
-  async stopAndCloseAll(): Promise<void> {
-    if (!this.isRunning) {
-logWithTimestamp('⚠️  Cannot stop: Bot is not running');
-      return;
-    }
-
-    try {
-logWithTimestamp('🛑 Stopping bot and closing all positions...');
-      this.isPaused = false;
-      this.statusBroadcaster.setBotState('stopped');
-
-      // Stop the hunter first
-      if (this.hunter) {
-        this.hunter.stop();
-logWithTimestamp('✅ Hunter stopped');
-      }
-
-      // Close all positions
-      if (this.positionManager) {
-        const positions = this.positionManager.getPositions();
-        if (positions.length > 0) {
-logWithTimestamp(`📊 Closing ${positions.length} open position(s)...`);
-          await this.positionManager.closeAllPositions();
-logWithTimestamp('✅ All positions closed');
-        } else {
-logWithTimestamp('ℹ️  No open positions to close');
-        }
-      }
-
-logWithTimestamp('✅ Bot stopped and all positions closed');
-      this.statusBroadcaster.logActivity('Bot stopped and all positions closed');
-
-      // Don't actually exit the process - just set state to stopped
-      // This allows the bot to be restarted from the UI
-      this.isRunning = false;
-      this.statusBroadcaster.setRunning(false);
-    } catch (error) {
-logErrorWithTimestamp('❌ Error while stopping bot:', error);
-      this.statusBroadcaster.addError(`Failed to stop: ${error}`);
     }
   }
 
@@ -769,6 +1171,24 @@ logErrorWithTimestamp('❌ Failed to apply config update:', error);
     }
   }
 
+  /**
+   * Run trade history backfill in the background.
+   * Non-blocking — errors are logged but don't affect the bot.
+   */
+  private async startTradeHistoryBackfill(): Promise<void> {
+    try {
+      const { runBackfill } = await import('../../scripts/backfill-trades');
+      const result = await runBackfill();
+      if (result.orders + result.trades + result.income > 0) {
+        logWithTimestamp(`✅ Trade history backfill complete: ${result.orders} orders, ${result.trades} trades, ${result.income} income records (${(result.durationMs / 1000).toFixed(1)}s)`);
+      } else {
+        logWithTimestamp('✅ Trade history: already up to date');
+      }
+    } catch (err) {
+      logWarnWithTimestamp('[TradeHistory] Backfill error (non-critical):', err);
+    }
+  }
+
   async stop(): Promise<void> {
     if (!this.isRunning) return;
 
@@ -793,6 +1213,18 @@ logWithTimestamp('✅ Hunter stopped');
 logWithTimestamp('✅ Position Manager stopped');
       }
 
+      // Stop FTA Exit Service
+      ftaExitService.stop();
+logWithTimestamp('✅ FTA Exit Service stopped');
+
+      // Stop cascade detector
+      cascadeDetector.stop();
+logWithTimestamp('✅ Cascade detector stopped');
+
+      // Stop account health monitor
+      accountHealthMonitor.stop();
+logWithTimestamp('✅ Account health monitor stopped');
+
       // Stop other services
       vwapStreamer.stop();
 logWithTimestamp('✅ VWAP streamer stopped');
@@ -805,8 +1237,21 @@ logWithTimestamp('✅ Balance service stopped');
       stopPriceService();
 logWithTimestamp('✅ Price service stopped');
 
-      cleanupScheduler.stop();
+      if (this.cleanupScheduler) {
+        this.cleanupScheduler.stop();
+      }
 logWithTimestamp('✅ Cleanup scheduler stopped');
+
+      if (this.positionSizingInterval) {
+        clearInterval(this.positionSizingInterval);
+        this.positionSizingInterval = null;
+      }
+logWithTimestamp('✅ Position sizing updater stopped');
+
+      // Flush liquidation buffer to prevent data loss
+      const { liquidationStorage } = await import('../lib/services/liquidationStorage');
+      await liquidationStorage.shutdown();
+logWithTimestamp('✅ Liquidation storage flushed');
 
       configManager.stop();
 logWithTimestamp('✅ Config manager stopped');

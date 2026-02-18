@@ -30,33 +30,45 @@ export function useSymbolPrecision() {
     }
   };
 
-  const formatPrice = useCallback((symbol: string, price: number): string => {
+  const formatPrice = useCallback((symbol: string, price: number | string): string => {
+    const numPrice = typeof price === 'string' ? parseFloat(price) : price;
+    
+    if (isNaN(numPrice)) {
+      return '0.00';
+    }
+    
     const info = symbolInfo[symbol];
     if (!info) {
       // Fallback formatting based on price magnitude
-      if (price < 0.01) return price.toFixed(6);
-      if (price < 1) return price.toFixed(4);
-      if (price < 100) return price.toFixed(3);
-      if (price < 10000) return price.toFixed(2);
-      return price.toFixed(0);
+      if (numPrice < 0.01) return numPrice.toFixed(6);
+      if (numPrice < 1) return numPrice.toFixed(4);
+      if (numPrice < 100) return numPrice.toFixed(3);
+      if (numPrice < 10000) return numPrice.toFixed(2);
+      return numPrice.toFixed(0);
     }
 
-    return price.toFixed(info.pricePrecision);
+    return numPrice.toFixed(info.pricePrecision);
   }, [symbolInfo]);
 
-  const formatQuantity = useCallback((symbol: string, quantity: number): string => {
+  const formatQuantity = useCallback((symbol: string, quantity: number | string): string => {
+    const numQuantity = typeof quantity === 'string' ? parseFloat(quantity) : quantity;
+    
+    if (isNaN(numQuantity)) {
+      return '0.00';
+    }
+    
     const info = symbolInfo[symbol];
     if (!info) {
       // Fallback formatting
-      if (quantity < 1) return quantity.toFixed(6);
-      if (quantity < 100) return quantity.toFixed(4);
-      return quantity.toFixed(2);
+      if (numQuantity < 1) return numQuantity.toFixed(6);
+      if (numQuantity < 100) return numQuantity.toFixed(4);
+      return numQuantity.toFixed(2);
     }
 
-    return quantity.toFixed(info.quantityPrecision);
+    return numQuantity.toFixed(info.quantityPrecision);
   }, [symbolInfo]);
 
-  const formatPriceWithCommas = useCallback((symbol: string, price: number): string => {
+  const formatPriceWithCommas = useCallback((symbol: string, price: number | string): string => {
     const formatted = formatPrice(symbol, price);
 
     // Add commas for thousands

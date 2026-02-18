@@ -239,10 +239,33 @@ class DataStore extends EventEmitter {
 
   // Handle WebSocket message
   handleWebSocketMessage(message: any) {
-    if (message.type === 'balance_update') {
+    // Handle paper trading balance updates
+    if (message.type === 'paper_balance_update' && message.payload) {
+      console.log('[DataStore] Received paper trading balance update from WebSocket');
+      const paperBalance = message.payload;
+      const accountInfo: AccountInfo = {
+        totalBalance: paperBalance.totalBalance,
+        availableBalance: paperBalance.availableBalance,
+        totalPositionValue: paperBalance.usedMargin,
+        totalPnL: paperBalance.unrealizedPnL,
+      };
+      this.updateBalance(accountInfo, 'paper_trading');
+    }
+    // Handle regular balance updates
+    else if (message.type === 'balance_update') {
       console.log('[DataStore] Received balance update from WebSocket:', message.data);
       this.updateBalance(message.data, 'websocket');
-    } else if (message.type === 'position_update') {
+    }
+    // Handle paper trading position events
+    else if (message.type === 'paper_position_opened' || message.type === 'paper_position_closed') {
+      console.log('[DataStore] Paper trading position event:', message.type);
+      // Fetch updated positions from paper trading API
+      this.fetchPositions(true).catch(error => {
+        console.error('[DataStore] Failed to fetch paper trading positions:', error);
+      });
+    }
+    // Handle regular position updates
+    else if (message.type === 'position_update') {
       console.log('[DataStore] Position update received:', message.data?.type);
       // Clear positions cache immediately to prevent serving stale data
       this.state.positions.timestamp = 0;
@@ -270,6 +293,19 @@ class DataStore extends EventEmitter {
       this.state.positions.timestamp = 0;
       this.fetchPositions(true).catch(error => {
         console.error('[DataStore] Failed to fetch positions after closure:', error);
+      });
+    } else if (message.type === 'tab_visible') {
+      // Tab became visible again - refresh both balance and positions to catch any missed updates
+      console.log('[DataStore] Tab visible, refreshing balance and positions');
+      this.state.balance.timestamp = 0;
+      this.state.positions.timestamp = 0;
+      
+      // Refresh both in parallel
+      Promise.all([
+        this.fetchBalance(true),
+        this.fetchPositions(true)
+      ]).catch(error => {
+        console.error('[DataStore] Failed to refresh data on tab visible:', error);
       });
     } else if (message.type === 'sl_placed' || message.type === 'tp_placed') {
       // When SL/TP orders are placed, refresh positions to update protection badges

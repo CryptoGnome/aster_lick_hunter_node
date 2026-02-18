@@ -31,8 +31,15 @@ const ERROR_COLORS = {
 
 export function PersistentErrorBanner() {
   const [systemicErrors, setSystemicErrors] = useState<Map<string, SystemicError>>(new Map());
+  const [hasShownInitialConnection, setHasShownInitialConnection] = useState(false);
 
   useEffect(() => {
+    // Wait 5 seconds before allowing websocket errors to be shown
+    // This prevents the banner from flashing on initial page load
+    const initialDelay = setTimeout(() => {
+      setHasShownInitialConnection(true);
+    }, 5000);
+
     const cleanup = websocketService.addMessageHandler((message: any) => {
       if (!message.type || !message.type.endsWith('_error')) {
         return;
@@ -47,6 +54,11 @@ export function PersistentErrorBanner() {
         message.type === 'websocket_error';
 
       if (!isSystemicError) {
+        return;
+      }
+
+      // Skip websocket errors during initial 5 second grace period
+      if (message.type === 'websocket_error' && !hasShownInitialConnection) {
         return;
       }
 
@@ -109,10 +121,11 @@ export function PersistentErrorBanner() {
     }, 10000); // Check every 10 seconds
 
     return () => {
+      clearTimeout(initialDelay);
       cleanup();
       clearInterval(interval);
     };
-  }, []);
+  }, [hasShownInitialConnection]);
 
   const dismissError = (key: string) => {
     setSystemicErrors(prev => {

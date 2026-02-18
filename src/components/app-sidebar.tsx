@@ -14,6 +14,9 @@ import {
   RefreshCw,
   Bug,
   Target,
+  Layers,
+  FileText,
+  BarChart3,
 } from "lucide-react"
 
 import { RateLimitSidebar } from "@/components/RateLimitSidebar"
@@ -51,6 +54,16 @@ const navigation = [
     href: "/config",
   },
   {
+    title: "Discovery",
+    icon: BarChart3,
+    href: "/discovery",
+  },
+  {
+    title: "Tranches",
+    icon: Layers,
+    href: "/tranches",
+  },
+  {
     title: "Optimizer",
     icon: Target,
     href: "/optimizer",
@@ -59,6 +72,11 @@ const navigation = [
     title: "Wiki & Help",
     icon: BookOpen,
     href: "/wiki",
+  },
+  {
+    title: "System Logs",
+    icon: FileText,
+    href: "/logs",
   },
   {
     title: "Error Logs",
@@ -110,13 +128,17 @@ export function AppSidebar() {
 
 
   const getStatusColor = () => {
-    if (!isConnected) return 'bg-red-500'
+    // On non-dashboard pages, show neutral color instead of red
+    const isNonDashboardPage = pathname !== '/' && pathname !== '';
+    if (!isConnected) return isNonDashboardPage ? 'bg-gray-400' : 'bg-red-500'
     if (!status?.isRunning) return 'bg-yellow-500'
     return 'bg-green-500'
   }
 
   const getStatusText = () => {
-    if (!isConnected) return 'Disconnected'
+    // On non-dashboard pages, show "Idle" instead of alarming "Disconnected"
+    const isNonDashboardPage = pathname !== '/' && pathname !== '';
+    if (!isConnected) return isNonDashboardPage ? 'Idle' : 'Disconnected'
     if (!status?.isRunning) return 'Connected'
     return 'Running'
   }
@@ -138,6 +160,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
+        {/* Navigation */}
         <SidebarGroup>
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
@@ -160,16 +183,13 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-      </SidebarContent>
+        <SidebarSeparator className="my-2" />
 
-      <SidebarSeparator />
-
-      {/* Bot Status Section */}
-      <SidebarContent>
+        {/* Bot Status Section */}
         <SidebarGroup>
           <SidebarGroupLabel>Bot Status</SidebarGroupLabel>
           <SidebarGroupContent>
-            <div className="space-y-3 px-2">
+            <div className="space-y-2.5 px-2">
               {/* Connection Status */}
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Status</span>
@@ -202,27 +222,25 @@ export function AppSidebar() {
 
               {/* Rate Limits */}
               {isConnected && (
-                <div className="mt-3 pt-3 border-t border-sidebar-border">
+                <div className="mt-2 pt-2 border-t border-sidebar-border">
                   <RateLimitSidebar />
                 </div>
               )}
             </div>
           </SidebarGroupContent>
         </SidebarGroup>
-      </SidebarContent>
 
-      <SidebarSeparator />
+        <SidebarSeparator className="my-2" />
 
-      {/* Help Section */}
-      <SidebarContent>
+        {/* Help Section */}
         <SidebarGroup>
           <SidebarGroupLabel>Help & Resources</SidebarGroupLabel>
           <SidebarGroupContent>
-            <div className="space-y-2 px-2">
+            <div className="space-y-1 px-2">
               <Button
                 variant="ghost"
                 size="sm"
-                className="w-full justify-start"
+                className="w-full justify-start h-8"
                 onClick={() => {
                   // Trigger tutorial restart
                   const event = new CustomEvent('restart-tutorial');
@@ -236,7 +254,7 @@ export function AppSidebar() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="w-full justify-start"
+                  className="w-full justify-start h-8"
                 >
                   <HelpCircle className="mr-2 h-4 w-4" />
                   Getting Started
@@ -261,8 +279,10 @@ export function AppSidebar() {
                   </>
                 ) : (
                   <>
-                    <Activity className="h-3 w-3 text-red-500" />
-                    <span className="text-red-500">Disconnected</span>
+                    <Activity className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-muted-foreground">
+                      {pathname !== '/' && pathname !== '' ? 'Idle' : 'Disconnected'}
+                    </span>
                   </>
                 )}
               </div>

@@ -3,38 +3,24 @@
     "apiKey": "",
     "secretKey": ""
   },
-  "symbols": {
-    "ASTERUSDT": {
-      "longVolumeThresholdUSDT": 1000,
-      "shortVolumeThresholdUSDT": 2500,
-      "tradeSize": 0.69,
-      "shortTradeSize": 0.69,
-      "maxPositionMarginUSDT": 200,
-      "leverage": 10,
-      "tpPercent": 1,
-      "slPercent": 20,
-      "orderType": "LIMIT",
-      "forceMarketEntry": false,
-      "vwapProtection": true,
-      "vwapTimeframe": "5m",
-      "vwapLookback": 200,
-      "useThreshold": false,
-      "thresholdTimeWindow": 60000,
-      "thresholdCooldown": 30000
-    }
-  },
+  "symbols": {},
   "global": {
-    "riskPercent": 90,
-    "paperMode": true,
+    "riskPercent": 5,
+    "paperMode": false,
     "positionMode": "HEDGE",
-    "maxOpenPositions": 5,
+    "maxOpenPositions": 10,
     "useThresholdSystem": false,
+    "useTradeQualityScoring": false,
+    "useFTAExitAnalysis": false,
+    "debugMode": false,
     "server": {
       "dashboardPassword": "admin",
       "dashboardPort": 3000,
       "websocketPort": 8080,
       "useRemoteWebSocket": false,
-      "websocketHost": null
+      "websocketHost": null,
+      "websocketPath": null,
+      "setupComplete": false
     },
     "rateLimit": {
       "maxRequestWeight": 2400,
@@ -46,6 +32,10 @@
       "deduplicationWindowMs": 1000,
       "parallelProcessing": true,
       "maxConcurrentRequests": 3
+    },
+    "liquidationDatabase": {
+      "retentionDays": 90,
+      "cleanupIntervalHours": 24
     }
   },
   "version": "1.1.0"

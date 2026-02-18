@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import logger from '@/lib/utils/logger';
 import { DashboardLayout } from '@/components/dashboard-layout';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -10,16 +11,23 @@ import {
   TrendingDown,
   Wallet,
   Activity,
-  Target
+  Target,
+  ShieldAlert,
+  Heart,
+  Gauge,
 } from 'lucide-react';
 import MinimalBotStatus from '@/components/MinimalBotStatus';
 import LiquidationSidebar from '@/components/LiquidationSidebar';
 import PositionTable from '@/components/PositionTable';
+import TradingViewChart from '@/components/TradingViewChart';
 import PnLChart from '@/components/PnLChart';
 import PerformanceCardInline from '@/components/PerformanceCardInline';
 import SessionPerformanceCard from '@/components/SessionPerformanceCard';
+import TradeQualityPanel from '@/components/TradeQualityPanel';
 import RecentOrdersTable from '@/components/RecentOrdersTable';
 import { TradeSizeWarningModal } from '@/components/TradeSizeWarningModal';
+import { PullToRefresh } from '@/components/PullToRefresh';
+import { PaperTradingDashboard } from '@/components/PaperTradingDashboard';
 import { useConfig } from '@/components/ConfigProvider';
 import websocketService from '@/lib/services/websocketService';
 import { useOrderNotifications } from '@/hooks/useOrderNotifications';
@@ -27,7 +35,6 @@ import { useErrorToasts } from '@/hooks/useErrorToasts';
 import { useWebSocketUrl } from '@/hooks/useWebSocketUrl';
 import { RateLimitToastListener } from '@/hooks/useRateLimitToasts';
 import dataStore, { AccountInfo, Position } from '@/lib/services/dataStore';
-import { signOut } from 'next-auth/react';
 
 interface BalanceStatus {
   source?: string;
@@ -39,15 +46,21 @@ export default function DashboardPage() {
   const { config } = useConfig();
   const wsUrl = useWebSocketUrl();
   const [accountInfo, setAccountInfo] = useState<AccountInfo>({
-    totalBalance: 10000,
-    availableBalance: 8500,
-    totalPositionValue: 1500,
-    totalPnL: 60,
+    totalBalance: 0,
+    availableBalance: 0,
+    totalPositionValue: 0,
+    totalPnL: 0,
   });
   const [balanceStatus, setBalanceStatus] = useState<BalanceStatus>({});
   const [isLoading, setIsLoading] = useState(true);
   const [positions, setPositions] = useState<Position[]>([]);
   const [markPrices, setMarkPrices] = useState<Record<string, number>>({});
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('');
+  const [availableChartSymbols, setAvailableChartSymbols] = useState<string[]>([]);
+  const [cascadeActive, setCascadeActive] = useState(false);
+  const [cascadeCooldown, setCascadeCooldown] = useState<number | null>(null);
+  const [healthPaused, setHealthPaused] = useState(false);
+  const [healthDrawdown, setHealthDrawdown] = useState(0);
 
   // Initialize toast notifications
   useOrderNotifications();
@@ -71,8 +84,41 @@ export default function DashboardPage() {
         setAccountInfo(balanceData);
         setPositions(positionsData);
         setBalanceStatus({ source: 'api', timestamp: Date.now() });
+        
+        // Fetch available symbols from liquidation database
+        try {
+          const liquidationSymbolsResp = await fetch('/api/liquidations/symbols');
+          const liquidationSymbolsData = await liquidationSymbolsResp.json();
+          if (liquidationSymbolsData.success && liquidationSymbolsData.symbols) {
+            // Combine configured symbols with symbols that have liquidation data
+            const configuredSymbols = config?.symbols ? Object.keys(config.symbols) : [];
+            const allSymbols = Array.from(new Set([...configuredSymbols, ...liquidationSymbolsData.symbols]));
+            setAvailableChartSymbols(allSymbols);
+          }
+        } catch (error) {
+          logger.error('[Dashboard] Failed to fetch liquidation symbols:', error);
+          // Fallback to configured symbols only
+          if (config?.symbols) {
+            setAvailableChartSymbols(Object.keys(config.symbols));
+          }
+        }
+
+        // Fetch cascade protection state
+        try {
+          const cascadeResp = await fetch('/api/cascade');
+          const cascadeData = await cascadeResp.json();
+          if (cascadeData.success) {
+            setCascadeActive(cascadeData.isActive || false);
+            if (cascadeData.isActive && cascadeData.resumesAt) {
+              setCascadeCooldown(cascadeData.resumesAt);
+            }
+          }
+        } catch (error) {
+          // Non-critical, cascade state will update via WebSocket
+          logger.error('[Dashboard] Failed to fetch cascade state:', error);
+        }
       } catch (error) {
-        console.error('[Dashboard] Failed to load initial data:', error);
+        logger.error('[Dashboard] Failed to load initial data:', error);
         setBalanceStatus({ error: error instanceof Error ? error.message : 'Unknown error' });
       } finally {
         setIsLoading(false);
@@ -83,14 +129,14 @@ export default function DashboardPage() {
 
     // Listen to data store updates
     const handleBalanceUpdate = (data: AccountInfo & { source: string }) => {
-      console.log('[Dashboard] Balance updated from data store:', data.source);
+      logger.debug('[Dashboard] Balance updated from data store:', data.source);
       setAccountInfo(data);
       setBalanceStatus({ source: data.source, timestamp: Date.now() });
       setIsLoading(false);
     };
 
     const handlePositionsUpdate = (data: Position[]) => {
-      console.log('[Dashboard] Positions updated from data store');
+      logger.debug('[Dashboard] Positions updated from data store');
       setPositions(data);
     };
 
@@ -105,7 +151,23 @@ export default function DashboardPage() {
 
     // Set up WebSocket listener for real-time updates
     const handleWebSocketMessage = (message: any) => {
-      // Forward to data store for centralized handling
+      // Handle cascade protection events
+      if (message.type === 'cascade_detected') {
+        setCascadeActive(true);
+        if (message.data?.resumesAt) {
+          setCascadeCooldown(message.data.resumesAt);
+        }
+      } else if (message.type === 'cascade_cleared') {
+        setCascadeActive(false);
+        setCascadeCooldown(null);
+      } else if (message.type === 'account_health_update') {
+        if (message.data) {
+          setHealthPaused(message.data.isPaused || false);
+          setHealthDrawdown(message.data.currentDrawdownPercent || 0);
+        }
+      }
+      // Forward all messages to data store for centralized handling
+      // (including paper_balance_update, paper_position_opened, etc.)
       dataStore.handleWebSocketMessage(message);
     };
 
@@ -121,7 +183,7 @@ export default function DashboardPage() {
   }, []); // No dependencies - only run once on mount
 
   // Refresh data manually if needed
-  const _refreshData = async () => {
+  const handleRefresh = async () => {
     try {
       const [balanceData, positionsData] = await Promise.all([
         dataStore.fetchBalance(true), // Force refresh
@@ -131,7 +193,7 @@ export default function DashboardPage() {
       setPositions(positionsData);
       setBalanceStatus({ source: 'manual', timestamp: Date.now() });
     } catch (error) {
-      console.error('[Dashboard] Failed to refresh data:', error);
+      logger.error('[Dashboard] Failed to refresh data:', error);
       setBalanceStatus({ error: error instanceof Error ? error.message : 'Unknown error' });
     }
   };
@@ -157,6 +219,28 @@ export default function DashboardPage() {
       [symbol]: cfg.volumeThresholdUSDT
     }), {});
   }, [config?.symbols]);
+
+  // Set default symbol when config loads
+  useEffect(() => {
+    if (config?.symbols && Object.keys(config.symbols).length > 0 && !selectedSymbol) {
+      // First try to find a symbol with open positions
+      const positionSymbols = positions.map(pos => pos.symbol);
+      const symbolsWithPositions = Object.keys(config.symbols).filter(symbol => 
+        positionSymbols.includes(symbol)
+      );
+      
+      const defaultSymbol = symbolsWithPositions.length > 0 
+        ? symbolsWithPositions[0]  // Use symbol with position
+        : Object.keys(config.symbols)[0];  // Fallback to first configured symbol
+        
+      console.log(`[Dashboard] Setting default symbol: ${defaultSymbol}`, {
+        availableSymbols: Object.keys(config.symbols),
+        positionSymbols,
+        symbolsWithPositions
+      });
+      setSelectedSymbol(defaultSymbol);
+    }
+  }, [config?.symbols, selectedSymbol, positions]);
 
   // Calculate live account info with real-time mark prices
   // This supplements the official balance data with live price updates
@@ -210,17 +294,6 @@ export default function DashboardPage() {
     }
   };
 
-  const _handleLogout = async () => {
-    try {
-      await signOut({
-        callbackUrl: '/login',
-        redirect: true
-      });
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
-
   const _handleUpdateSL = async (_symbol: string, _side: 'LONG' | 'SHORT', _price: number) => {
     try {
       // TODO: Implement stop loss update API call
@@ -250,24 +323,33 @@ export default function DashboardPage() {
 
       <div className="flex h-full overflow-hidden">
         {/* Main Content */}
-        <div className="flex-1 p-3 md:p-6 space-y-4 md:space-y-6 overflow-y-auto">
-          {/* Account Summary - Single Row */}
-          <div className="flex items-center gap-x-2 md:gap-x-3 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+        <div className="flex-1 overflow-y-auto">
+          <PullToRefresh onRefresh={handleRefresh}>
+            <div className="p-6 space-y-6">
+              {/* Paper Trading Dashboard - Show only in paper mode */}
+              {config?.global?.paperMode && (
+                <PaperTradingDashboard />
+              )}
+
+              {/* Account Summary - Minimal Design */}
+              <div className="flex flex-wrap items-center gap-3">
             {/* Total Balance */}
-            <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
-              <Wallet className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-muted-foreground" />
               <div className="flex flex-col">
-                <span className="text-[10px] md:text-xs text-muted-foreground whitespace-nowrap">Balance</span>
-                <div className="flex items-center gap-1">
+                <span className="text-xs text-muted-foreground">Balance</span>
+                <div className="flex items-center gap-2">
                   {isLoading ? (
-                    <Skeleton className="h-4 w-20" />
+                    <Skeleton className="h-5 w-20" />
                   ) : (
                     <>
-                      <span className="text-xs md:text-sm font-semibold whitespace-nowrap">{formatCurrency(liveAccountInfo.totalBalance)}</span>
+                      <span className="text-lg font-semibold">{formatCurrency(liveAccountInfo.totalBalance)}</span>
                       {balanceStatus.error ? (
-                        <Badge variant="destructive" className="h-3 text-[9px] px-0.5">!</Badge>
+                        <Badge variant="destructive" className="h-4 text-[10px] px-1">ERROR</Badge>
                       ) : balanceStatus.source === 'websocket' ? (
-                        <Badge variant="default" className="h-3 text-[9px] px-0.5 bg-green-600">L</Badge>
+                        <Badge variant="default" className="h-4 text-[10px] px-1 bg-green-600">LIVE</Badge>
+                      ) : balanceStatus.source === 'rest-account' || balanceStatus.source === 'rest-balance' ? (
+                        <Badge variant="secondary" className="h-4 text-[10px] px-1">REST</Badge>
                       ) : null}
                     </>
                   )}
@@ -275,59 +357,59 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-5 md:h-6 bg-border shrink-0" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
-            {/* Available */}
-            <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
-              <DollarSign className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
+            {/* Available Balance */}
+            <div className="flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
               <div className="flex flex-col">
-                <span className="text-[10px] md:text-xs text-muted-foreground whitespace-nowrap">Available</span>
+                <span className="text-xs text-muted-foreground">Available</span>
                 {isLoading ? (
-                  <Skeleton className="h-4 w-16" />
+                  <Skeleton className="h-5 w-20" />
                 ) : (
-                  <span className="text-xs md:text-sm font-semibold whitespace-nowrap">{formatCurrency(liveAccountInfo.availableBalance)}</span>
+                  <span className="text-lg font-semibold">{formatCurrency(liveAccountInfo.availableBalance)}</span>
                 )}
               </div>
             </div>
 
-            <div className="w-px h-5 md:h-6 bg-border shrink-0" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
-            {/* In Position */}
-            <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
-              <Activity className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
+            {/* Position Value */}
+            <div className="flex items-center gap-2">
+              <Activity className="h-4 w-4 text-muted-foreground" />
               <div className="flex flex-col">
-                <span className="text-[10px] md:text-xs text-muted-foreground whitespace-nowrap">In Position</span>
+                <span className="text-xs text-muted-foreground">In Position</span>
                 {isLoading ? (
-                  <Skeleton className="h-4 w-16" />
+                  <Skeleton className="h-5 w-20" />
                 ) : (
-                  <span className="text-xs md:text-sm font-semibold whitespace-nowrap">{formatCurrency(liveAccountInfo.totalPositionValue)}</span>
+                  <span className="text-lg font-semibold">{formatCurrency(liveAccountInfo.totalPositionValue)}</span>
                 )}
               </div>
             </div>
 
-            <div className="w-px h-5 md:h-6 bg-border shrink-0" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
             {/* Unrealized PnL */}
-            <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
+            <div className="flex items-center gap-2">
               {liveAccountInfo.totalPnL >= 0 ? (
-                <TrendingUp className="h-3.5 w-3.5 md:h-4 md:w-4 text-green-600" />
+                <TrendingUp className="h-4 w-4 text-green-600" />
               ) : (
-                <TrendingDown className="h-3.5 w-3.5 md:h-4 md:w-4 text-red-600" />
+                <TrendingDown className="h-4 w-4 text-red-600" />
               )}
               <div className="flex flex-col">
-                <span className="text-[10px] md:text-xs text-muted-foreground whitespace-nowrap">PnL</span>
+                <span className="text-xs text-muted-foreground">Unrealized PnL</span>
                 {isLoading ? (
-                  <Skeleton className="h-4 w-20" />
+                  <Skeleton className="h-5 w-20" />
                 ) : (
-                  <div className="flex items-center gap-1">
-                    <span className={`text-xs md:text-sm font-semibold whitespace-nowrap ${
+                  <div className="flex items-center gap-2">
+                    <span className={`text-lg font-semibold ${
                       liveAccountInfo.totalPnL >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
                     }`}>
                       {formatCurrency(liveAccountInfo.totalPnL)}
                     </span>
                     <Badge
                       variant={liveAccountInfo.totalPnL >= 0 ? "outline" : "destructive"}
-                      className={`h-3 text-[9px] px-0.5 ${
+                      className={`h-4 text-[10px] px-1 ${
                         liveAccountInfo.totalPnL >= 0
                           ? 'border-green-600 text-green-600 dark:border-green-400 dark:text-green-400'
                           : ''
@@ -343,46 +425,134 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="w-px h-5 md:h-6 bg-border shrink-0" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
-            {/* 24h Performance */}
+            {/* 24h Performance - Inline */}
             <PerformanceCardInline />
 
-            <div className="w-px h-5 md:h-6 bg-border shrink-0" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
-            {/* Session */}
+            {/* Live Session Performance */}
             <SessionPerformanceCard />
 
-            <div className="w-px h-5 md:h-6 bg-border shrink-0" />
+            <div className="hidden sm:block w-px h-8 bg-border" />
 
-            {/* Active Symbols */}
-            <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
-              <Target className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
+            {/* Active Trading Symbols */}
+            <div className="flex items-center gap-2">
+              <Target className="h-4 w-4 text-muted-foreground" />
               <div className="flex flex-col">
-                <span className="text-[10px] md:text-xs text-muted-foreground whitespace-nowrap">Symbols</span>
+                <span className="text-xs text-muted-foreground">Active Symbols</span>
                 <div className="flex items-center gap-1">
                   {config?.symbols && Object.keys(config.symbols).length > 0 ? (
                     <>
-                      <span className="text-sm font-semibold">{Object.keys(config.symbols).length}</span>
+                      <span className="text-lg font-semibold">{Object.keys(config.symbols).length}</span>
+                      <div className="flex gap-1 max-w-[200px] overflow-hidden">
+                        {Object.keys(config.symbols).slice(0, 3).map((symbol, _index) => (
+                          <Badge key={symbol} variant="outline" className="h-4 text-[10px] px-1">
+                            {symbol.replace('USDT', '')}
+                          </Badge>
+                        ))}
+                        {Object.keys(config.symbols).length > 3 && (
+                          <Badge variant="outline" className="h-4 text-[10px] px-1">
+                            +{Object.keys(config.symbols).length - 3}
+                          </Badge>
+                        )}
+                      </div>
                     </>
                   ) : (
-                    <span className="text-sm font-semibold text-muted-foreground">0</span>
+                    <span className="text-lg font-semibold text-muted-foreground">0</span>
                   )}
                 </div>
               </div>
             </div>
+
+            {/* Cascade Protection Status */}
+            {(() => {
+              const m = config?.global?.tradeSizeMultiplier ?? 1.0;
+              if (m === 1.0) return null;
+              const isHigh = m > 2.0;
+              const isRiskOn = m > 1.0;
+              return (
+                <>
+                  <div className="hidden sm:block w-px h-8 bg-border" />
+                  <div className="flex items-center gap-2">
+                    <Gauge className={`h-4 w-4 ${isHigh ? 'text-red-500' : isRiskOn ? 'text-yellow-500' : 'text-blue-500'}`} />
+                    <div className="flex flex-col">
+                      <span className="text-xs text-muted-foreground">Trade Size</span>
+                      <Badge
+                        variant={isHigh ? 'destructive' : 'secondary'}
+                        className={`h-5 text-[10px] px-2 ${
+                          isHigh ? 'animate-pulse' : isRiskOn ? 'bg-yellow-500 text-white hover:bg-yellow-600' : 'bg-blue-500 text-white hover:bg-blue-600'
+                        }`}
+                      >
+                        {isHigh ? '🔴' : isRiskOn ? '🟡' : '🔵'} {m}× {isHigh ? 'HIGH RISK' : isRiskOn ? 'RISK-ON' : 'RISK-OFF'}
+                      </Badge>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
+            {/* Cascade Protection Status */}
+            {config?.global?.cascadeProtection?.enabled !== false && cascadeActive && (
+              <>
+                <div className="hidden sm:block w-px h-8 bg-border" />
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4 text-red-500 animate-pulse" />
+                  <div className="flex flex-col">
+                    <span className="text-xs text-muted-foreground">Cascade Protection</span>
+                    <Badge variant="destructive" className="h-5 text-[10px] px-2 animate-pulse">
+                      🚨 {config?.global?.cascadeProtection?.mode === 'BLOCK' ? 'PAUSED' : config?.global?.cascadeProtection?.mode === 'REDUCE' ? 'REDUCED' : 'DETECTED'}
+                      {cascadeCooldown && ` — ${Math.max(0, Math.ceil((cascadeCooldown - Date.now()) / 60000))}m remaining`}
+                    </Badge>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Account Health Status */}
+            {healthPaused && (
+              <>
+                <div className="hidden sm:block w-px h-8 bg-border" />
+                <div className="flex items-center gap-2">
+                  <Heart className="h-4 w-4 text-orange-500 animate-pulse" />
+                  <div className="flex flex-col">
+                    <span className="text-xs text-muted-foreground">Account Health</span>
+                    <Badge variant="destructive" className="h-5 text-[10px] px-2 animate-pulse bg-orange-600">
+                      ⚠️ DRAWDOWN {healthDrawdown.toFixed(1)}% — New entries paused
+                    </Badge>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* PnL Chart */}
+          {/* PnL Chart - Full Width */}
           <PnLChart />
+
+          {/* Trade Quality Analysis Panel */}
+          <TradeQualityPanel isPassiveMode={config?.global?.useTradeQualityScoring === false} />
 
           {/* Positions Table */}
           <PositionTable
             onClosePosition={handleClosePosition}
+            onViewChart={setSelectedSymbol}
           />
+
+          {/* Trading Chart with Symbol Selector */}
+          {config?.symbols && Object.keys(config.symbols).length > 0 && selectedSymbol && (
+            <TradingViewChart
+              symbol={selectedSymbol}
+              positions={positions}
+              availableSymbols={availableChartSymbols.length > 0 ? availableChartSymbols : Object.keys(config.symbols)}
+              onSymbolChange={setSelectedSymbol}
+            />
+          )}
 
           {/* Recent Orders Table */}
           <RecentOrdersTable maxRows={100} />
+            </div>
+          </PullToRefresh>
         </div>
 
         {/* Liquidation Sidebar */}

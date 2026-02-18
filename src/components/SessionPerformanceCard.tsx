@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Activity } from 'lucide-react';
+import { Activity, TrendingUp, TrendingDown } from 'lucide-react';
 import websocketService from '@/lib/services/websocketService';
 
 interface SessionPnL {
@@ -44,6 +44,18 @@ export default function SessionPerformanceCard() {
     };
 
     fetchSessionData();
+
+    // Refresh data when tab becomes visible again
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        fetchSessionData();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -80,33 +92,70 @@ export default function SessionPerformanceCard() {
 
   if (isLoading || !sessionPnL) {
     return (
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex items-center gap-2">
         <Activity className="h-4 w-4 text-muted-foreground" />
         <div className="flex flex-col">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">Session</span>
-          <Skeleton className="h-4 w-16" />
+          <span className="text-xs text-muted-foreground">Session</span>
+          <Skeleton className="h-5 w-24" />
         </div>
       </div>
     );
   }
 
+  // Calculate win rate
+  const winRate = sessionPnL.tradeCount > 0
+    ? (sessionPnL.winCount / sessionPnL.tradeCount) * 100
+    : 0;
+
+  // Calculate average profit per trade
+  const avgProfitPerTrade = sessionPnL.tradeCount > 0
+    ? sessionPnL.realizedPnl / sessionPnL.tradeCount
+    : 0;
+
   const isProfit = sessionPnL.realizedPnl >= 0;
 
   return (
-    <div className="flex items-center gap-1.5 shrink-0">
+    <div className="flex items-center gap-2">
       <Activity className="h-4 w-4 text-muted-foreground" />
       <div className="flex flex-col">
-        <div className="flex items-center gap-1">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">Session</span>
-          <Badge variant="secondary" className="h-3 text-[9px] px-0.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Session</span>
+          <Badge variant="secondary" className="h-3.5 text-[10px] px-1">
             {formatDuration(sessionPnL.startTime)}
           </Badge>
         </div>
-        <span className={`text-sm font-semibold whitespace-nowrap ${
-          isProfit ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
-        }`}>
-          {formatCurrency(sessionPnL.realizedPnl)}
-        </span>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            {isProfit ? (
+              <TrendingUp className="h-3.5 w-3.5 text-green-600" />
+            ) : (
+              <TrendingDown className="h-3.5 w-3.5 text-red-600" />
+            )}
+            <span className={`text-lg font-semibold ${
+              isProfit ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
+            }`}>
+              {formatCurrency(sessionPnL.realizedPnl)}
+            </span>
+          </div>
+          {sessionPnL.tradeCount > 0 && (
+            <>
+              <Badge
+                variant={isProfit ? "outline" : "destructive"}
+                className={`h-4 text-[10px] px-1 ${
+                  isProfit
+                    ? 'border-green-600 text-green-600 dark:border-green-400 dark:text-green-400'
+                    : ''
+                }`}
+              >
+                {sessionPnL.tradeCount} trades
+              </Badge>
+              <div className="flex gap-2 text-[10px] text-muted-foreground">
+                <span>Win: {winRate.toFixed(0)}%</span>
+                <span>Avg: {formatCurrency(avgProfitPerTrade)}</span>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

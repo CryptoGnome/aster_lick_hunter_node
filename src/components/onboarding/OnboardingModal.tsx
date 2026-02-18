@@ -1,5 +1,3 @@
-'use client';
-
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import {
@@ -19,6 +17,7 @@ import { ApiKeyStep } from './steps/ApiKeyStep';
 import { SymbolConfigStep } from './steps/SymbolConfigStep';
 import { DashboardTourStep } from './steps/DashboardTourStep';
 import { CompletionStep } from './steps/CompletionStep';
+import { hashPassword } from '@/lib/utils/password';
 
 export function OnboardingModal() {
   const {
@@ -53,74 +52,26 @@ export function OnboardingModal() {
       return;
     }
 
-    // Ensure we have all required fields with defaults if missing
+    // Hash the password before storing
+    const hashedPassword = await hashPassword(password);
+    console.log('🔐 Password hashed successfully');
+
+    // CRITICAL: Preserve ALL existing config, only update password
     const updatedConfig = {
-      // Ensure API exists with empty strings if not present
-      api: {
-        apiKey: config.api?.apiKey || '',
-        secretKey: config.api?.secretKey || ''
-      },
-      // Ensure symbols exist with at least one default symbol if empty
-      symbols: config.symbols && Object.keys(config.symbols).length > 0 
-        ? config.symbols 
-        : {
-            'BTCUSDT': {
-              tradeSize: 0.001,
-              leverage: 5,
-              tpPercent: 5,
-              slPercent: 2,
-              longVolumeThresholdUSDT: 10000,
-              shortVolumeThresholdUSDT: 10000,
-              maxPositionMarginUSDT: 5000,
-              priceOffsetBps: 5,
-              maxSlippageBps: 50,
-              orderType: 'LIMIT' as const,
-              vwapProtection: true,
-              vwapTimeframe: '1m',
-              vwapLookback: 200
-            }
-          },
-      // Ensure global config has all required fields
+      ...config,
+      api: config.api || { apiKey: '', secretKey: '' },
+      symbols: config.symbols || {},
       global: {
-        riskPercent: config.global?.riskPercent || 5,
-        paperMode: config.global?.paperMode ?? true,
-        positionMode: config.global?.positionMode || 'ONE_WAY',
-        maxOpenPositions: config.global?.maxOpenPositions || 10,
-        useThresholdSystem: config.global?.useThresholdSystem ?? false,
-        rateLimit: config.global?.rateLimit || {
-          maxRequestWeight: 2400,
-          maxOrderCount: 1200,
-          reservePercent: 30,
-          enableBatching: true,
-          queueTimeout: 30000,
-          enableDeduplication: true,
-          deduplicationWindowMs: 1000,
-          parallelProcessing: true,
-          maxConcurrentRequests: 3
-        },
+        ...config.global,
         server: {
           ...config.global?.server,
-          dashboardPassword: password,
-          dashboardPort: config.global?.server?.dashboardPort || 3000,
-          websocketPort: config.global?.server?.websocketPort || 3001,
-          useRemoteWebSocket: config.global?.server?.useRemoteWebSocket ?? false,
-          websocketHost: config.global?.server?.websocketHost || null
+          dashboardPassword: hashedPassword
         }
       },
       version: config.version || '1.1.0'
     };
 
-    console.log('📋 Config structure check:', {
-      hasApi: !!updatedConfig.api,
-      hasSymbols: !!updatedConfig.symbols && Object.keys(updatedConfig.symbols).length > 0,
-      hasGlobal: !!updatedConfig.global,
-      apiKeysPresent: !!(updatedConfig.api.apiKey && updatedConfig.api.secretKey),
-      globalRiskPercent: updatedConfig.global.riskPercent,
-      globalPaperMode: updatedConfig.global.paperMode
-    });
-
-    console.log('📤 Config to be sent:', JSON.stringify(updatedConfig, null, 2));
-    console.log('🔍 handlePasswordSetup - DEBUG END');
+    console.log('📋 Saving updated config with password');
 
     try {
       await updateConfig(updatedConfig);
@@ -197,10 +148,23 @@ export function OnboardingModal() {
     if (config) {
       const symbolsObject: Record<string, any> = {};
       
+      // Calculate safe minimum trade sizes based on leverage
+      // BTC min notional ~$100, ETH/others ~$5-10
+      const getTradeSize = (symbol: string, leverage: number): number => {
+        const isBTC = symbol === 'BTCUSDT';
+        const minNotional = isBTC ? 100 : 5;
+        // Add 50% buffer for price movements
+        const safeMargin = (minNotional / leverage) * 1.5;
+        // Round up to nearest dollar for BTC, nearest 0.5 for others
+        return isBTC ? Math.ceil(safeMargin) : Math.ceil(safeMargin * 2) / 2;
+      };
+      
       symbolConfigs.forEach(sc => {
+        const tradeSize = getTradeSize(sc.symbol, sc.leverage);
+        
         symbolsObject[sc.symbol] = {
-          // Required fields
-          tradeSize: sc.symbol === 'BTCUSDT' ? 0.001 : 0.01,
+          // Required fields - tradeSize in USDT (margin)
+          tradeSize: tradeSize,
           leverage: sc.leverage,
           tpPercent: sc.tpPercent,
           slPercent: sc.slPercent,
@@ -222,9 +186,6 @@ export function OnboardingModal() {
           useThreshold: false,
           thresholdTimeWindow: 60000,
           thresholdCooldown: 30000,
-          
-          // Optional fields with defaults
-          shortTradeSize: sc.symbol === 'BTCUSDT' ? 0.001 : 0.01
         };
       });
 
@@ -291,8 +252,18 @@ export function OnboardingModal() {
     }
   };
 
+  // Don't render anything while checking setup status
+  if (isOnboarding === null) {
+    return null;
+  }
+
+  // Don't render if not onboarding
+  if (!isOnboarding) {
+    return null;
+  }
+
   return (
-    <Dialog open={isOnboarding} onOpenChange={() => {}}>
+    <Dialog open={true} onOpenChange={() => {}}>
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-center justify-between">

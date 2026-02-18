@@ -1,9 +1,7 @@
 'use client';
 
 import { useState, Suspense, useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { signIn, useSession } from 'next-auth/react';
-import { useConfig } from '@/components/ConfigProvider';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,23 +12,25 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isPasswordConfigured, setIsPasswordConfigured] = useState(true);
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const redirectUrl = searchParams.get('callbackUrl') || '/';
-  const { data: _session, status } = useSession();
-  const { config } = useConfig();
 
-  // Check if a custom password is configured (not the default "admin")
-  const isPasswordConfigured = config?.global?.server?.dashboardPassword &&
-    config.global.server.dashboardPassword.trim().length > 0 &&
-    config.global.server.dashboardPassword !== 'admin';
-
-  // Redirect if already authenticated
+  // Check if a custom password is configured (fetch from public endpoint)
   useEffect(() => {
-    if (status === 'authenticated') {
-      router.push(redirectUrl);
-    }
-  }, [status, router, redirectUrl]);
+    const checkPasswordStatus = async () => {
+      try {
+        const response = await fetch('/api/public-status');
+        if (response.ok) {
+          const data = await response.json();
+          setIsPasswordConfigured(data.hasCustomPassword);
+        }
+      } catch {
+        // If fetch fails, assume password is configured (safer default)
+        setIsPasswordConfigured(true);
+      }
+    };
+    checkPasswordStatus();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,26 +52,36 @@ function LoginForm() {
     }
 
     try {
-      const result = await signIn('credentials', {
-        password,
-        redirect: false,
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
       });
 
-      if (result?.error) {
-        setError('Invalid password');
-      } else if (result?.ok) {
-        // Redirect to the intended page
-        router.push(redirectUrl);
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || 'Invalid password');
+        setLoading(false);
+      } else {
+        // Success - redirect to dashboard
+        window.location.href = '/';
       }
-    } catch (_err) {
+    } catch (err) {
+      console.error('[Login] Exception:', err);
       setError('Failed to login. Please try again.');
-    } finally {
       setLoading(false);
     }
   };
 
-  // Show loading while checking session
-  if (status === 'loading') {
+  // Show loading while page initializes
+  const [mounted, setMounted] = useState(false);
+  
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div>Loading...</div>

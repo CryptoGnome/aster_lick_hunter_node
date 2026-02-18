@@ -11,6 +11,12 @@ export const symbolConfigSchema = z.object({
   longTradeSize: z.number().min(0.00001).optional(),
   shortTradeSize: z.number().min(0.00001).optional(),
   maxPositionMarginUSDT: z.number().min(0).optional(),
+  
+  // Dynamic position sizing
+  positionSizingMode: z.enum(['FIXED', 'PERCENTAGE']).optional(), // Fixed USDT or % of balance
+  percentageOfBalance: z.number().min(0.1).max(100).optional(), // % of balance for position sizing (when mode=PERCENTAGE)
+  minPositionSize: z.number().min(0.00001).optional(), // Minimum position size in USDT
+  maxPositionSize: z.number().min(0.00001).optional(), // Maximum position size in USDT
 
   // Risk parameters
   leverage: z.number().min(1).max(125),
@@ -30,11 +36,6 @@ export const symbolConfigSchema = z.object({
 
   // Threshold system settings
   useThreshold: z.boolean().optional(),
-  thresholdTimeWindow: z.number().min(10000).optional(), // Minimum 10 seconds
-  thresholdCooldown: z.number().min(10000).optional(), // Minimum 10 seconds
-
-  // Order execution settings
-  forceMarketEntry: z.boolean().optional(),
 }).refine(data => {
   // Ensure we have either legacy or new volume thresholds
   return data.volumeThresholdUSDT !== undefined ||
@@ -54,7 +55,9 @@ export const serverConfigSchema = z.object({
   websocketPort: z.number().optional(),
   useRemoteWebSocket: z.boolean().optional(),
   websocketHost: z.string().nullable().optional(),
-  envWebSocketHost: z.string().optional(), // For environment variable override
+  websocketPath: z.string().nullable().optional(),
+  envWebSocketHost: z.string().optional(),
+  setupComplete: z.boolean().optional(), // For environment variable override
 }).optional();
 
 export const rateLimitConfigSchema = z.object({
@@ -69,15 +72,48 @@ export const rateLimitConfigSchema = z.object({
   maxConcurrentRequests: z.number().min(1).max(10).optional(),
 }).optional();
 
+export const paperTradingConfigSchema = z.object({
+  startingBalance: z.number().min(100).optional(),
+  slippageBps: z.number().min(0).max(500).optional(),
+  latencyMs: z.number().min(0).max(5000).optional(),
+  partialFillPercent: z.number().min(0).max(100).optional(),
+  rejectionRate: z.number().min(0).max(100).optional(),
+  enableRealisticFills: z.boolean().optional(),
+}).optional();
+
+export const accountHealthConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxDrawdownPercent: z.number().min(1).max(50).optional(),
+  resumeAtDrawdownPercent: z.number().min(0).max(49).optional(),
+  maxUnrealizedLossPercent: z.number().min(1).max(50).optional(),
+  checkIntervalSeconds: z.number().min(10).max(300).optional(),
+  closeAllAtDrawdownPercent: z.number().min(0).max(80).optional(),
+  maxPositionNotional: z.number().min(0).optional(),
+  maxDCAEntries: z.number().min(0).optional(),
+}).optional();
+
 export const globalConfigSchema = z.object({
   riskPercent: z.number().min(0).max(100),
   paperMode: z.boolean(),
+  paperTrading: paperTradingConfigSchema,
   positionMode: z.enum(['ONE_WAY', 'HEDGE']).optional(),
   maxOpenPositions: z.number().min(1).optional(),
+  maxLongPositions: z.number().min(0).optional(),
+  maxShortPositions: z.number().min(0).optional(),
+  minEntrySpacingPercent: z.number().min(0).optional(),
+  tradeSizeMultiplier: z.number().min(0.1).max(5.0).optional(),
   useThresholdSystem: z.boolean().optional(),
+  useTradeQualityScoring: z.boolean().optional(),
+  useFTAExitAnalysis: z.boolean().optional(),
+  debugMode: z.boolean().optional(),
   server: serverConfigSchema,
   rateLimit: rateLimitConfigSchema,
-});
+  accountHealth: accountHealthConfigSchema,
+  liquidationDatabase: z.object({
+    retentionDays: z.number().min(0).optional(),
+    cleanupIntervalHours: z.number().min(1).optional(),
+  }).optional(),
+}).passthrough();
 
 export const configSchema = z.object({
   api: apiCredentialsSchema,
