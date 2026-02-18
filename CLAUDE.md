@@ -719,9 +719,75 @@ The custom process manager (`scripts/process-manager.js`) handles:
 - **Spike detection fix** (`tradeQualityService.ts`): Fixed `detectSpike()` which always showed 0s or 119s. Was measuring from oldest price in 2-min window; now scans backward to find where the rapid move actually started, giving meaningful durations like "0.5% in 8s".
 - **Metric info tooltips**: Added (i) icons with detailed explanations to all metrics (Move, Spike, Vol, VWAP) and the S/V/R score triplet. Each tooltip explains what the metric measures, scoring thresholds, and what good/bad values look like.
 
+### Local Trade History Database (Feb 13, 2026)
+- **`src/lib/db/tradeHistoryDb.ts`** (NEW): Local SQLite DB (`data/trade_history.db`) persisting all trades/orders for deep history. Three tables: `trade_history` (order fills, UPSERT by symbol+orderId+updateTime), `income_history` (PnL/commission/funding), `sync_metadata` (backfill progress tracking). WAL mode, indexed on symbol/time/status/orderId.
+- **Real-time persistence**: `positionManager.ts` `handleOrderUpdate()` now calls `tradeHistoryDb.upsertTrade()` for every ORDER_TRADE_UPDATE WebSocket event (non-blocking try/catch).
+- **Startup backfill**: `scripts/backfill-trades.ts` runs on bot startup (background, non-blocking via `bot/index.ts` `startTradeHistoryBackfill()`). Fetches allOrders + userTrades + income from exchange API going back 30 days. Uses `sync_metadata` to avoid refetching. First run imported 1,873 orders, 546 trades, 1,871 income records in 36.8s.
+- **API endpoints**: `/api/trades/history` (GET — query with symbol/status/time filters, `format=orders|markers|raw`), `/api/trades/stats` (GET — aggregate PnL/commission/funding stats + sync status).
+- **Enhanced `/api/orders/all`**: Now merges local DB history with exchange API data. Falls back to local DB if exchange API fails. Adds deeper history orders not in the API response.
+- **TradingView chart**: `TradingViewChart.tsx` order overlay now fetches from `/api/trades/history?format=orders` for 90-day deep history (was limited to ~50 from exchange API), merges with real-time orderStore updates.
+- **Recent Orders pagination**: `RecentOrdersTable.tsx` changed from infinite-expand to proper pagination. Shows first 15 rows, "Show More" expands to 50-per-page with prev/next page controls and a collapse button.
+
 ### Trade Quality Scoring Reference (S/V/R)
 Each trade opportunity scores 0-3 based on three criteria:
 - **S**pike (0/1): Was there a fast price move into the level? Scores 1 if velocity >0.1%/s OR total move ≥0.5%
 - **V**olume (0/1): Is liquidation volume decreasing? Scores 1 if recent/older volume ratio ≤1.1×
 - **R**egime (0/1): Is the market choppy? Scores 1 if ≥3 VWAP crosses/hour (range-bound = good for reversals)
 - **3/3 STRONG** → 1.5× position size | **2/3 NORMAL** → 1× | **1/3 WEAK** → 0.5× | **0/3 SKIP** → blocked
+
+## Active Discussion: Account Health Settings & Global Risk Mode (Feb 13)
+
+### Account Health Monitor — NOT YET CONFIGURED (using defaults)
+The health monitor exists in code but `config.user.json` has no `accountHealth` section.
+Current defaults: 25% drawdown pause, 20% unrealized loss pause, 15% resume, 60s checks, no emergency close-all.
+
+**Recommended settings based on trade data analysis:**
+- `maxDrawdownPercent: 5` (~$18) — normal daily P&L is $1–5, so $18 drawdown = many days of profit gone
+- `maxUnrealizedLossPercent: 3` (~$11) — with $1 trades at 8x, unrealized > $11 means multiple underwater positions
+- `resumeAtDrawdownPercent: 3` — 2% hysteresis band
+- `checkIntervalSeconds: 30` — faster detection, positions are small
+- `closeAllAtDrawdownPercent: 10` (~$36) — month of profit, hard safety limit
+
+### Trade Performance Data (30 days: Jan 14 – Feb 13, 2026)
+- **Account balance**: ~$360
+- **All trades**: $1 trade size, 8–10x leverage, no SL/TP configured
+- **Symbols**: ETHUSDT, ASTERUSDT, HYPEUSDT, ZECUSDT, SOLUSDT, FARTCOINUSDT
+- **maxOpenPositions**: 3, **useTradeQualityScoring**: false, **cascadeProtection**: LOG_ONLY
+- **Normal performance** (excluding Jan 30-31): 97W/0L, 16 consecutive green days, +$259 cumulative
+- **Catastrophic event** (Jan 30-31): -$1,441 in 2 days (400% of account). Caused by enormous positions ($1,900–$2,000 notional vs normal $1 trades) — likely manual positions or extreme DCA. All closed simultaneously on Jan 31 at 18:43:59.
+- **Post-recovery** (Feb 1–13): Back to $1 trades, 100% win rate, +$9.15 in 13 days, slowly recovering.
+- **Per-symbol**: ZECUSDT best (+$54, 12W/0L), HYPEUSDT (+$43, 20W/1L), SOLUSDT worst (-$820, 3 losses each >$200)
+- **Worst individual trades**: SOLUSDT -$603 (notional $1,928), ETHUSDT -$441 (notional $1,249)
+
+### Global Risk Mode — DESIGN DISCUSSION (not yet implemented)
+Concept: A single risk profile selector that scales all symbol configs uniformly.
+
+**Proposed presets:**
+| Mode | Size Multiplier | Max Positions | Description |
+|---|---|---|---|
+| Conservative | 0.5x | 2 | Choppy/uncertain market |
+| Normal | 1.0x | 3 | Business as usual |
+| Aggressive | 2.0x | 4 | Trending/high confidence |
+| Max | 3.0x | 5 | Very high confidence |
+
+**What it would affect:**
+- Trade size: multiply all symbol `tradeSize` by mode multiplier
+- Max open positions: per mode preset
+- Entry thresholds: aggressive = lower liq volume needed to trigger trade
+- Health monitor thresholds: scale proportionally with trade size (but NOT closeAll)
+- SL/TP widths: possibly wider SL in aggressive mode
+
+**Design options discussed:**
+- **Option A** (recommended): Named presets with hardcoded multipliers — simple to flip
+- **Option B**: Named presets + customizable overrides per field
+- **Option C**: Single `globalMultiplier` slider, everything scales from one number
+
+**Key principle**: Risk mode is a MULTIPLIER on top of per-symbol config, not a replacement. ETHUSDT tradeSize=1 in Aggressive(2x) → actual $2.
+
+**Open questions for user:**
+1. Which levers matter most? (trade size? position count? thresholds?)
+2. Named presets or a slider?
+3. Should it change which symbols are traded, or just how much?
+
+**Storage**: Would be a `riskMode` field in `global` config.
+**UI**: Prominent selector at top of dashboard or config page, color-coded by risk level.

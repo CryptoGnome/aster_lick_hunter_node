@@ -1,0 +1,66 @@
+Account Health Monitor — Recommended Settings
+Your data tells a very clear story:
+
+The good: 16 consecutive green days (Jan 14–29), +$259 cumulative profit, 97/107 wins on normal days. With $1 trade sizes you're extremely consistent.
+
+The catastrophe: Jan 30–31 wiped $1,441 — that's 400% of your current balance. The losses came from positions with $1,900–$2,000 notional value (vs your normal $1 trade size). These were clearly manually opened or DCA'd positions that went massively underwater. The Jan 31 batch at 18:43:59 all closed simultaneously — looks like a manual close-all or a liquidation.
+
+Recommended Health Monitor Settings
+Given a ~$360 account running $1 trades:
+
+Setting	Recommendation	Why
+enabled	true	Obviously
+maxDrawdownPercent	5% (~$18)	Your normal daily P&L is $1–$5. A $18 drawdown from peak is 4–18 days of profit — something is very wrong at that point
+maxUnrealizedLossPercent	3% (~$11)	With $1 trades at 8x, max loss per position is ~$1. If unrealized loss hits $11, you have multiple underwater positions building up
+resumeAtDrawdownPercent	3%	Resume once recovered — gives 2% hysteresis band
+checkIntervalSeconds	30	Faster detection. Your positions are small so API cost is worth it
+closeAllAtDrawdownPercent	10% (~$36)	Emergency nuclear option. 10% of $360 is $36 — that's a month of profit. If you're down that much, close everything
+These are tight thresholds because your trade sizes are tiny. You should never be down 5% from $1 trades — if you are, something external happened (manual position, DCA spiral, etc).
+
+Global Risk Mode — Design Discussion
+Now for the risk-on/risk-off idea. Here's how I'd think about it:
+
+The Concept
+A single risk profile selector that acts as a multiplier/modifier across all symbols and behaviors. Something like:
+
+Mode	Trade Size Multiplier	Max Positions	Threshold Sensitivity	SL Width	Description
+Conservative	0.5x	2	Tighter	Tighter	Low confidence / choppy market
+Normal	1.0x	3	Default	Default	Business as usual
+Aggressive	2.0x	4	Looser	Wider	High confidence / trending market
+Max	3.0x	5	Loosest	Widest	You're very confident
+Key Design Questions
+1. What should it actually affect?
+
+Trade size: Most obvious — multiply all symbol tradeSize by the mode's multiplier
+Max open positions: More aggressive = allow more simultaneous positions
+Entry thresholds: Aggressive = lower the liquidation volume needed to trigger a trade (take more signals)
+Health monitor thresholds: Aggressive = widen the drawdown tolerance proportionally
+SL/TP: Maybe wider SL in aggressive mode (give trades more room), tighter in conservative
+2. How should it be stored?
+
+Option A: A single riskMode string in global config ("conservative" | "normal" | "aggressive" | "max"), with the multipliers hardcoded. Clean and simple.
+
+Option B: A riskMode string + customizable multiplier overrides. e.g., you pick "aggressive" but override the trade size multiplier to 1.5x instead of 2x. More flexible.
+
+Option C: Just a single globalMultiplier number (0.5 to 3.0). Everything scales off that one number with sensible formulas. Simplest, but less granular.
+
+3. How does it interact with per-symbol config?
+
+The risk mode would be a multiplier on top of existing per-symbol settings, not a replacement. So if ETHUSDT has tradeSize: 1 and you're in Aggressive mode (2x), the actual trade size becomes $2. Your per-symbol config is the "base" and the risk mode scales it.
+
+4. Should it affect the health monitor?
+
+I think yes — in Aggressive mode, the health monitor thresholds should scale proportionally. If you're taking 2x trades, a 5% drawdown is expected to happen faster, so maybe the threshold becomes 8%. But closeAllAtDrawdownPercent should probably stay fixed (it's a hard safety limit).
+
+5. UI: where does it live?
+
+A prominent toggle/selector at the top of the dashboard or in the config page. Maybe even color-coded — green for conservative, yellow for normal, orange for aggressive, red for max. Something you can flip quickly.
+
+My Recommendation
+I'd go with Option A + light customization: a named risk mode with sensible presets, where the main lever is the trade size multiplier. Keep it dead simple to flip between modes. The multiplier values and position limits would be defined as presets but overridable in config.
+
+What's your thinking? Specifically:
+
+Which of those levers matter most to you? (trade size? position count? thresholds?)
+Do you want it to feel like 3–4 named presets, or more like a slider?
+Should it change anything about which symbols are traded, or just how much?
