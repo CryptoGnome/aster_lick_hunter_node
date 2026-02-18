@@ -67,6 +67,10 @@ export interface PositionTracker {
   getPositionsMap(): Map<string, ExchangePosition>;
   hasPositionInDirection(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): boolean;
   getPositionEntryPrice(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): number | null;
+  getPositionNotional(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): number;
+  getDCAEntryCount(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): number;
+  recordDCAEntry(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): void;
+  clearDCACount(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): void;
 }
 
 export class PositionManager extends EventEmitter implements PositionTracker {
@@ -89,6 +93,9 @@ export class PositionManager extends EventEmitter implements PositionTracker {
   
   // Trailing TP state: key -> { entryPrice, highWatermark, activated }
   private trailingTPState: Map<string, { entryPrice: number; highWatermark: number; activated: boolean; symbol: string; isLong: boolean; quantity: number; positionSide: string }> = new Map();
+  
+  // DCA entry counter: "SYMBOL_DIRECTION" -> count of DCA entries this session
+  private dcaEntryCounts: Map<string, number> = new Map();
 
   constructor(config: Config, isHedgeMode: boolean = false) {
     super();
@@ -606,7 +613,18 @@ logWarnWithTimestamp(`PositionManager: Position ${key} not found in map`);
 
     // Place missing orders
     const needSL = !existingOrders?.slOrderId;
-    const needTP = !existingOrders?.tpOrderId;
+    let needTP = !existingOrders?.tpOrderId;
+
+    // When tranche management is enabled, skip position-level TP
+    // Per-tranche TPs are handled by TrancheManager's monitoring loop
+    // SL stays as catastrophic backstop (90% loss = exchange-level safety net)
+    const symbolConfig = this.config?.symbols[symbol];
+    if (symbolConfig?.enableTrancheManagement) {
+      needTP = false;
+      if (!existingOrders?.tpOrderId) {
+logWithTimestamp(`PositionManager: Skipping position-level TP for ${symbol} — tranches handle per-entry TPs`);
+      }
+    }
 
     if (needSL || needTP) {
       await this.placeProtectiveOrdersWithLock(key, position, needSL, needTP);
@@ -766,6 +784,11 @@ logWithTimestamp('PositionManager: Account update received');
             const previousAmt = parseFloat(previousPosition.positionAmt);
 logWithTimestamp(`PositionManager: Position ${previousKey} fully closed`);
 
+            // Clear DCA entry count for this position
+            const closedSide = previousAmt > 0 ? 'BUY' : 'SELL';
+            this.clearDCACount(symbol, closedSide, positionSide !== 'BOTH');
+logWithTimestamp(`PositionManager: Cleared DCA count for ${symbol} ${previousAmt > 0 ? 'LONG' : 'SHORT'}`);
+
             // Don't broadcast position_closed here - it will be broadcast with actual PnL in ORDER_TRADE_UPDATE
             // Only broadcast position_update for UI state updates
             if (this.statusBroadcaster) {
@@ -913,6 +936,14 @@ logWithTimestamp(`PositionManager: Restored position ${key} from previous state`
           // Position was actually closed (symbol was in update with 0 amount)
 logWithTimestamp(`PositionManager: Position ${key} was closed`);
 
+          // Clear DCA entry count for this position
+          const keyParts = key.split('_');
+          const closedDirection = keyParts[1]; // LONG or SHORT
+          const closedBuySell = closedDirection === 'LONG' ? 'BUY' : 'SELL';
+          const isClosedHedge = key.includes('_HEDGE');
+          this.clearDCACount(symbol, closedBuySell, isClosedHedge);
+logWithTimestamp(`PositionManager: Cleared DCA count for ${symbol} ${closedDirection}`);
+
           // Invalidate income cache when position closes (generates realized PnL, commission)
           invalidateIncomeCache();
 logWithTimestamp(`PositionManager: Invalidated income cache after position ${key} closed`);
@@ -955,6 +986,41 @@ logWithTimestamp(`PositionManager: Order cancellation already in progress for ${
     // Forward the ORDER_TRADE_UPDATE event to the web UI
     if (this.statusBroadcaster) {
       this.statusBroadcaster.broadcastOrderUpdate(event);
+    }
+
+    // Persist to local trade history database
+    try {
+      const { tradeHistoryDb } = require('../db/tradeHistoryDb');
+      const o = event.o;
+      tradeHistoryDb.upsertTrade({
+        symbol: o.s,
+        orderId: o.i,
+        clientOrderId: o.c,
+        side: o.S,
+        positionSide: o.ps || 'BOTH',
+        orderType: o.o,
+        origType: o.ot,
+        status: o.X,
+        price: o.p,
+        avgPrice: o.ap,
+        origQty: o.q,
+        executedQty: o.z,
+        lastFilledQty: o.l,
+        lastFilledPrice: o.L,
+        quoteQty: null,
+        commission: o.n,
+        commissionAsset: o.N,
+        realizedPnl: o.rp,
+        reduceOnly: o.R || false,
+        closePosition: o.cp || false,
+        isMaker: o.m || false,
+        tradeId: o.t,
+        orderTime: o.T || event.T || Date.now(),
+        updateTime: event.E || Date.now(),
+        source: 'websocket',
+      });
+    } catch (err) {
+      // Non-critical — don't block order processing if DB write fails
     }
 
     const order = event.o;
@@ -1126,7 +1192,8 @@ logWithTimestamp(`PositionManager: Entry order filled for ${symbol}`);
         // Just wait for it and then place SL/TP
       } else if (orderType === 'STOP_MARKET' || orderType === 'STOP' ||
                  orderType === 'TAKE_PROFIT_MARKET' || orderType === 'TAKE_PROFIT' ||
-                 (orderType === 'LIMIT' && order.R)) { // Any reduce-only order
+                 (orderType === 'LIMIT' && order.R) ||
+                 (orderType === 'MARKET' && order.R)) { // Any reduce-only order (including tranche closes)
         // SL/TP filled, position closed
 logWithTimestamp(`PositionManager: ${orderType} (reduce-only) filled for ${symbol}`);
 
@@ -1202,6 +1269,33 @@ logWarnWithTimestamp(`PositionManager: Could not find position key for order ${o
           }
         } else if (realizedPnl !== 0) {
 logWithTimestamp(`PositionManager: Using exchange-provided PnL for ${symbol} ${orderType}: $${realizedPnl.toFixed(2)}`);
+        }
+
+        // Forward to TrancheManager if tranche management is enabled for this symbol
+        try {
+          const symbolConfig = this.config?.symbols[symbol];
+          if (symbolConfig?.enableTrancheManagement) {
+            const { getTrancheManager } = require('../services/trancheManager');
+            try {
+              const trancheManager = getTrancheManager();
+              const positionSide = order.ps || 'BOTH';
+              trancheManager.processOrderFill({
+                symbol,
+                side,
+                positionSide,
+                quantityFilled: executedQty,
+                fillPrice: avgPrice,
+                realizedPnl,
+                orderId: orderId?.toString() || '',
+              }).catch((err: any) => {
+                logErrorWithTimestamp(`PositionManager: TrancheManager processOrderFill failed:`, err?.message);
+              });
+            } catch (_e) {
+              // TrancheManager not initialized — skip
+            }
+          }
+        } catch (_e) {
+          // Non-critical — don't block order processing
         }
 
         // Broadcast order filled event (SL/TP)
@@ -1377,6 +1471,13 @@ logWithTimestamp(`PositionManager: Cancelling TP order ${currentTpOrder.orderId}
         }
       } else {
         needNewTP = true;
+      }
+
+      // When tranche management is enabled, skip position-level TP
+      // Per-tranche TPs are handled by TrancheManager
+      const symbolConfig = this.config?.symbols[symbol];
+      if (symbolConfig?.enableTrancheManagement) {
+        needNewTP = false;
       }
 
       // Wait for cancellations to complete
@@ -3129,5 +3230,50 @@ logErrorWithTimestamp('PositionManager: Failed to refresh balance:', error);
       }
     }
     return null;
+  }
+
+  // Get notional value (qty × markPrice) for a position in a specific direction
+  public getPositionNotional(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): number {
+    for (const position of this.currentPositions.values()) {
+      if (position.symbol !== symbol) continue;
+
+      const positionAmt = parseFloat(position.positionAmt);
+      if (Math.abs(positionAmt) === 0) continue;
+
+      const matchesSide = isHedgeMode
+        ? position.positionSide === (side === 'BUY' ? 'LONG' : 'SHORT')
+        : (side === 'BUY' ? positionAmt > 0 : positionAmt < 0);
+
+      if (matchesSide) {
+        // Use markPrice for live notional, fall back to entryPrice
+        const price = parseFloat(position.markPrice || position.entryPrice || '0');
+        return Math.abs(positionAmt) * price;
+      }
+    }
+    return 0;
+  }
+
+  // Get DCA entry count for a position direction
+  public getDCAEntryCount(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): number {
+    const key = this._dcaKey(symbol, side, isHedgeMode);
+    return this.dcaEntryCounts.get(key) || 0;
+  }
+
+  // Record a DCA entry
+  public recordDCAEntry(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): void {
+    const key = this._dcaKey(symbol, side, isHedgeMode);
+    const current = this.dcaEntryCounts.get(key) || 0;
+    this.dcaEntryCounts.set(key, current + 1);
+  }
+
+  // Clear DCA count (called when position is fully closed)
+  public clearDCACount(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): void {
+    const key = this._dcaKey(symbol, side, isHedgeMode);
+    this.dcaEntryCounts.delete(key);
+  }
+
+  private _dcaKey(symbol: string, side: 'BUY' | 'SELL', isHedgeMode: boolean): string {
+    const direction = isHedgeMode ? (side === 'BUY' ? 'LONG' : 'SHORT') : side;
+    return `${symbol}_${direction}`;
   }
 }

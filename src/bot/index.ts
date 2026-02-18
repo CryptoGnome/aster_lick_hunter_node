@@ -73,6 +73,18 @@ logWithTimestamp('Bot is already running');
       this.config = await configManager.initialize();
       logWithTimestamp('✅ Configuration loaded');
 
+      // Warn if global trade size multiplier is active
+      const tradeSizeMultiplier = this.config.global.tradeSizeMultiplier;
+      if (tradeSizeMultiplier && tradeSizeMultiplier !== 1.0) {
+        const emoji = tradeSizeMultiplier > 2.0 ? '🔴' : tradeSizeMultiplier > 1.0 ? '🟡' : '🔵';
+        const label = tradeSizeMultiplier > 2.0 ? 'HIGH RISK' : tradeSizeMultiplier > 1.0 ? 'RISK-ON' : 'RISK-OFF';
+        logWarnWithTimestamp(`${emoji} GLOBAL TRADE SIZE MULTIPLIER: ${tradeSizeMultiplier}x (${label})`);
+        logWarnWithTimestamp(`   All trade sizes will be multiplied by ${tradeSizeMultiplier}x`);
+        if (tradeSizeMultiplier > 1.0) {
+          logWarnWithTimestamp(`   Set tradeSizeMultiplier to 1.0 in config to return to normal sizing`);
+        }
+      }
+
       // Validate trade sizes against exchange minimums
       const { validateAllTradeSizes } = await import('../lib/validation/tradeSizeValidator');
       const validationResult = await validateAllTradeSizes(this.config);
@@ -535,12 +547,13 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
       if (trancheEnabledSymbols.length > 0) {
         try {
           const { initializeTrancheManager } = await import('../lib/services/trancheManager');
+          const { placeOrder } = await import('../lib/api/orders');
           const trancheManager = initializeTrancheManager(this.config);
           await trancheManager.initialize();
 
           // Connect tranche events to status broadcaster
           trancheManager.on('trancheCreated', (tranche) => {
-            this.statusBroadcaster.broadcastTrancheCreated({
+            this.statusBroadcaster.broadcast('tranche_created', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
@@ -555,13 +568,12 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
           });
 
           trancheManager.on('trancheIsolated', (tranche) => {
-            const symbolConfig = this.config?.symbols[tranche.symbol];
             const currentPrice = tranche.isolationPrice || 0;
             const pnlPercent = tranche.side === 'LONG'
               ? ((currentPrice - tranche.entryPrice) / tranche.entryPrice) * 100
               : ((tranche.entryPrice - currentPrice) / tranche.entryPrice) * 100;
 
-            this.statusBroadcaster.broadcastTrancheIsolated({
+            this.statusBroadcaster.broadcast('tranche_isolated', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
@@ -569,13 +581,13 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
               currentPrice,
               unrealizedPnl: tranche.unrealizedPnl,
               pnlPercent,
-              isolationThreshold: symbolConfig?.trancheIsolationThreshold || 5,
+              isolationThreshold: this.config?.symbols[tranche.symbol]?.trancheIsolationThreshold || 5,
             });
             logWithTimestamp(`⚠️  Tranche isolated: ${tranche.id.substring(0, 8)} for ${tranche.symbol} (${pnlPercent.toFixed(2)}% loss)`);
           });
 
           trancheManager.on('trancheClosed', (tranche) => {
-            this.statusBroadcaster.broadcastTrancheClosed({
+            this.statusBroadcaster.broadcast('tranche_closed', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
@@ -590,12 +602,12 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
           });
 
           trancheManager.on('tranchePartialClose', (tranche) => {
-            this.statusBroadcaster.broadcastTrancheClosed({
+            this.statusBroadcaster.broadcast('tranche_closed', {
               trancheId: tranche.id,
               symbol: tranche.symbol,
               side: tranche.side,
               entryPrice: tranche.entryPrice,
-              exitPrice: 0, // Partial close - exit price varies
+              exitPrice: 0,
               quantity: tranche.quantity,
               realizedPnl: tranche.realizedPnl,
               closedFully: false,
@@ -603,7 +615,76 @@ logErrorWithTimestamp('⚠️  Position Manager failed to start:', error.message
             logWithTimestamp(`📉 Tranche partially closed: ${tranche.id.substring(0, 8)} for ${tranche.symbol}`);
           });
 
-          // Start periodic isolation monitoring
+          // ========================
+          // Tranche Exit Order Placement
+          // ========================
+          // When TrancheManager detects a tranche should exit (TP hit, max loss, time expired),
+          // it emits an event. We place a reduce-only MARKET order here.
+          // The exchange fill will come back via ORDER_TRADE_UPDATE → PositionManager → processOrderFill()
+
+          // Track in-flight tranche close orders to prevent duplicates
+          const trancheCloseInFlight = new Set<string>();
+
+          const placeTrancheCloseOrder = async (
+            event: { tranche: any; symbol: string; side: string; positionSide: string; quantity: number; currentPrice: number },
+            reason: string
+          ) => {
+            const trancheId = event.tranche.id;
+            if (trancheCloseInFlight.has(trancheId)) {
+              logWithTimestamp(`TrancheClose: Already in-flight for ${trancheId.substring(0, 8)}, skipping`);
+              return;
+            }
+
+            trancheCloseInFlight.add(trancheId);
+
+            try {
+              // Reduce-only: close side is opposite of position side
+              const closeSide = event.side === 'LONG' ? 'SELL' : 'BUY';
+              const positionSide = event.positionSide as 'LONG' | 'SHORT' | 'BOTH';
+
+              logWithTimestamp(
+                `🔻 Placing tranche close order (${reason}): ${event.symbol} ${closeSide} qty=${event.quantity} ` +
+                `tranche=${trancheId.substring(0, 8)}`
+              );
+
+              await placeOrder({
+                symbol: event.symbol,
+                side: closeSide,
+                type: 'MARKET',
+                quantity: event.quantity,
+                reduceOnly: true,
+                positionSide,
+              }, this.config.api);
+
+              logWithTimestamp(
+                `✅ Tranche close order placed (${reason}): ${event.symbol} ${closeSide} qty=${event.quantity}`
+              );
+            } catch (error: any) {
+              logErrorWithTimestamp(
+                `❌ Failed to place tranche close order (${reason}) for ${event.symbol}:`, error?.message
+              );
+            } finally {
+              // Clear after a delay to allow ORDER_TRADE_UPDATE to process
+              setTimeout(() => trancheCloseInFlight.delete(trancheId), 30000);
+            }
+          };
+
+          // Per-tranche TP hit → place reduce-only close order
+          trancheManager.on('trancheTPTriggered', (event) => {
+            placeTrancheCloseOrder(event, 'per_tranche_tp');
+          });
+
+          // Position-level max loss → close worst tranches
+          trancheManager.on('trancheMaxLossClose', (event) => {
+            placeTrancheCloseOrder(event, 'position_max_loss');
+          });
+
+          // Time-based aging → close expired underwater tranches
+          trancheManager.on('trancheTimeExpired', (event) => {
+            placeTrancheCloseOrder(event, 'time_expired');
+          });
+
+          // Start periodic monitoring (TP checks, max loss, aging, isolation, recovery)
           trancheManager.startIsolationMonitoring(10000); // Check every 10 seconds
 
           logWithTimestamp(`✅ Tranche Manager initialized for ${trancheEnabledSymbols.length} symbol(s): ${trancheEnabledSymbols.map(([s]) => s).join(', ')}`);
@@ -975,6 +1056,9 @@ logWithTimestamp('✅ Liquidation Hunter started');
       this.statusBroadcaster.setRunning(true);
 logWithTimestamp('🟢 Bot is now running. Press Ctrl+C to stop.');
 
+      // Run trade history backfill in the background (non-blocking)
+      this.startTradeHistoryBackfill();
+
       // Handle graceful shutdown with enhanced signal handling
       const shutdownHandler = async (signal: string) => {
 logWithTimestamp(`\n📡 Received ${signal}`);
@@ -1084,6 +1168,24 @@ logErrorWithTimestamp('❌ Failed to apply config update:', error);
         if (this.hunter) this.hunter.updateConfig(oldConfig);
         if (this.positionManager) this.positionManager.updateConfig(oldConfig);
       }
+    }
+  }
+
+  /**
+   * Run trade history backfill in the background.
+   * Non-blocking — errors are logged but don't affect the bot.
+   */
+  private async startTradeHistoryBackfill(): Promise<void> {
+    try {
+      const { runBackfill } = await import('../../scripts/backfill-trades');
+      const result = await runBackfill();
+      if (result.orders + result.trades + result.income > 0) {
+        logWithTimestamp(`✅ Trade history backfill complete: ${result.orders} orders, ${result.trades} trades, ${result.income} income records (${(result.durationMs / 1000).toFixed(1)}s)`);
+      } else {
+        logWithTimestamp('✅ Trade history: already up to date');
+      }
+    } catch (err) {
+      logWarnWithTimestamp('[TradeHistory] Backfill error (non-critical):', err);
     }
   }
 

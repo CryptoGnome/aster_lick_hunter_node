@@ -689,14 +689,26 @@ export class TrancheManagerService extends EventEmitter {
 
     this.isolationCheckInterval = setInterval(async () => {
       try {
+        // Per-tranche TP monitoring — check if any tranche hit its take profit price
+        await this.checkTrancheTPConditions();
+
+        // Position-level max loss enforcement — close worst tranches when group loss too deep
+        await this.checkPositionMaxLoss();
+
+        // Time-based tranche aging — close underwater tranches older than configured age
+        await this.checkTrancheAging();
+
+        // Isolation checks — mark tranches as isolated when underwater past threshold
         await this.checkIsolationConditions();
+
+        // Recovery checks — auto-close isolated tranches that recovered to profit
         await this.checkRecoveryConditions();
       } catch (error) {
-        logErrorWithTimestamp('TrancheManager: Isolation/Recovery check failed:', error);
+        logErrorWithTimestamp('TrancheManager: Monitoring check failed:', error);
       }
     }, intervalMs);
 
-    logWithTimestamp(`TrancheManager: Started isolation and recovery monitoring (every ${intervalMs / 1000}s)`);
+    logWithTimestamp(`TrancheManager: Started tranche monitoring (every ${intervalMs / 1000}s)`);
   }
 
   public stopIsolationMonitoring(): void {
@@ -710,6 +722,208 @@ export class TrancheManagerService extends EventEmitter {
   // Helper methods
   private getGroupKey(symbol: string, side: 'LONG' | 'SHORT'): string {
     return `${symbol}_${side}`;
+  }
+
+  // ========================
+  // Per-Tranche TP Monitoring
+  // ========================
+
+  // Check if any active tranche has hit its take-profit price
+  // When triggered, emits 'trancheTPTriggered' for PositionManager to place a reduce-only order
+  private async checkTrancheTPConditions(): Promise<void> {
+    for (const [_key, group] of this.trancheGroups) {
+      if (group.activeTranches.length === 0) continue;
+
+      try {
+        const currentPrice = await this.getCurrentPrice(group.symbol);
+
+        for (const tranche of [...group.activeTranches]) { // Copy to avoid mutation during iteration
+          if (tranche.status !== 'active') continue;
+
+          const hitTP = group.side === 'LONG'
+            ? currentPrice >= tranche.tpPrice
+            : currentPrice <= tranche.tpPrice;
+
+          if (hitTP) {
+            logWithTimestamp(
+              `TrancheManager: TP triggered for tranche ${tranche.id.substring(0, 8)} ${tranche.symbol} ${tranche.side} — ` +
+              `entry: ${tranche.entryPrice}, TP: ${tranche.tpPrice}, current: ${currentPrice}`
+            );
+
+            // Emit event for PositionManager to place reduce-only market order
+            this.emit('trancheTPTriggered', {
+              tranche,
+              currentPrice,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              positionSide: tranche.positionSide,
+              quantity: tranche.quantity,
+            });
+
+            await logTrancheEvent(tranche.id, 'tp_triggered', {
+              price: currentPrice,
+              quantity: tranche.quantity,
+              trigger: 'per_tranche_tp',
+            });
+          }
+        }
+      } catch (error) {
+        logErrorWithTimestamp(`TrancheManager: Failed to check TP conditions for ${group.symbol}:`, error);
+      }
+    }
+  }
+
+  // ========================
+  // Position-Level Max Loss
+  // ========================
+
+  // Close the worst (most underwater) tranches when total group unrealized loss exceeds maxPositionLossUSDT
+  // This is position-level protection — NOT per-tranche SL
+  private async checkPositionMaxLoss(): Promise<void> {
+    for (const [_key, group] of this.trancheGroups) {
+      if (group.activeTranches.length === 0) continue;
+
+      const symbolConfig = this.config.symbols[group.symbol];
+      if (!symbolConfig) continue;
+
+      const maxLoss = symbolConfig.maxPositionLossUSDT;
+      if (!maxLoss || maxLoss <= 0) continue;
+
+      try {
+        const currentPrice = await this.getCurrentPrice(group.symbol);
+
+        // Recalculate total unrealized P&L for the group
+        let totalUnrealized = 0;
+        for (const tranche of group.activeTranches) {
+          const pnl = this.calculateUnrealizedPnl(
+            tranche.entryPrice, currentPrice, tranche.quantity, tranche.side
+          );
+          tranche.unrealizedPnl = pnl;
+          totalUnrealized += pnl;
+        }
+
+        group.totalUnrealizedPnl = totalUnrealized;
+
+        // Check if total loss exceeds the position-level cap
+        if (totalUnrealized < -maxLoss) {
+          logWarnWithTimestamp(
+            `TrancheManager: Position max loss triggered for ${group.symbol} ${group.side} — ` +
+            `total unrealized: ${totalUnrealized.toFixed(2)} USDT, cap: -${maxLoss} USDT`
+          );
+
+          // Sort by unrealizedPnl ascending (worst first)
+          const worstFirst = [...group.activeTranches].sort((a, b) => a.unrealizedPnl - b.unrealizedPnl);
+
+          // Close worst tranches until we're back within the loss cap
+          // At minimum, close the single worst tranche
+          let cumulativeClosed = 0;
+          const tranchesToClose: { tranche: Tranche; pnl: number }[] = [];
+
+          for (const tranche of worstFirst) {
+            tranchesToClose.push({ tranche, pnl: tranche.unrealizedPnl });
+            cumulativeClosed += tranche.unrealizedPnl;
+
+            // Check if closing this tranche brings total loss back within cap
+            const remainingLoss = totalUnrealized - cumulativeClosed;
+            if (remainingLoss >= -maxLoss || tranchesToClose.length >= 1) {
+              // Close at least one, stop if we're back within limit
+              if (remainingLoss >= -maxLoss) break;
+            }
+          }
+
+          // Emit events for each tranche to close
+          for (const { tranche } of tranchesToClose) {
+            logWithTimestamp(
+              `TrancheManager: Max loss close — tranche ${tranche.id.substring(0, 8)} ${tranche.symbol} ${tranche.side}, ` +
+              `entry: ${tranche.entryPrice}, unrealized: ${tranche.unrealizedPnl.toFixed(2)} USDT`
+            );
+
+            this.emit('trancheMaxLossClose', {
+              tranche,
+              currentPrice,
+              symbol: tranche.symbol,
+              side: tranche.side,
+              positionSide: tranche.positionSide,
+              quantity: tranche.quantity,
+              totalGroupLoss: totalUnrealized,
+              maxLossLimit: maxLoss,
+            });
+
+            await logTrancheEvent(tranche.id, 'max_loss_close', {
+              price: currentPrice,
+              quantity: tranche.quantity,
+              pnl: tranche.unrealizedPnl,
+              trigger: `position_loss_${totalUnrealized.toFixed(2)}_exceeds_${maxLoss}`,
+            });
+          }
+        }
+      } catch (error) {
+        logErrorWithTimestamp(`TrancheManager: Failed to check position max loss for ${group.symbol}:`, error);
+      }
+    }
+  }
+
+  // ========================
+  // Time-Based Tranche Aging
+  // ========================
+
+  // Close underwater tranches that have exceeded maxTrancheAgeMinutes
+  private async checkTrancheAging(): Promise<void> {
+    for (const [_key, group] of this.trancheGroups) {
+      if (group.activeTranches.length === 0) continue;
+
+      const symbolConfig = this.config.symbols[group.symbol];
+      if (!symbolConfig) continue;
+
+      const maxAge = symbolConfig.maxTrancheAgeMinutes;
+      if (!maxAge || maxAge <= 0) continue;
+
+      const maxAgeMs = maxAge * 60 * 1000;
+      const now = Date.now();
+
+      try {
+        const currentPrice = await this.getCurrentPrice(group.symbol);
+
+        for (const tranche of [...group.activeTranches]) {
+          if (tranche.status !== 'active') continue;
+
+          const ageMs = now - tranche.entryTime;
+          if (ageMs < maxAgeMs) continue;
+
+          // Only close if underwater (in profit is fine — let TP handle it)
+          const pnl = this.calculateUnrealizedPnl(
+            tranche.entryPrice, currentPrice, tranche.quantity, tranche.side
+          );
+
+          if (pnl >= 0) continue; // Profitable — don't time-stop it
+
+          const ageMinutes = Math.round(ageMs / 60000);
+          logWarnWithTimestamp(
+            `TrancheManager: Time stop triggered for tranche ${tranche.id.substring(0, 8)} ${tranche.symbol} ${tranche.side} — ` +
+            `age: ${ageMinutes}min (max: ${maxAge}min), unrealized: ${pnl.toFixed(2)} USDT`
+          );
+
+          this.emit('trancheTimeExpired', {
+            tranche,
+            currentPrice,
+            symbol: tranche.symbol,
+            side: tranche.side,
+            positionSide: tranche.positionSide,
+            quantity: tranche.quantity,
+            ageMinutes,
+          });
+
+          await logTrancheEvent(tranche.id, 'time_expired', {
+            price: currentPrice,
+            quantity: tranche.quantity,
+            pnl,
+            trigger: `age_${ageMinutes}min_exceeds_${maxAge}min`,
+          });
+        }
+      } catch (error) {
+        logErrorWithTimestamp(`TrancheManager: Failed to check tranche aging for ${group.symbol}:`, error);
+      }
+    }
   }
 
   private createTrancheGroup(

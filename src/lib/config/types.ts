@@ -81,18 +81,39 @@ export const paperTradingConfigSchema = z.object({
   enableRealisticFills: z.boolean().optional(),
 }).optional();
 
+export const accountHealthConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxDrawdownPercent: z.number().min(1).max(50).optional(),
+  resumeAtDrawdownPercent: z.number().min(0).max(49).optional(),
+  maxUnrealizedLossPercent: z.number().min(1).max(50).optional(),
+  checkIntervalSeconds: z.number().min(10).max(300).optional(),
+  closeAllAtDrawdownPercent: z.number().min(0).max(80).optional(),
+  maxPositionNotional: z.number().min(0).optional(),
+  maxDCAEntries: z.number().min(0).optional(),
+}).optional();
+
 export const globalConfigSchema = z.object({
   riskPercent: z.number().min(0).max(100),
   paperMode: z.boolean(),
   paperTrading: paperTradingConfigSchema,
   positionMode: z.enum(['ONE_WAY', 'HEDGE']).optional(),
   maxOpenPositions: z.number().min(1).optional(),
+  maxLongPositions: z.number().min(0).optional(),
+  maxShortPositions: z.number().min(0).optional(),
+  minEntrySpacingPercent: z.number().min(0).optional(),
+  tradeSizeMultiplier: z.number().min(0.1).max(5.0).optional(),
   useThresholdSystem: z.boolean().optional(),
-  useTradeQualityScoring: z.boolean().optional(), // Enable/disable trade quality scoring (VWAP regime, spike analysis)
-  useFTAExitAnalysis: z.boolean().optional(), // Enable/disable FTA early exit analysis
+  useTradeQualityScoring: z.boolean().optional(),
+  useFTAExitAnalysis: z.boolean().optional(),
+  debugMode: z.boolean().optional(),
   server: serverConfigSchema,
   rateLimit: rateLimitConfigSchema,
-});
+  accountHealth: accountHealthConfigSchema,
+  liquidationDatabase: z.object({
+    retentionDays: z.number().min(0).optional(),
+    cleanupIntervalHours: z.number().min(1).optional(),
+  }).optional(),
+}).passthrough();
 
 export const configSchema = z.object({
   api: apiCredentialsSchema,
