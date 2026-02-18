@@ -53,6 +53,8 @@ const DEFAULT_CONFIG: Required<AccountHealthConfig> = {
   resumeAtDrawdownPercent: 15,      // Resume when drawdown recovers to 15%
   checkIntervalSeconds: 60,         // Check every 60 seconds
   closeAllAtDrawdownPercent: 0,     // Disabled by default (0 = off)
+  maxPositionNotional: 0,           // Disabled by default (0 = unlimited)
+  maxDCAEntries: 0,                 // Disabled by default (0 = unlimited)
 };
 
 export class AccountHealthMonitor extends EventEmitter {
@@ -97,6 +99,12 @@ export class AccountHealthMonitor extends EventEmitter {
       if (this.config.closeAllAtDrawdownPercent > 0) {
         logWithTimestamp(`  Emergency close-all at: ${this.config.closeAllAtDrawdownPercent}%`);
       }
+      if (this.config.maxPositionNotional > 0) {
+        logWithTimestamp(`  DCA guardrail — max position notional: $${this.config.maxPositionNotional}`);
+      }
+      if (this.config.maxDCAEntries > 0) {
+        logWithTimestamp(`  DCA guardrail — max DCA entries: ${this.config.maxDCAEntries}`);
+      }
 
       // Start periodic checking
       this.startPeriodicCheck();
@@ -110,6 +118,10 @@ export class AccountHealthMonitor extends EventEmitter {
   /**
    * Update configuration at runtime
    */
+  public getConfig(): Required<AccountHealthConfig> {
+    return { ...this.config };
+  }
+
   public updateConfig(config: Partial<AccountHealthConfig>): void {
     this.config = { ...this.config, ...config };
     logWithTimestamp(`AccountHealthMonitor: Config updated — drawdown pause: ${this.config.maxDrawdownPercent}%, resume: ${this.config.resumeAtDrawdownPercent}%`);

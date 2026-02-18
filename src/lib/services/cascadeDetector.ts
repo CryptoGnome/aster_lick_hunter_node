@@ -29,6 +29,10 @@ import { logWithTimestamp, logWarnWithTimestamp } from '../utils/timestamp';
 
 export interface CascadeProtectionConfig {
   enabled: boolean;
+  // Mode: LOG_ONLY = detect & log but allow trades, REDUCE = trade at reduced size, BLOCK = hard stop (default: LOG_ONLY)
+  mode: 'LOG_ONLY' | 'REDUCE' | 'BLOCK';
+  // Position size multiplier when mode=REDUCE (default: 0.5)
+  reducedPositionMultiplier: number;
   // Rolling window for detecting abnormal activity (default: 5 minutes)
   rollingWindowMs: number;
   // Baseline window for calculating "normal" volume (default: 30 minutes)
@@ -72,6 +76,8 @@ interface LiquidationRecord {
 
 const DEFAULT_CONFIG: CascadeProtectionConfig = {
   enabled: true,
+  mode: 'LOG_ONLY',                        // Default: detect but don't block
+  reducedPositionMultiplier: 0.5,          // 50% size when mode=REDUCE
   rollingWindowMs: 5 * 60 * 1000,        // 5 minutes
   baselineWindowMs: 30 * 60 * 1000,       // 30 minutes
   volumeMultiplierThreshold: 3.0,          // 3x above normal
@@ -106,7 +112,21 @@ export class CascadeDetector extends EventEmitter {
    */
   public updateConfig(config: Partial<CascadeProtectionConfig>): void {
     this.config = { ...this.config, ...config };
-    logWithTimestamp(`CascadeDetector: Config updated - window: ${this.config.rollingWindowMs / 1000}s, multiplier: ${this.config.volumeMultiplierThreshold}x, cooldown: ${this.config.cooldownMs / 1000}s`);
+    logWithTimestamp(`CascadeDetector: Config updated - mode: ${this.config.mode}, window: ${this.config.rollingWindowMs / 1000}s, multiplier: ${this.config.volumeMultiplierThreshold}x, cooldown: ${this.config.cooldownMs / 1000}s`);
+  }
+
+  /**
+   * Get the current cascade mode
+   */
+  public getMode(): 'LOG_ONLY' | 'REDUCE' | 'BLOCK' {
+    return this.config.mode;
+  }
+
+  /**
+   * Get the reduced position multiplier (for REDUCE mode)
+   */
+  public getReducedMultiplier(): number {
+    return this.config.reducedPositionMultiplier;
   }
 
   /**
